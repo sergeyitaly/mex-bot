@@ -781,13 +781,15 @@ class MEXCTracker:
         ws['A4'] = 'EXCHANGE SUMMARY'
         ws['A4'].font = title_font
         
-        ws['A5'] = 'Exchange'
-        ws['B5'] = 'Status'
-        ws['C5'] = 'Futures Count'
-        for cell in ['A5', 'B5', 'C5']:
-            ws[cell].font = title_font
-            ws[cell].fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        # Exchange summary headers
+        headers = ['Exchange', 'Status', 'Futures Count']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=5, column=col)
+            cell.value = header
+            cell.font = title_font
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
         
+        # Exchange summary data
         row = 6
         for exchange, count in exchange_stats.items():
             status = 'WORKING' if count > 0 else 'FAILED'
@@ -797,20 +799,22 @@ class MEXCTracker:
             row += 1
         
         # Detailed futures data
-        ws[f'A{row+1}'] = 'DETAILED FUTURES DATA'
-        ws[f'A{row+1}'].font = title_font
+        ws[f'A{row+2}'] = 'DETAILED FUTURES DATA'
+        ws[f'A{row+2}'].font = title_font
         
-        headers = ['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage']
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=row+2, column=col)
+        # Detailed data headers
+        detail_headers = ['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage']
+        for col, header in enumerate(detail_headers, 1):
+            cell = ws.cell(row=row+3, column=col)
             cell.value = header
             cell.font = title_font
             cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
         
-        data_row = row + 3
+        # Detailed data
+        data_row = row + 4
         for future in all_futures_data:
             normalized = self.normalize_symbol(future['symbol'])
-            exchanges_list = symbol_coverage[normalized]
+            exchanges_list = symbol_coverage.get(normalized, [])
             available_on = ', '.join(sorted(exchanges_list))
             coverage = f"{len(exchanges_list)} exchanges"
             
@@ -821,26 +825,31 @@ class MEXCTracker:
             ws[f'E{data_row}'] = coverage
             data_row += 1
         
-        # Auto-adjust column widths
-        for column in ws.columns:
+        # Auto-adjust column widths - FIXED VERSION
+        for col_idx, column in enumerate(ws.columns, 1):
             max_length = 0
-            column_letter = column[0].column_letter
+            column_letter = ws.cell(row=1, column=col_idx).column_letter
+            
             for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = (max_length + 2)
+                if cell.value:  # Only check cells with values
+                    try:
+                        # Skip merged cells
+                        if not any(cell.coordinate in merged_range for merged_range in ws.merged_cells.ranges):
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                    except:
+                        pass
+            
+            adjusted_width = min(max_length + 2, 50)  # Limit max width
             ws.column_dimensions[column_letter].width = adjusted_width
         
         # Save to bytes
-        from io import BytesIO
-        output = BytesIO()
+        output = io.BytesIO()
         wb.save(output)
         output.seek(0)
         
         return output
+
 
     def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
         """Create unique futures Excel file"""
@@ -889,35 +898,38 @@ class MEXCTracker:
                 row += 1
         
         # Summary
-        ws[f'A{row+1}'] = 'SUMMARY'
-        ws[f'A{row+1}'].font = title_font
-        
-        ws[f'A{row+2}'] = 'Total unique futures'
-        ws[f'B{row+2}'] = unique_count
+        ws[f'A{row+2}'] = 'SUMMARY'
         ws[f'A{row+2}'].font = title_font
-        ws[f'B{row+2}'].font = normal_font
         
-        # Auto-adjust column widths
-        for column in ws.columns:
+        ws[f'A{row+3}'] = 'Total unique futures'
+        ws[f'B{row+3}'] = unique_count
+        ws[f'A{row+3}'].font = title_font
+        ws[f'B{row+3}'].font = normal_font
+        
+        # Auto-adjust column widths - FIXED VERSION
+        for col_idx, column in enumerate(ws.columns, 1):
             max_length = 0
-            column_letter = column[0].column_letter
+            column_letter = ws.cell(row=1, column=col_idx).column_letter
+            
             for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = (max_length + 2)
+                if cell.value:  # Only check cells with values
+                    try:
+                        # Skip merged cells
+                        if not any(cell.coordinate in merged_range for merged_range in ws.merged_cells.ranges):
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                    except:
+                        pass
+            
+            adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column_letter].width = adjusted_width
         
         # Save to bytes
-        from io import BytesIO
-        output = BytesIO()
+        output = io.BytesIO()
         wb.save(output)
         output.seek(0)
         
         return output
-
 
 
     def sheet_command(self, update: Update, context: CallbackContext):
