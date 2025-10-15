@@ -2,11 +2,13 @@ APScheduler==3.6.3
 cachetools==4.2.2
 certifi==2025.10.5
 charset-normalizer==3.4.4
+et_xmlfile==2.0.0
 google-auth==2.25.0
 google-auth-oauthlib==1.2.2
 gspread==6.2.1
 idna==3.11
 oauthlib==3.3.1
+openpyxl==3.1.5
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
 python-dotenv==1.0.0
