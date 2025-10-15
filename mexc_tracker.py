@@ -754,9 +754,9 @@ class MEXCTracker:
             update.message.reply_html(f"❌ <b>Error sending analysis:</b>\n{str(e)}")
 
     def create_complete_analysis_csv(self, all_futures_data, symbol_coverage, exchange_stats):
-        """Create complete analysis CSV"""
+        """Create complete analysis CSV with semicolon delimiter"""
         output = io.StringIO()
-        writer = csv.writer(output)
+        writer = csv.writer(output, delimiter=';')  # Используем точку с запятой
         
         # Header
         writer.writerow(['COMPLETE FUTURES ANALYSIS'])
@@ -767,7 +767,7 @@ class MEXCTracker:
         writer.writerow(['EXCHANGE SUMMARY'])
         writer.writerow(['Exchange', 'Status', 'Futures Count'])
         for exchange, count in exchange_stats.items():
-            status = '✅ WORKING' if count > 0 else '❌ FAILED'
+            status = 'WORKING' if count > 0 else 'FAILED'
             writer.writerow([exchange, status, count])
         
         writer.writerow([])
@@ -777,7 +777,8 @@ class MEXCTracker:
         for future in all_futures_data:
             normalized = self.normalize_symbol(future['symbol'])
             exchanges_list = symbol_coverage[normalized]
-            available_on = ', '.join(sorted(exchanges_list))
+            # Заменяем запятые на точки с запятой в списке бирж
+            available_on = '; '.join(sorted(exchanges_list))
             coverage = f"{len(exchanges_list)} exchanges"
             
             writer.writerow([
