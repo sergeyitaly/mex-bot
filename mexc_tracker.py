@@ -72,6 +72,16 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("exchanges", self.exchanges_command))
         self.dispatcher.add_handler(CommandHandler("analysis", self.analysis_command))
         self.dispatcher.add_handler(CommandHandler("sheet", self.sheet_command))
+        self.dispatcher.add_handler(CommandHandler("export", self.export_command))
+        
+        # Add message handler for export choices
+        from telegram.ext import MessageHandler, Filters
+        self.dispatcher.add_handler(MessageHandler(
+            Filters.text & (
+                Filters.regex('^(📊 CSV Export|📁 JSON Export|📈 Full Analysis|❌ Cancel)$')
+            ), 
+            self.handle_export
+        ))
     
     def init_data_file(self):
         """Initialize data file"""
@@ -240,15 +250,16 @@ class MEXCTracker:
     def get_bitget_futures(self):
         """Get futures from BitGet"""
         try:
-            url = "https://api.bitget.com/api/mix/v1/market/contracts?productType=USDT-FUTURES"
+            url = "https://api.bitget.com/api/mix/v1/market/contracts?productType=usdt-mix"
             response = requests.get(url, timeout=10)
             data = response.json()
             
             futures = set()
-            for item in data.get('data', []):
-                symbol = item.get('symbol', '')
-                if symbol:
-                    futures.add(symbol)
+            if data.get('code') == '00000' and data.get('data'):
+                for item in data.get('data', []):
+                    symbol = item.get('symbol', '')
+                    if symbol:
+                        futures.add(symbol)
             
             logger.info(f"BitGet: {len(futures)} futures")
             return futures
@@ -661,13 +672,14 @@ class MEXCTracker:
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
             "/analysis - Full analysis (Google Sheets)\n"
+            "/export - Download data (CSV/JSON)\n"  # ← Новая команда
             "/sheet - Get analysis sheet link\n"
             "/status - Current status\n"
             "/exchanges - Exchange information\n\n"
             "<b>Auto-features:</b>\n"
             "• Checks every 60 minutes\n"
             "• Alerts for new unique futures\n"
-            "• Comprehensive analysis available\n\n"
+            "• Data export available\n\n"
             "⚡ <i>Happy trading!</i>"
         )
         update.message.reply_html(help_text)
@@ -758,6 +770,254 @@ class MEXCTracker:
             schedule.run_pending()
             time.sleep(1)
     
+
+
+
+    def export_command(self, update: Update, context: CallbackContext):
+        """Export data to CSV/JSON"""
+        data = self.load_data()
+        unique_futures = data.get('unique_futures', [])
+        exchange_stats = data.get('exchange_stats', {})
+        
+        if not unique_futures:
+            update.message.reply_html("❌ No data to export. Use /check first.")
+            return
+        
+        # Create export options keyboard
+        from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
+        keyboard = [
+            ['📊 CSV Export', '📁 JSON Export'],
+            ['📈 Full Analysis', '❌ Cancel']
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        
+        update.message.reply_html(
+            "📤 <b>Choose export format:</b>",
+            reply_markup=reply_markup
+        )
+
+    def handle_export(self, update: Update, context: CallbackContext):
+        """Handle export format selection"""
+        choice = update.message.text
+        
+        if choice == '❌ Cancel':
+            update.message.reply_html("Export cancelled.", reply_markup=ReplyKeyboardRemove())
+            return
+        
+        data = self.load_data()
+        unique_futures = data.get('unique_futures', [])
+        exchange_stats = data.get('exchange_stats', {})
+        
+        if choice == '📊 CSV Export':
+            self.export_to_csv(update, unique_futures, exchange_stats)
+        elif choice == '📁 JSON Export':
+            self.export_to_json(update, data)
+        elif choice == '📈 Full Analysis':
+            self.export_full_analysis(update)
+
+    def export_to_csv(self, update: Update, unique_futures, exchange_stats):
+        """Export to CSV format"""
+        try:
+            import csv
+            import io
+            
+            # Create CSV in memory
+            output = io.StringIO()
+            writer = csv.writer(output)
+            
+            # Write header
+            writer.writerow(['Symbol', 'Exchange', 'Available On Exchanges', 'Timestamp'])
+            
+            # Get all futures for context
+            mexc_futures = self.get_mexc_futures()
+            all_futures, _ = self.get_all_exchanges_futures()
+            
+            for symbol in unique_futures:
+                normalized = self.normalize_symbol(symbol)
+                
+                # Find which exchanges have this symbol
+                available_on = ['MEXC']  # Always on MEXC since it's unique
+                
+                writer.writerow([
+                    symbol,
+                    'MEXC',
+                    ', '.join(available_on),
+                    datetime.now().isoformat()
+                ])
+            
+            # Add exchange summary
+            writer.writerow([])
+            writer.writerow(['EXCHANGE', 'FUTURES COUNT'])
+            writer.writerow(['MEXC', len(mexc_futures)])
+            for exchange, count in exchange_stats.items():
+                writer.writerow([exchange, count])
+            
+            # Prepare file for sending
+            csv_data = output.getvalue().encode('utf-8')
+            file_obj = io.BytesIO(csv_data)
+            file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            
+            update.message.reply_document(
+                document=file_obj,
+                caption="📊 <b>MEXC Unique Futures Export</b>\n\n"
+                    f"✅ {len(unique_futures)} unique futures\n"
+                    f"🏢 {len(exchange_stats) + 1} exchanges monitored",
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>CSV export error:</b>\n{str(e)}")
+
+    def export_to_json(self, update: Update, data):
+        """Export to JSON format"""
+        try:
+            import io
+            
+            # Create enhanced JSON data
+            export_data = {
+                'export_timestamp': datetime.now().isoformat(),
+                'statistics': data.get('statistics', {}),
+                'exchange_stats': data.get('exchange_stats', {}),
+                'unique_futures': data.get('unique_futures', []),
+                'last_check': data.get('last_check'),
+                'total_exchanges': len(data.get('exchange_stats', {})) + 1
+            }
+            
+            # Convert to JSON string
+            json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+            
+            # Prepare file for sending
+            file_obj = io.BytesIO(json_str.encode('utf-8'))
+            file_obj.name = f'mexc_futures_data_{datetime.now().strftime("%Y%m%d_%H%M")}.json'
+            
+            update.message.reply_document(
+                document=file_obj,
+                caption="📁 <b>MEXC Futures Data Export</b>\n\n"
+                    "Complete dataset in JSON format",
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>JSON export error:</b>\n{str(e)}")
+
+    def export_full_analysis(self, update: Update):
+        """Create and send full analysis files"""
+        update.message.reply_html("📈 <b>Creating full analysis export...</b>")
+        
+        def create_analysis():
+            try:
+                # Collect all data
+                all_futures_data = []
+                exchanges = {
+                    'MEXC': self.get_mexc_futures,
+                    'Binance': self.get_binance_futures,
+                    'Bybit': self.get_bybit_futures,
+                    'OKX': self.get_okx_futures,
+                    'Gate.io': self.get_gate_futures,
+                    'KuCoin': self.get_kucoin_futures,
+                    'BingX': self.get_bingx_futures,
+                    'BitGet': self.get_bitget_futures
+                }
+                
+                exchange_stats = {}
+                symbol_coverage = {}
+                
+                for name, method in exchanges.items():
+                    futures = method()
+                    exchange_stats[name] = len(futures)
+                    
+                    for symbol in futures:
+                        all_futures_data.append({
+                            'symbol': symbol,
+                            'exchange': name,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                        # Track symbol coverage
+                        normalized = self.normalize_symbol(symbol)
+                        if normalized not in symbol_coverage:
+                            symbol_coverage[normalized] = set()
+                        symbol_coverage[normalized].add(name)
+                    
+                    time.sleep(0.5)
+                
+                # Create comprehensive CSV
+                import csv
+                import io
+                
+                # CSV 1: All futures with coverage
+                output1 = io.StringIO()
+                writer1 = csv.writer(output1)
+                writer1.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage'])
+                
+                for future in all_futures_data:
+                    normalized = self.normalize_symbol(future['symbol'])
+                    exchanges_list = symbol_coverage[normalized]
+                    available_on = ', '.join(sorted(exchanges_list))
+                    coverage = f"{len(exchanges_list)}/{len(exchanges)}"
+                    
+                    writer1.writerow([
+                        future['symbol'],
+                        future['exchange'],
+                        normalized,
+                        available_on,
+                        coverage
+                    ])
+                
+                csv1_data = output1.getvalue().encode('utf-8')
+                file1 = io.BytesIO(csv1_data)
+                file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+                
+                # CSV 2: Unique futures only
+                output2 = io.StringIO()
+                writer2 = csv.writer(output2)
+                writer2.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Exchanges Count'])
+                
+                unique_count = 0
+                for normalized, exchanges_set in symbol_coverage.items():
+                    if len(exchanges_set) == 1:
+                        unique_count += 1
+                        exchange = list(exchanges_set)[0]
+                        original_symbol = next((f['symbol'] for f in all_futures_data 
+                                            if self.normalize_symbol(f['symbol']) == normalized 
+                                            and f['exchange'] == exchange), normalized)
+                        
+                        writer2.writerow([
+                            original_symbol,
+                            exchange,
+                            normalized,
+                            len(exchanges_set)
+                        ])
+                
+                csv2_data = output2.getvalue().encode('utf-8')
+                file2 = io.BytesIO(csv2_data)
+                file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+                
+                # Send files
+                update.message.reply_document(
+                    document=file1,
+                    caption="📊 <b>Complete Futures Analysis</b>\n\n"
+                        f"Total symbols: {len(symbol_coverage)}\n"
+                        f"Unique listings: {unique_count}\n"
+                        f"Exchanges: {len(exchanges)}",
+                    parse_mode='HTML'
+                )
+                
+                update.message.reply_document(
+                    document=file2,
+                    caption="💎 <b>Unique Futures Only</b>\n\n"
+                        f"Found {unique_count} exclusive listings",
+                    parse_mode='HTML'
+                )
+                
+            except Exception as e:
+                update.message.reply_html(f"❌ <b>Analysis export error:</b>\n{str(e)}")
+        
+        # Run in background
+        import threading
+        thread = threading.Thread(target=create_analysis)
+        thread.start()
+
     def run(self):
         """Start the bot"""
         try:
