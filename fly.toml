@@ -1,5 +1,5 @@
 app = "mexc-futures-tracker-unique"
-primary_region = "iad"
+primary_region = "fra"
 
 [build]
 
@@ -8,12 +8,6 @@ primary_region = "iad"
   internal_port = 8080
   processes = ["app"]
   protocol = "tcp"
-  script_checks = []
-
-  [services.concurrency]
-    hard_limit = 25
-    soft_limit = 20
-    type = "connections"
 
   [[services.ports]]
     force_https = true
@@ -23,15 +17,5 @@ primary_region = "iad"
   [[services.ports]]
     handlers = ["tls", "http"]
     port = 443
-
-  [[services.tcp_checks]]
-    grace_period = "1s"
-    interval = "15s"
-    restart_limit = 0
-    timeout = "2s"
-
-[mounts]
-source = "bot_data"
-destination = "/app/data"
 
 [env]
