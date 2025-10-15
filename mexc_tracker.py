@@ -700,6 +700,49 @@ class MEXCTracker:
         except Exception as e:
             update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
 
+    def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage):
+        """Create MEXC analysis as Excel file"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "MEXC Analysis"
+        
+        # Header
+        ws['A1'] = 'MEXC FUTURES ANALYSIS'
+        ws['A1'].font = Font(bold=True, size=14)
+        
+        # Headers
+        headers = ['Symbol', 'Normalized Symbol', 'Available Exchanges']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=2, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+        
+        # MEXC data
+        row = 3
+        for future in all_futures_data:
+            if future['exchange'] == 'MEXC':
+                normalized = self.normalize_symbol(future['symbol'])
+                exchanges_list = symbol_coverage.get(normalized, [])
+                available_on = ', '.join(sorted(exchanges_list))
+                
+                ws[f'A{row}'] = future['symbol']
+                ws[f'B{row}'] = normalized
+                ws[f'C{row}'] = available_on
+                row += 1
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 25
+        ws.column_dimensions['B'].width = 25
+        ws.column_dimensions['C'].width = 40
+        
+        # Save to bytes
+        output = io.BytesIO()
+        wb.save(output)
+        excel_content = output.getvalue()
+        output.close()
+        
+        return excel_content
+
     def send_comprehensive_analysis(self, update: Update, all_futures_data, exchange_stats, symbol_coverage):
         """Send comprehensive analysis as Excel files"""
         try:
