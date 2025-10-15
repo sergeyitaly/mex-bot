@@ -1,22 +1,37 @@
-# fly.toml app configuration file generated for mexc-futures-tracker-unique on 2025-10-15T17:42:19+03:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
-app = 'mexc-futures-tracker-unique'
-primary_region = 'fra'
+app = "mexc-futures-tracker-unique"
+primary_region = "iad"
 
 [build]
 
-[http_service]
+[[services]]
+  http_checks = []
   internal_port = 8080
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
+  processes = ["app"]
+  protocol = "tcp"
+  script_checks = []
 
-[[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
+  [services.concurrency]
+    hard_limit = 25
+    soft_limit = 20
+    type = "connections"
+
+  [[services.ports]]
+    force_https = true
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.tcp_checks]]
+    grace_period = "1s"
+    interval = "15s"
+    restart_limit = 0
+    timeout = "2s"
+
+[mounts]
+source = "bot_data"
+destination = "/app/data"
+
+[env]

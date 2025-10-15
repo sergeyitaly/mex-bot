@@ -1,6 +1,5 @@
 import requests
 import json
-import time
 import logging
 import os
 import asyncio
@@ -9,6 +8,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
 
 # Load environment variables
 load_dotenv()
@@ -25,7 +25,8 @@ class FuturesTracker:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.update_interval = int(os.getenv('UPDATE_INTERVAL', 60))
-        self.data_file = '/data/data.json'  # Use persistent storage
+        self.data_file = 'data.json'
+        self.restart_file = 'restart.json'
         
         if not self.bot_token or not self.chat_id:
             raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
@@ -33,12 +34,10 @@ class FuturesTracker:
         self.bot = Bot(token=self.bot_token)
         self.scheduler = AsyncIOScheduler()
         self.init_data_file()
+        self.init_restart_file()
     
     def init_data_file(self):
         """Initialize JSON data file"""
-        # Create /data directory if it doesn't exist
-        os.makedirs('/data', exist_ok=True)
-        
         if not os.path.exists(self.data_file):
             data = {
                 "unique_futures": [],
@@ -53,6 +52,16 @@ class FuturesTracker:
             self.save_data(data)
             logger.info("Created new data file")
     
+    def init_restart_file(self):
+        """Initialize restart tracking file"""
+        if not os.path.exists(self.restart_file):
+            restart_data = {
+                "last_startup_message": None,
+                "restart_count": 0,
+                "last_restart": datetime.now().isoformat()
+            }
+            self.save_restart_data(restart_data)
+    
     def load_data(self):
         """Load data from JSON file"""
         try:
@@ -64,6 +73,19 @@ class FuturesTracker:
     def save_data(self, data):
         """Save data to JSON file"""
         with open(self.data_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    
+    def load_restart_data(self):
+        """Load restart data"""
+        try:
+            with open(self.restart_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {"last_startup_message": None, "restart_count": 0, "last_restart": None}
+    
+    def save_restart_data(self, data):
+        """Save restart data"""
+        with open(self.restart_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     
     async def send_telegram_message(self, message, silent=False):
@@ -82,14 +104,40 @@ class FuturesTracker:
             return False
     
     async def send_startup_message(self):
-        """Send startup message"""
+        """Send startup message only if it hasn't been sent recently"""
+        restart_data = self.load_restart_data()
+        last_startup = restart_data.get('last_startup_message')
+        
+        # Don't send startup message if we sent one in the last 30 minutes
+        if last_startup:
+            try:
+                last_dt = datetime.fromisoformat(last_startup)
+                time_since_last = (datetime.now() - last_dt).total_seconds()
+                if time_since_last < 1800:  # 30 minutes
+                    logger.info("Startup message sent recently, skipping")
+                    return
+            except:
+                pass
+        
+        restart_count = restart_data.get('restart_count', 0) + 1
+        
         message = (
             "🤖 <b>MEXC Unique Futures Tracker Started</b>\n\n"
             "✅ <i>Monitoring for unique perpetual contracts...</i>\n"
             f"⏰ Check interval: {self.update_interval} minutes\n"
+            f"🔄 Restart count: {restart_count}\n"
             "🚀 Deployed on Fly.io"
         )
+        
         await self.send_telegram_message(message)
+        
+        # Update restart data
+        restart_data.update({
+            "last_startup_message": datetime.now().isoformat(),
+            "restart_count": restart_count,
+            "last_restart": datetime.now().isoformat()
+        })
+        self.save_restart_data(restart_data)
     
     async def send_status_message(self):
         """Send current status"""
@@ -293,7 +341,7 @@ class FuturesTracker:
     async def run(self):
         """Main run method"""
         try:
-            # Send startup message
+            # Send startup message (with protection)
             await self.send_startup_message()
             
             # Initial check
@@ -304,18 +352,57 @@ class FuturesTracker:
             
             logger.info("Bot is now running...")
             
-            # Keep the app running
+            # Keep the app running with better error handling
             while True:
-                await asyncio.sleep(3600)  # Sleep for 1 hour
+                try:
+                    await asyncio.sleep(3600)  # Sleep for 1 hour
+                except Exception as e:
+                    logger.error(f"Sleep interrupted: {e}")
+                    break
                 
         except Exception as e:
             logger.error(f"Fatal error: {e}")
+            # Don't send error message on every restart to avoid spam
+            restart_data = self.load_restart_data()
+            restart_count = restart_data.get('restart_count', 0)
+            if restart_count < 3:  # Only send error for first few restarts
+                await self.send_telegram_message(f"❌ Bot crashed: {str(e)}")
             raise
 
-async def main():
-    tracker = FuturesTracker()
-    await tracker.run()
+# Health check endpoints
+async def health_check(request):
+    return web.json_response({
+        "status": "healthy",
+        "service": "mexc-futures-tracker",
+        "timestamp": datetime.now().isoformat()
+    })
+
+async def start_background_tasks(app):
+    app['tracker'] = FuturesTracker()
+    asyncio.create_task(app['tracker'].run())
+
+async def cleanup_background_tasks(app):
+    if 'tracker' in app:
+        app['tracker'].scheduler.shutdown()
+
+def init_app():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
+    
+    return app
 
 if __name__ == "__main__":
-    print("Starting MEXC Futures Tracker...")
-    asyncio.run(main())
+    # For production with web server
+    if os.getenv('FLY_APP_NAME'):
+        web.run_app(init_app(), port=8080, host='0.0.0.0')
+    else:
+        # For local development
+        async def main():
+            tracker = FuturesTracker()
+            await tracker.run()
+        
+        asyncio.run(main())
