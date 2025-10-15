@@ -1743,7 +1743,7 @@ class MEXCTracker:
             return False
         
     def update_google_sheet(self):
-        """Update the Google Sheet with fresh data"""
+        """Update the Google Sheet with fresh data - FIXED"""
         if not self.gs_client or not self.spreadsheet:
             logger.warning("Google Sheets not available for update")
             return
@@ -1773,6 +1773,7 @@ class MEXCTracker:
                 try:
                     futures = method()
                     exchange_stats[name] = len(futures)
+                    logger.info(f"{name}: {len(futures)} futures")
                     
                     for symbol in futures:
                         all_futures_data.append({
@@ -1793,7 +1794,10 @@ class MEXCTracker:
                     logger.error(f"Exchange {name} error during sheet update: {e}")
                     exchange_stats[name] = 0
             
-            # Update all sheets with fresh data - PASS THE SPREADSHEET PARAMETER
+            logger.info(f"Total futures collected: {len(all_futures_data)}")
+            logger.info(f"Unique symbols: {len(symbol_coverage)}")
+            
+            # Update all sheets with fresh data
             self.update_unique_futures_sheet(self.spreadsheet, symbol_coverage, all_futures_data, current_time)
             self.update_all_futures_sheet(self.spreadsheet, all_futures_data, symbol_coverage, current_time)
             self.update_mexc_analysis_sheet(self.spreadsheet, all_futures_data, symbol_coverage, current_time)
@@ -1803,9 +1807,8 @@ class MEXCTracker:
             logger.info("✅ Google Sheet update completed successfully")
             
         except Exception as e:
-            logger.error(f"Google Sheet update error: {e}")
-
-
+            logger.error(f"❌ Google Sheet update error: {e}")
+            
     def update_unique_futures_sheet(self, spreadsheet, symbol_coverage, all_futures_data, timestamp):
         """Update Unique Futures sheet with batch writing"""
         try:
@@ -1889,47 +1892,70 @@ class MEXCTracker:
             logger.error(f"Error updating All Futures sheet: {e}")
 
     def update_mexc_analysis_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
-        """Update MEXC Analysis sheet with batch writing"""
+        """Update MEXC Analysis sheet - FIXED VERSION"""
         try:
             worksheet = spreadsheet.worksheet('MEXC Analysis')
             
-            # Clear existing data (keep headers)
-            if worksheet.row_count > 1:
-                worksheet.clear()
-                # Re-add headers
-                worksheet.update('A1', [['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges', 'Status', 'Unique', 'Timestamp']])
+            logger.info(f"Updating MEXC Analysis sheet with {len(all_futures_data)} total futures")
+            
+            # Get only MEXC futures
+            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+            logger.info(f"Found {len(mexc_futures)} MEXC futures")
+            
+            if not mexc_futures:
+                logger.warning("No MEXC futures found to analyze")
+                return
+            
+            # Clear the sheet completely and set up headers
+            worksheet.clear()
+            headers = [['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges', 'Status', 'Unique', 'Timestamp']]
+            worksheet.update('A1', headers)
             
             mexc_data = []
-            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
             
             for future in mexc_futures:
-                normalized = self.normalize_symbol(future['symbol'])
-                exchanges_list = symbol_coverage.get(normalized, set())
-                available_on = ", ".join(sorted(exchanges_list))
-                status = "Unique" if len(exchanges_list) == 1 else "Multi-exchange"
-                unique_flag = "✅" if len(exchanges_list) == 1 else "🔸"
-                
-                mexc_data.append([
-                    future['symbol'],
-                    normalized,
-                    available_on,
-                    len(exchanges_list),
-                    status,
-                    unique_flag,
-                    timestamp
-                ])
+                try:
+                    symbol = future['symbol']
+                    normalized = self.normalize_symbol(symbol)
+                    exchanges_list = symbol_coverage.get(normalized, set())
+                    available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+                    exchange_count = len(exchanges_list)
+                    status = "Unique" if exchange_count == 1 else "Multi-exchange"
+                    unique_flag = "✅" if exchange_count == 1 else "🔸"
+                    
+                    mexc_data.append([
+                        symbol,
+                        normalized,
+                        available_on,
+                        exchange_count,
+                        status,
+                        unique_flag,
+                        timestamp
+                    ])
+                    
+                except Exception as e:
+                    logger.error(f"Error processing MEXC future {future.get('symbol', 'unknown')}: {e}")
+                    continue
             
-            # Write in batches
+            logger.info(f"Processed {len(mexc_data)} MEXC futures for analysis")
+            
+            # Write data in batches
             if mexc_data:
                 batch_size = 100
                 for i in range(0, len(mexc_data), batch_size):
                     batch = mexc_data[i:i + batch_size]
-                    worksheet.update(f'A{i+2}', batch)
+                    start_row = i + 2  # +2 because row 1 is headers
+                    range_str = f'A{start_row}'
+                    worksheet.update(range_str, batch)
                 
-                logger.info(f"Updated MEXC Analysis with {len(mexc_data)} records")
+                logger.info(f"✅ Successfully updated MEXC Analysis with {len(mexc_data)} records")
+            else:
+                logger.warning("No MEXC data to write to analysis sheet")
             
         except Exception as e:
-            logger.error(f"Error updating MEXC Analysis sheet: {e}")
+            logger.error(f"❌ Error updating MEXC Analysis sheet: {e}")
+            raise  # Re-raise to see the full error
+
 
     def update_exchange_stats_sheet(self, spreadsheet, exchange_stats, timestamp):
         """Update Exchange Stats sheet"""
