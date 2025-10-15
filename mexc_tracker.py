@@ -91,14 +91,15 @@ class MEXCTracker:
                     f"• Live data from all exchanges\n"
                     f"• Real-time unique futures tracking\n"
                     f"• Dashboard with key metrics\n\n"
-                    f"<i>The sheet will automatically update with fresh data.</i>"
+                    f"<i>The sheet will automatically update with fresh data during each scheduled check.</i>",
+                    reply_markup=ReplyKeyboardRemove()
                 )
             else:
                 update.message.reply_html("❌ Failed to setup auto-update sheet.")
                 
         except Exception as e:
             update.message.reply_html(f"❌ <b>Auto-sheet error:</b>\n{str(e)}")
-
+            
     def force_update_command(self, update: Update, context: CallbackContext):
         """Force immediate Google Sheet update"""
         if not self.gs_client:
@@ -1073,17 +1074,20 @@ class MEXCTracker:
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
             "/analysis - Full analysis (Excel files)\n"
-            "/export - Download data (Excel/JSON)\n"
+            "/export - Download data (Excel/JSON/Google Sheets)\n"
+            "/autosheet - Auto-updating Google Sheet\n"
+            "/forceupdate - Force update Google Sheet\n"
             "/status - Current status\n"
             "/exchanges - Exchange information\n\n"
             "<b>Auto-features:</b>\n"
-            "• Checks every 60 minutes\n"
+            f"• Checks every {self.update_interval} minutes\n"
             "• Alerts for new unique futures\n"
+            "• Google Sheets auto-updates\n"
             "• Data export available\n\n"
             "⚡ <i>Happy trading!</i>"
         )
         update.message.reply_html(help_text)
-        
+            
     def get_uptime(self):
         """Calculate bot uptime"""
         data = self.load_data()
@@ -1121,16 +1125,28 @@ class MEXCTracker:
                 )
         except Exception as e:
             logger.error(f"Broadcast error: {e}")
-    
+        
+    def setup_scheduler(self):
+        """Setup scheduled tasks"""
+        # Auto-check for unique futures
+        schedule.every(self.update_interval).minutes.do(self.run_auto_check)
+        
+        # Google Sheets auto-update (same interval or different)
+        schedule.every(self.update_interval).minutes.do(self.update_google_sheet)
+        
+        logger.info(f"Scheduler setup - checking every {self.update_interval} minutes")
+
     def run_auto_check(self):
-        """Run automatic check"""
+        """Run automatic check and update Google Sheet"""
         try:
             logger.info("Running scheduled check...")
             
             unique_futures, exchange_stats = self.find_unique_futures()
             current_unique = set(unique_futures)
+            
+            # Update Google Sheet with fresh data
             self.update_google_sheet()
-
+            
             if current_unique != self.last_unique_futures:
                 new_futures = current_unique - self.last_unique_futures
                 removed_futures = self.last_unique_futures - current_unique
@@ -1142,10 +1158,14 @@ class MEXCTracker:
                 self.save_data(data)
                 
                 if new_futures:
+                    # Get auto-update sheet URL for the message
+                    auto_sheet_url = data.get('auto_update_sheet_url', 'N/A')
                     message = "🚀 <b>NEW UNIQUE FUTURES!</b>\n\n"
                     for symbol in sorted(new_futures):
                         message += f"✅ {symbol}\n"
                     message += f"\n📊 Total: {len(current_unique)}"
+                    if auto_sheet_url != 'N/A':
+                        message += f"\n📊 <a href='{auto_sheet_url}'>View in Google Sheet</a>"
                     self.send_broadcast_message(message)
                 
                 if removed_futures:
@@ -1159,12 +1179,7 @@ class MEXCTracker:
             
         except Exception as e:
             logger.error(f"Auto-check error: {e}")
-    
-    def setup_scheduler(self):
-        """Setup scheduled tasks"""
-        schedule.every(self.update_interval).minutes.do(self.run_auto_check)
-        logger.info(f"Scheduler setup - checking every {self.update_interval} minutes")
-    
+                
     def run_scheduler(self):
         """Run the scheduler"""
         while True:
@@ -1183,12 +1198,22 @@ class MEXCTracker:
                 update.message.reply_html("❌ No unique futures found to export.")
                 return
             
-            # Создаем клавиатуру с опциями экспорта
-            keyboard = [
-                ['📊 Excel Export', '📁 JSON Export'],
-                ['📊 Google Sheet', '📈 Full Google Sheet'],
-                ['❌ Cancel']
-            ]
+            # Check if Google Sheets is available
+            sheets_available = self.gs_client is not None
+            
+            # Create keyboard based on availability
+            if sheets_available:
+                keyboard = [
+                    ['📊 Excel Export', '📁 JSON Export'],
+                    ['📊 Google Sheet', '📈 Full Google Sheet'],
+                    ['🔄 Auto-Update Sheet', '❌ Cancel']
+                ]
+            else:
+                keyboard = [
+                    ['📊 Excel Export', '📁 JSON Export'],
+                    ['❌ Cancel']
+                ]
+                
             reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
             
             # Сохраняем данные в контексте
@@ -1199,17 +1224,18 @@ class MEXCTracker:
                 'timestamp': datetime.now().isoformat()
             }
             
-            update.message.reply_html(
-                f"✅ <b>Data collected!</b>\n\n"
-                f"🎯 Unique futures: {len(unique_futures)}\n"
-                f"🏢 Exchanges: {len(exchange_stats) + 1}\n\n"
-                f"<b>Choose export format:</b>",
-                reply_markup=reply_markup
-            )
+            message = f"✅ <b>Data collected!</b>\n\n🎯 Unique futures: {len(unique_futures)}\n🏢 Exchanges: {len(exchange_stats) + 1}\n\n"
+            
+            if sheets_available:
+                message += "<b>Choose export format:</b>"
+            else:
+                message += "<b>Choose export format:</b>\n\n⚠️ Google Sheets not configured"
+            
+            update.message.reply_html(message, reply_markup=reply_markup)
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Error collecting data:</b>\n{str(e)}")
-            
+                        
 
     def export_to_google_sheet(self, update: Update, export_data):
         """Export data to Google Sheets"""
@@ -1514,16 +1540,18 @@ class MEXCTracker:
             self.export_to_excel(update, export_data)
         elif choice == '📁 JSON Export':
             self.export_to_json(update, export_data)
-        elif choice == '📈 Full Analysis':
-            self.export_full_analysis(update, export_data)
         elif choice == '📊 Google Sheet':
             self.export_to_google_sheet(update, export_data)
         elif choice == '📈 Full Google Sheet':
             self.export_comprehensive_google_sheet(update, export_data)
+        elif choice == '🔄 Auto-Update Sheet':
+            self.auto_sheet_command(update, context)
+        else:
+            update.message.reply_html("❌ Unknown export option.", reply_markup=ReplyKeyboardRemove())
         
         # Очищаем контекст
         context.user_data.pop('export_data', None)
-        
+                
     def export_to_excel(self, update: Update, export_data):
         """Export to Excel format"""
         try:
@@ -2136,6 +2164,28 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error updating dashboard timestamp: {e}")
 
+    def test_google_sheets(self, update: Update, context: CallbackContext):
+        """Test Google Sheets connection"""
+        if not self.gs_client:
+            update.message.reply_html("❌ Google Sheets not configured.")
+            return
+        
+        try:
+            update.message.reply_html("🔄 Testing Google Sheets connection...")
+            
+            # Try to create a test sheet
+            test_sheet_name = f"Test Sheet {datetime.now().strftime('%H:%M:%S')}"
+            spreadsheet = self.gs_client.create(test_sheet_name)
+            
+            # Clean up test sheet
+            self.gs_client.del_spreadsheet(spreadsheet.id)
+            
+            update.message.reply_html("✅ Google Sheets connection working!")
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Google Sheets test failed: {str(e)}")
+
+
     def run(self):
         """Start the bot with single instance lock"""
         # Acquire lock to ensure only one instance runs
@@ -2162,13 +2212,20 @@ class MEXCTracker:
             logger.info("Bot started successfully - single instance running")
             
             # Send startup message
-            self.send_broadcast_message(
+            startup_msg = (
                 "🤖 <b>MEXC Futures Tracker Started</b>\n\n"
                 "✅ Monitoring 8 exchanges\n"
                 f"⏰ Auto-check: {self.update_interval} minutes\n"
+                "📊 Google Sheets auto-updates\n"
                 "📤 Data export available (/export)\n"
                 "💬 Use /help for commands"
             )
+            
+            # Add Google Sheets info if configured
+            if self.gs_client:
+                startup_msg += "\n\n📊 Use /autosheet for auto-updating Google Sheet"
+            
+            self.send_broadcast_message(startup_msg)
             
             logger.info("Bot is now running and ready for commands...")
             
@@ -2184,7 +2241,7 @@ class MEXCTracker:
             logger.error(f"Bot run error: {e}")
             self.cleanup()
             raise
-
+        
     def acquire_lock(self):
         """Acquire lock to ensure only one instance runs"""
         try:
