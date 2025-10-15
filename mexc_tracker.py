@@ -16,7 +16,7 @@ import fcntl
 import threading
 import atexit
 import io
-import csv
+import Excel
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from datetime import datetime
@@ -87,7 +87,7 @@ class MEXCTracker:
         from telegram.ext import MessageHandler, Filters
         self.dispatcher.add_handler(MessageHandler(
             Filters.text & (
-                Filters.regex('^(📊 CSV Export|📁 JSON Export|📈 Full Analysis|❌ Cancel)$')
+                Filters.regex('^(📊 Excel Export|📁 JSON Export|📈 Full Analysis|❌ Cancel)$')
             ), 
             self.handle_export
         ))
@@ -705,19 +705,19 @@ class MEXCTracker:
         """Send comprehensive analysis as Excel files"""
         try:
             # File 1: Complete analysis
-            csv1_content = self.create_complete_analysis_excel(all_futures_data, symbol_coverage, exchange_stats)
-            file1 = io.BytesIO(csv1_content.encode('utf-8'))
-            file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
+            excel1_content = self.create_complete_analysis_excel(all_futures_data, symbol_coverage, exchange_stats)
+            file1 = io.BytesIO(excel1_content)  # Remove .encode('utf-8')
+            file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Change to .xlsx
             
             # File 2: Unique futures only
-            csv2_content = self.create_unique_futures_excel(symbol_coverage, all_futures_data)
-            file2 = io.BytesIO(csv2_content.encode('utf-8'))
-            file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
+            excel2_content = self.create_unique_futures_excel(symbol_coverage, all_futures_data)
+            file2 = io.BytesIO(excel2_content)  # Remove .encode('utf-8')
+            file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Change to .xlsx
             
-            # File 3: MEXC analysis
-            csv3_content = self.create_mexc_analysis_csv(all_futures_data, symbol_coverage)
-            file3 = io.BytesIO(csv3_content.encode('utf-8'))
-            file3.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
+            # File 3: MEXC analysis - FIX THIS FUNCTION TO RETURN EXCEL TOO
+            excel3_content = self.create_mexc_analysis_excel(all_futures_data, symbol_coverage)  # Rename to create_mexc_analysis_excel
+            file3 = io.BytesIO(excel3_content)  # Remove .encode('utf-8')
+            file3.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Change to .xlsx
             
             # Send files
             update.message.reply_document(
@@ -755,7 +755,7 @@ class MEXCTracker:
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Error sending analysis:</b>\n{str(e)}")
-
+        
     def create_complete_analysis_excel(self, all_futures_data, symbol_coverage, exchange_stats):
         """Create complete analysis Excel file"""
         wb = Workbook()
@@ -970,8 +970,8 @@ class MEXCTracker:
             "Gate.io, KuCoin, BingX, BitGet\n\n"
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
-            "/analysis - Full analysis (CSV files)\n"
-            "/export - Download data (CSV/JSON)\n"
+            "/analysis - Full analysis (Excel files)\n"
+            "/export - Download data (Excel/JSON)\n"
             "/status - Current status\n"
             "/exchanges - Exchange information\n\n"
             "<b>Auto-features:</b>\n"
@@ -1072,7 +1072,7 @@ class MEXCTracker:
 
 
     def export_command(self, update: Update, context: CallbackContext):
-        """Export data to CSV/JSON - get fresh data from APIs"""
+        """Export data to Excel/JSON - get fresh data from APIs"""
         update.message.reply_html("🔄 <b>Getting fresh data from exchanges...</b>")
         
         try:
@@ -1085,7 +1085,7 @@ class MEXCTracker:
             
             # Создаем клавиатуру с опциями экспорта
             keyboard = [
-                ['📊 CSV Export', '📁 JSON Export'],
+                ['📊 Excel Export', '📁 JSON Export'],
                 ['📈 Full Analysis', '❌ Cancel']
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
@@ -1122,8 +1122,8 @@ class MEXCTracker:
             update.message.reply_html("❌ No export data found. Use /export first.")
             return
         
-        if choice == '📊 CSV Export':
-            self.export_to_csv(update, export_data)
+        if choice == '📊 Excel Export':
+            self.export_to_Excel(update, export_data)
         elif choice == '📁 JSON Export':
             self.export_to_json(update, export_data)
         elif choice == '📈 Full Analysis':
@@ -1132,16 +1132,16 @@ class MEXCTracker:
         # Очищаем контекст
         context.user_data.pop('export_data', None)
 
-    def export_to_csv(self, update: Update, export_data):
-        """Export to CSV format"""
+    def export_to_Excel(self, update: Update, export_data):
+        """Export to Excel format"""
         try:
             unique_futures = export_data['unique_futures']
             exchange_stats = export_data['exchange_stats']
             mexc_futures = export_data['mexc_futures']
             
-            # Создаем CSV в памяти
+            # Создаем Excel в памяти
             output = io.StringIO()
-            writer = csv.writer(output)
+            writer = Excel.writer(output)
             
             # Заголовок
             writer.writerow(['MEXC UNIQUE FUTURES EXPORT'])
@@ -1172,8 +1172,8 @@ class MEXCTracker:
             writer.writerow(['Total MEXC Futures', len(mexc_futures)])
             
             # Подготавливаем файл для отправки
-            csv_data = output.getvalue().encode('utf-8')
-            file_obj = io.BytesIO(csv_data)
+            Excel_data = output.getvalue().encode('utf-8')
+            file_obj = io.BytesIO(Excel_data)
             file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
             
             update.message.reply_document(
@@ -1187,8 +1187,8 @@ class MEXCTracker:
             )
             
         except Exception as e:
-            update.message.reply_html(f"❌ <b>CSV export error:</b>\n{str(e)}")
-            logger.error(f"CSV export error: {e}")
+            update.message.reply_html(f"❌ <b>Excel export error:</b>\n{str(e)}")
+            logger.error(f"Excel export error: {e}")
 
     def export_to_json(self, update: Update, export_data):
         """Export to JSON format"""
@@ -1266,13 +1266,13 @@ class MEXCTracker:
                     
                     time.sleep(0.5)
                 
-                # Create comprehensive CSV
-                import csv
+                # Create comprehensive Excel
+                import Excel
                 import io
                 
-                # CSV 1: All futures with coverage
+                # Excel 1: All futures with coverage
                 output1 = io.StringIO()
-                writer1 = csv.writer(output1)
+                writer1 = Excel.writer(output1)
                 writer1.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage'])
                 
                 for future in all_futures_data:
@@ -1289,13 +1289,13 @@ class MEXCTracker:
                         coverage
                     ])
                 
-                csv1_data = output1.getvalue().encode('utf-8')
-                file1 = io.BytesIO(csv1_data)
+                Excel1_data = output1.getvalue().encode('utf-8')
+                file1 = io.BytesIO(Excel1_data)
                 file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
                 
-                # CSV 2: Unique futures only
+                # Excel 2: Unique futures only
                 output2 = io.StringIO()
-                writer2 = csv.writer(output2)
+                writer2 = Excel.writer(output2)
                 writer2.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Exchanges Count'])
                 
                 unique_count = 0
@@ -1314,8 +1314,8 @@ class MEXCTracker:
                             len(exchanges_set)
                         ])
                 
-                csv2_data = output2.getvalue().encode('utf-8')
-                file2 = io.BytesIO(csv2_data)
+                Excel2_data = output2.getvalue().encode('utf-8')
+                file2 = io.BytesIO(Excel2_data)
                 file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
                 
                 # Send files
