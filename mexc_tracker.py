@@ -70,6 +70,50 @@ class MEXCTracker:
             logger.error(f"Google Sheets setup error: {e}")
             self.gs_client = None
     
+    def auto_sheet_command(self, update: Update, context: CallbackContext):
+        """Get or create auto-update Google Sheet"""
+        if not self.gs_client:
+            update.message.reply_html("❌ Google Sheets not configured. Set GOOGLE_CREDENTIALS_JSON in .env")
+            return
+        
+        try:
+            update.message.reply_html("🔄 <b>Setting up auto-update Google Sheet...</b>")
+            
+            spreadsheet = self.setup_auto_update_sheet()
+            if spreadsheet:
+                # Do an initial update
+                self.update_google_sheet()
+                
+                update.message.reply_html(
+                    f"✅ <b>Auto-Update Google Sheet Ready!</b>\n\n"
+                    f"📊 <a href='{spreadsheet.url}'>Open Auto-Update Sheet</a>\n\n"
+                    f"• Auto-updates every {self.update_interval} minutes\n"
+                    f"• Live data from all exchanges\n"
+                    f"• Real-time unique futures tracking\n"
+                    f"• Dashboard with key metrics\n\n"
+                    f"<i>The sheet will automatically update with fresh data.</i>"
+                )
+            else:
+                update.message.reply_html("❌ Failed to setup auto-update sheet.")
+                
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Auto-sheet error:</b>\n{str(e)}")
+
+    def force_update_command(self, update: Update, context: CallbackContext):
+        """Force immediate Google Sheet update"""
+        if not self.gs_client:
+            update.message.reply_html("❌ Google Sheets not configured.")
+            return
+        
+        try:
+            update.message.reply_html("🔄 <b>Force updating Google Sheet...</b>")
+            self.update_google_sheet()
+            update.message.reply_html("✅ <b>Google Sheet updated successfully!</b>")
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
+            
+
     def setup_handlers(self):
         """Setup command handlers"""
         self.dispatcher.add_handler(CommandHandler("start", self.start_command))
@@ -81,7 +125,9 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("analysis", self.analysis_command))
         self.dispatcher.add_handler(CommandHandler("sheet", self.sheet_command))
         self.dispatcher.add_handler(CommandHandler("export", self.export_command))
-        
+        self.dispatcher.add_handler(CommandHandler("autosheet", self.auto_sheet_command))
+        self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
+
         # Add message handler for export choices
         from telegram.ext import MessageHandler, Filters
         self.dispatcher.add_handler(MessageHandler(
@@ -1069,7 +1115,8 @@ class MEXCTracker:
             
             unique_futures, exchange_stats = self.find_unique_futures()
             current_unique = set(unique_futures)
-            
+            self.update_google_sheet()
+
             if current_unique != self.last_unique_futures:
                 new_futures = current_unique - self.last_unique_futures
                 removed_futures = self.last_unique_futures - current_unique
@@ -1110,9 +1157,6 @@ class MEXCTracker:
             schedule.run_pending()
             time.sleep(1)
     
-
-
-
     def export_command(self, update: Update, context: CallbackContext):
         """Export data to Excel/JSON - get fresh data from APIs"""
         update.message.reply_html("🔄 <b>Getting fresh data from exchanges...</b>")
@@ -1165,7 +1209,7 @@ class MEXCTracker:
             return
         
         if choice == '📊 Excel Export':
-            self.export_to_Excel(update, export_data)
+            self.export_to_excel(update, export_data)
         elif choice == '📁 JSON Export':
             self.export_to_json(update, export_data)
         elif choice == '📈 Full Analysis':
@@ -1174,49 +1218,106 @@ class MEXCTracker:
         # Очищаем контекст
         context.user_data.pop('export_data', None)
 
-    def export_to_Excel(self, update: Update, export_data):
+    def export_to_excel(self, update: Update, export_data):
         """Export to Excel format"""
         try:
             unique_futures = export_data['unique_futures']
             exchange_stats = export_data['exchange_stats']
             mexc_futures = export_data['mexc_futures']
             
-            # Создаем Excel в памяти
-            output = io.StringIO()
-            writer = Excel.writer(output)
+            # Create Excel workbook in memory
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "MEXC Export"
             
-            # Заголовок
-            writer.writerow(['MEXC UNIQUE FUTURES EXPORT'])
-            writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-            writer.writerow([])
+            # Styling
+            header_font = Font(bold=True, size=14)
+            title_font = Font(bold=True, size=12)
+            normal_font = Font(size=10)
             
-            # Уникальные фьючерсы
-            writer.writerow(['UNIQUE FUTURES ON MEXC'])
-            writer.writerow(['Symbol', 'Status', 'Timestamp'])
+            # Header
+            ws.merge_cells('A1:C1')
+            ws['A1'] = 'MEXC UNIQUE FUTURES EXPORT'
+            ws['A1'].font = header_font
+            ws['A1'].alignment = Alignment(horizontal='center')
+            
+            ws['A2'] = 'Generated'
+            ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ws['A2'].font = title_font
+            ws['B2'].font = normal_font
+            
+            # Unique futures section
+            ws['A4'] = 'UNIQUE FUTURES ON MEXC'
+            ws['A4'].font = title_font
+            
+            # Headers for unique futures
+            headers = ['Symbol', 'Status', 'Timestamp']
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=5, column=col)
+                cell.value = header
+                cell.font = title_font
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            
+            # Unique futures data
+            row = 6
             for symbol in sorted(unique_futures):
-                writer.writerow([symbol, 'UNIQUE', export_data['timestamp']])
+                ws[f'A{row}'] = symbol
+                ws[f'B{row}'] = 'UNIQUE'
+                ws[f'C{row}'] = export_data['timestamp']
+                row += 1
             
-            writer.writerow([])
+            # Exchange statistics section
+            ws[f'A{row+2}'] = 'EXCHANGE STATISTICS'
+            ws[f'A{row+2}'].font = title_font
             
-            # Статистика по биржам
-            writer.writerow(['EXCHANGE STATISTICS'])
-            writer.writerow(['Exchange', 'Futures Count'])
-            writer.writerow(['MEXC', len(mexc_futures)])
+            # Exchange headers
+            exchange_headers = ['Exchange', 'Futures Count']
+            for col, header in enumerate(exchange_headers, 1):
+                cell = ws.cell(row=row+3, column=col)
+                cell.value = header
+                cell.font = title_font
+                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+            
+            # Exchange data
+            stat_row = row + 4
+            ws[f'A{stat_row}'] = 'MEXC'
+            ws[f'B{stat_row}'] = len(mexc_futures)
+            stat_row += 1
+            
             for exchange, count in sorted(exchange_stats.items()):
-                writer.writerow([exchange, count])
+                ws[f'A{stat_row}'] = exchange
+                ws[f'B{stat_row}'] = count
+                stat_row += 1
             
-            writer.writerow([])
+            # Summary section
+            ws[f'A{stat_row+2}'] = 'SUMMARY'
+            ws[f'A{stat_row+2}'].font = title_font
             
-            # Сводка
-            writer.writerow(['SUMMARY'])
-            writer.writerow(['Total Unique Futures', len(unique_futures)])
-            writer.writerow(['Total Exchanges', len(exchange_stats) + 1])
-            writer.writerow(['Total MEXC Futures', len(mexc_futures)])
+            summary_data = [
+                ['Total Unique Futures', len(unique_futures)],
+                ['Total Exchanges', len(exchange_stats) + 1],
+                ['Total MEXC Futures', len(mexc_futures)]
+            ]
             
-            # Подготавливаем файл для отправки
-            Excel_data = output.getvalue().encode('utf-8')
-            file_obj = io.BytesIO(Excel_data)
-            file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
+            for i, (label, value) in enumerate(summary_data, start=stat_row+3):
+                ws[f'A{i}'] = label
+                ws[f'B{i}'] = value
+                ws[f'A{i}'].font = title_font
+            
+            # Adjust column widths
+            ws.column_dimensions['A'].width = 25
+            ws.column_dimensions['B'].width = 15
+            ws.column_dimensions['C'].width = 20
+            
+            # Save to bytes
+            output = io.BytesIO()
+            wb.save(output)
+            excel_content = output.getvalue()
+            output.close()
+            
+            # Prepare file for sending
+            file_obj = io.BytesIO(excel_content)
+            file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Changed to .xlsx
             
             update.message.reply_document(
                 document=file_obj,
@@ -1231,7 +1332,7 @@ class MEXCTracker:
         except Exception as e:
             update.message.reply_html(f"❌ <b>Excel export error:</b>\n{str(e)}")
             logger.error(f"Excel export error: {e}")
-
+            
     def export_to_json(self, update: Update, export_data):
         """Export to JSON format"""
         try:
@@ -1384,8 +1485,351 @@ class MEXCTracker:
         import threading
         thread = threading.Thread(target=create_analysis)
         thread.start()
-
             
+    def setup_auto_update_sheet(self):
+        """Setup or get the auto-update Google Sheet"""
+        if not self.gs_client:
+            logger.error("Google Sheets client not available")
+            return None
+        
+        try:
+            data = self.load_data()
+            sheet_url = data.get('auto_update_sheet_url')
+            
+            if sheet_url:
+                # Try to open existing sheet
+                try:
+                    spreadsheet = self.gs_client.open_by_url(sheet_url)
+                    logger.info("Found existing auto-update sheet")
+                    return spreadsheet
+                except Exception as e:
+                    logger.warning(f"Could not open existing sheet: {e}. Creating new one.")
+            
+            # Create new auto-update sheet
+            spreadsheet_name = "MEXC Futures Auto-Update"
+            spreadsheet = self.gs_client.create(spreadsheet_name)
+            
+            # Share with email if configured
+            share_email = os.getenv('GOOGLE_SHEET_EMAIL')
+            if share_email:
+                spreadsheet.share(share_email, perm_type='user', role='writer')
+            
+            # Initialize sheets
+            self.initialize_auto_update_sheets(spreadsheet)
+            
+            # Save URL
+            data['auto_update_sheet_url'] = spreadsheet.url
+            self.save_data(data)
+            
+            logger.info(f"Created new auto-update sheet: {spreadsheet.url}")
+            return spreadsheet
+            
+        except Exception as e:
+            logger.error(f"Error setting up auto-update sheet: {e}")
+            return None
+
+    def initialize_auto_update_sheets(self, spreadsheet):
+        """Initialize all sheets for auto-update"""
+        try:
+            # Clear existing sheets
+            for worksheet in spreadsheet.worksheets():
+                if worksheet.title not in ['Dashboard', 'Unique Futures', 'All Futures', 'MEXC Analysis', 'Exchange Stats']:
+                    continue
+            
+            # Create/update Dashboard sheet
+            try:
+                dashboard = spreadsheet.worksheet('Dashboard')
+            except gspread.WorksheetNotFound:
+                dashboard = spreadsheet.add_worksheet(title='Dashboard', rows='50', cols='10')
+            
+            dashboard_data = [
+                ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
+                ["Last Updated", "=NOW()"],
+                ["Update Interval", f"{self.update_interval} minutes"],
+                ["", ""],
+                ["QUICK STATS", ""],
+                ["Total Unique Futures", "=COUNTA('Unique Futures'!A2:A)"],
+                ["Total MEXC Futures", "=COUNTA('MEXC Analysis'!A2:A)"],
+                ["Working Exchanges", "=COUNTIF('Exchange Stats'!C2:C, \"✅ WORKING\")"],
+                ["Total Exchanges", "=COUNTA('Exchange Stats'!A2:A)"],
+                ["", ""],
+                ["LIVE DATA", ""],
+                ["Next Auto-Update", "=A2+TIME(0,Update_Interval,0)"],
+                ["Bot Status", "🟢 RUNNING"],
+                ["", ""],
+                ["LINKS", ""],
+                ["Open Full Analysis", "=HYPERLINK(\"" + spreadsheet.url + "\", \"Click Here\")"]
+            ]
+            
+            dashboard.update('A1', dashboard_data)
+            
+            # Initialize other sheets with headers
+            self.initialize_sheet_with_headers(spreadsheet, 'Unique Futures', [
+                ['Symbol', 'Status', 'Last Seen', 'Normalized', 'First Detected']
+            ])
+            
+            self.initialize_sheet_with_headers(spreadsheet, 'All Futures', [
+                ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Last Updated', 'Unique']
+            ])
+            
+            self.initialize_sheet_with_headers(spreadsheet, 'MEXC Analysis', [
+                ['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges', 'Status', 'Unique', 'Last Checked']
+            ])
+            
+            self.initialize_sheet_with_headers(spreadsheet, 'Exchange Stats', [
+                ['Exchange', 'Futures Count', 'Status', 'Last Update', 'Success Rate']
+            ])
+            
+            # Apply formatting
+            self.format_auto_update_sheets(spreadsheet)
+            
+        except Exception as e:
+            logger.error(f"Error initializing auto-update sheets: {e}")
+
+    def initialize_sheet_with_headers(self, spreadsheet, sheet_name, headers):
+        """Initialize a sheet with headers if it doesn't exist"""
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+            # Clear existing data but keep headers
+            if worksheet.row_count > 1:
+                worksheet.delete_rows(2, worksheet.row_count)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows='1000', cols=str(len(headers[0])))
+            worksheet.update('A1', headers)
+
+    def format_auto_update_sheets(self, spreadsheet):
+        """Apply formatting to auto-update sheets"""
+        try:
+            for sheet_name in ['Dashboard', 'Unique Futures', 'All Futures', 'MEXC Analysis', 'Exchange Stats']:
+                try:
+                    worksheet = spreadsheet.worksheet(sheet_name)
+                    
+                    # Format headers
+                    worksheet.format('A1:Z1', {
+                        'textFormat': {'bold': True},
+                        'backgroundColor': {'red': 0.2, 'green': 0.6, 'blue': 0.8},
+                        'horizontalAlignment': 'CENTER'
+                    })
+                    
+                    # Auto-resize columns
+                    worksheet.columns_auto_resize(0, worksheet.col_count)
+                    
+                    # Add freeze panes for headers
+                    worksheet.freeze(rows=1)
+                    
+                except gspread.WorksheetNotFound:
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error formatting sheets: {e}")
+
+    def update_google_sheet(self):
+        """Update the auto-update Google Sheet with fresh data"""
+        if not self.gs_client:
+            return
+        
+        try:
+            spreadsheet = self.setup_auto_update_sheet()
+            if not spreadsheet:
+                return
+            
+            logger.info("Starting Google Sheet auto-update...")
+            
+            # Collect fresh data
+            all_futures_data = []
+            exchanges = {
+                'MEXC': self.get_mexc_futures,
+                'Binance': self.get_binance_futures,
+                'Bybit': self.get_bybit_futures,
+                'OKX': self.get_okx_futures,
+                'Gate.io': self.get_gate_futures,
+                'KuCoin': self.get_kucoin_futures,
+                'BingX': self.get_bingx_futures,
+                'BitGet': self.get_bitget_futures
+            }
+            
+            exchange_stats = {}
+            symbol_coverage = {}
+            current_time = datetime.now().isoformat()
+            
+            # Get data from all exchanges
+            for name, method in exchanges.items():
+                try:
+                    futures = method()
+                    exchange_stats[name] = len(futures)
+                    
+                    for symbol in futures:
+                        all_futures_data.append({
+                            'symbol': symbol,
+                            'exchange': name,
+                            'timestamp': current_time
+                        })
+                        
+                        # Track symbol coverage
+                        normalized = self.normalize_symbol(symbol)
+                        if normalized not in symbol_coverage:
+                            symbol_coverage[normalized] = set()
+                        symbol_coverage[normalized].add(name)
+                    
+                    time.sleep(0.5)  # Rate limiting
+                    
+                except Exception as e:
+                    logger.error(f"Exchange {name} error during sheet update: {e}")
+                    exchange_stats[name] = 0
+            
+            # Update Unique Futures sheet
+            self.update_unique_futures_sheet(spreadsheet, symbol_coverage, all_futures_data, current_time)
+            
+            # Update All Futures sheet
+            self.update_all_futures_sheet(spreadsheet, all_futures_data, symbol_coverage, current_time)
+            
+            # Update MEXC Analysis sheet
+            self.update_mexc_analysis_sheet(spreadsheet, all_futures_data, symbol_coverage, current_time)
+            
+            # Update Exchange Stats sheet
+            self.update_exchange_stats_sheet(spreadsheet, exchange_stats, current_time)
+            
+            # Update Dashboard timestamp
+            self.update_dashboard_timestamp(spreadsheet)
+            
+            logger.info("Google Sheet auto-update completed successfully")
+            
+        except Exception as e:
+            logger.error(f"Google Sheet auto-update error: {e}")
+
+    def update_unique_futures_sheet(self, spreadsheet, symbol_coverage, all_futures_data, timestamp):
+        """Update Unique Futures sheet"""
+        try:
+            worksheet = spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data (keep headers)
+            if worksheet.row_count > 1:
+                worksheet.delete_rows(2, worksheet.row_count)
+            
+            unique_data = []
+            for normalized, exchanges_set in symbol_coverage.items():
+                if len(exchanges_set) == 1:
+                    exchange = list(exchanges_set)[0]
+                    original_symbol = next((f['symbol'] for f in all_futures_data 
+                                        if self.normalize_symbol(f['symbol']) == normalized 
+                                        and f['exchange'] == exchange), normalized)
+                    
+                    unique_data.append([
+                        original_symbol,
+                        'UNIQUE',
+                        timestamp,
+                        normalized,
+                        timestamp  # First detected (same as last seen for now)
+                    ])
+            
+            if unique_data:
+                worksheet.update(f'A2:E{len(unique_data) + 1}', unique_data)
+            
+        except Exception as e:
+            logger.error(f"Error updating Unique Futures sheet: {e}")
+
+    def update_all_futures_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
+        """Update All Futures sheet"""
+        try:
+            worksheet = spreadsheet.worksheet('All Futures')
+            
+            # Clear existing data (keep headers)
+            if worksheet.row_count > 1:
+                worksheet.delete_rows(2, worksheet.row_count)
+            
+            all_data = []
+            for future in all_futures_data:
+                normalized = self.normalize_symbol(future['symbol'])
+                exchanges_list = symbol_coverage[normalized]
+                available_on = ", ".join(sorted(exchanges_list))
+                coverage = f"{len(exchanges_list)} exchanges"
+                is_unique = "✅" if len(exchanges_list) == 1 else ""
+                
+                all_data.append([
+                    future['symbol'],
+                    future['exchange'],
+                    normalized,
+                    available_on,
+                    coverage,
+                    timestamp,
+                    is_unique
+                ])
+            
+            if all_data:
+                worksheet.update(f'A2:G{len(all_data) + 1}', all_data)
+            
+        except Exception as e:
+            logger.error(f"Error updating All Futures sheet: {e}")
+
+    def update_mexc_analysis_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
+        """Update MEXC Analysis sheet"""
+        try:
+            worksheet = spreadsheet.worksheet('MEXC Analysis')
+            
+            # Clear existing data (keep headers)
+            if worksheet.row_count > 1:
+                worksheet.delete_rows(2, worksheet.row_count)
+            
+            mexc_data = []
+            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+            
+            for future in mexc_futures:
+                normalized = self.normalize_symbol(future['symbol'])
+                exchanges_list = symbol_coverage[normalized]
+                available_on = ", ".join(sorted(exchanges_list))
+                status = "Unique" if len(exchanges_list) == 1 else "Multi-exchange"
+                unique_flag = "✅" if len(exchanges_list) == 1 else "🔸"
+                
+                mexc_data.append([
+                    future['symbol'],
+                    normalized,
+                    available_on,
+                    len(exchanges_list),
+                    status,
+                    unique_flag,
+                    timestamp
+                ])
+            
+            if mexc_data:
+                worksheet.update(f'A2:G{len(mexc_data) + 1}', mexc_data)
+            
+        except Exception as e:
+            logger.error(f"Error updating MEXC Analysis sheet: {e}")
+
+    def update_exchange_stats_sheet(self, spreadsheet, exchange_stats, timestamp):
+        """Update Exchange Stats sheet"""
+        try:
+            worksheet = spreadsheet.worksheet('Exchange Stats')
+            
+            # Clear existing data (keep headers)
+            if worksheet.row_count > 1:
+                worksheet.delete_rows(2, worksheet.row_count)
+            
+            stats_data = []
+            for exchange, count in exchange_stats.items():
+                status = "✅ WORKING" if count > 0 else "❌ FAILED"
+                stats_data.append([
+                    exchange,
+                    count,
+                    status,
+                    timestamp,
+                    "100%"  # Placeholder for success rate
+                ])
+            
+            if stats_data:
+                worksheet.update(f'A2:E{len(stats_data) + 1}', stats_data)
+            
+        except Exception as e:
+            logger.error(f"Error updating Exchange Stats sheet: {e}")
+
+    def update_dashboard_timestamp(self, spreadsheet):
+        """Update the last updated timestamp on Dashboard"""
+        try:
+            worksheet = spreadsheet.worksheet('Dashboard')
+            worksheet.update('B2', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        except Exception as e:
+            logger.error(f"Error updating dashboard timestamp: {e}")
+
     def run(self):
         """Start the bot with single instance lock"""
         # Acquire lock to ensure only one instance runs
