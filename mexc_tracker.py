@@ -825,23 +825,17 @@ class MEXCTracker:
             ws[f'E{data_row}'] = coverage
             data_row += 1
         
-        # Auto-adjust column widths - FIXED VERSION
-        for col_idx, column in enumerate(ws.columns, 1):
-            max_length = 0
-            column_letter = ws.cell(row=1, column=col_idx).column_letter
-            
-            for cell in column:
-                if cell.value:  # Only check cells with values
-                    try:
-                        # Skip merged cells
-                        if not any(cell.coordinate in merged_range for merged_range in ws.merged_cells.ranges):
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                    except:
-                        pass
-            
-            adjusted_width = min(max_length + 2, 50)  # Limit max width
-            ws.column_dimensions[column_letter].width = adjusted_width
+        # Auto-adjust column widths - SIMPLIFIED VERSION
+        column_widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and hasattr(cell, 'column_letter'):  # Only regular cells
+                    length = len(str(cell.value))
+                    if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
+                        column_widths[cell.column_letter] = length
+        
+        for col_letter, width in column_widths.items():
+            ws.column_dimensions[col_letter].width = min(width + 2, 50)
         
         # Save to bytes
         output = io.BytesIO()
@@ -849,7 +843,6 @@ class MEXCTracker:
         output.seek(0)
         
         return output
-
 
     def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
         """Create unique futures Excel file"""
@@ -906,23 +899,17 @@ class MEXCTracker:
         ws[f'A{row+3}'].font = title_font
         ws[f'B{row+3}'].font = normal_font
         
-        # Auto-adjust column widths - FIXED VERSION
-        for col_idx, column in enumerate(ws.columns, 1):
-            max_length = 0
-            column_letter = ws.cell(row=1, column=col_idx).column_letter
-            
-            for cell in column:
-                if cell.value:  # Only check cells with values
-                    try:
-                        # Skip merged cells
-                        if not any(cell.coordinate in merged_range for merged_range in ws.merged_cells.ranges):
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                    except:
-                        pass
-            
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
+        # Auto-adjust column widths - SIMPLIFIED VERSION
+        column_widths = {}
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value and hasattr(cell, 'column_letter'):  # Only regular cells
+                    length = len(str(cell.value))
+                    if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
+                        column_widths[cell.column_letter] = length
+        
+        for col_letter, width in column_widths.items():
+            ws.column_dimensions[col_letter].width = min(width + 2, 50)
         
         # Save to bytes
         output = io.BytesIO()
