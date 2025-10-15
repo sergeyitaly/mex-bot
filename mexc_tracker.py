@@ -17,7 +17,10 @@ import threading
 import atexit
 import io
 import csv
-
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+from datetime import datetime
+import io
 # Load environment variables
 load_dotenv()
 
@@ -699,22 +702,22 @@ class MEXCTracker:
             update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
 
     def send_comprehensive_analysis(self, update: Update, all_futures_data, exchange_stats, symbol_coverage):
-        """Send comprehensive analysis as CSV files"""
+        """Send comprehensive analysis as Excel files"""
         try:
             # File 1: Complete analysis
-            csv1_content = self.create_complete_analysis_csv(all_futures_data, symbol_coverage, exchange_stats)
+            csv1_content = self.create_complete_analysis_excel(all_futures_data, symbol_coverage, exchange_stats)
             file1 = io.BytesIO(csv1_content.encode('utf-8'))
-            file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
             
             # File 2: Unique futures only
-            csv2_content = self.create_unique_futures_csv(symbol_coverage, all_futures_data)
+            csv2_content = self.create_unique_futures_excel(symbol_coverage, all_futures_data)
             file2 = io.BytesIO(csv2_content.encode('utf-8'))
-            file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
             
             # File 3: MEXC analysis
             csv3_content = self.create_mexc_analysis_csv(all_futures_data, symbol_coverage)
             file3 = io.BytesIO(csv3_content.encode('utf-8'))
-            file3.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            file3.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
             
             # Send files
             update.message.reply_document(
@@ -753,53 +756,134 @@ class MEXCTracker:
         except Exception as e:
             update.message.reply_html(f"❌ <b>Error sending analysis:</b>\n{str(e)}")
 
-    def create_complete_analysis_csv(self, all_futures_data, symbol_coverage, exchange_stats):
-        """Create complete analysis CSV"""
-        output = io.StringIO()
-        writer = csv.writer(output)
+    def create_complete_analysis_excel(self, all_futures_data, symbol_coverage, exchange_stats):
+        """Create complete analysis Excel file"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Complete Analysis"
         
-        # Header
-        writer.writerow(['COMPLETE FUTURES ANALYSIS'])
-        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-        writer.writerow([])
+        # Header styling
+        header_font = Font(bold=True, size=14)
+        title_font = Font(bold=True, size=12)
+        normal_font = Font(size=10)
+        
+        # Write header
+        ws.merge_cells('A1:E1')
+        ws['A1'] = 'COMPLETE FUTURES ANALYSIS'
+        ws['A1'].font = header_font
+        ws['A1'].alignment = Alignment(horizontal='center')
+        
+        ws['A2'] = 'Generated'
+        ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ws['A2'].font = title_font
+        ws['B2'].font = normal_font
         
         # Exchange summary
-        writer.writerow(['EXCHANGE SUMMARY'])
-        writer.writerow(['Exchange', 'Status', 'Futures Count'])
+        ws['A4'] = 'EXCHANGE SUMMARY'
+        ws['A4'].font = title_font
+        
+        # Exchange summary headers
+        headers = ['Exchange', 'Status', 'Futures Count']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=5, column=col)
+            cell.value = header
+            cell.font = title_font
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        # Exchange summary data
+        row = 6
         for exchange, count in exchange_stats.items():
-            status = '✅ WORKING' if count > 0 else '❌ FAILED'
-            writer.writerow([exchange, status, count])
+            status = 'WORKING' if count > 0 else 'FAILED'
+            ws[f'A{row}'] = exchange
+            ws[f'B{row}'] = status
+            ws[f'C{row}'] = count
+            row += 1
         
-        writer.writerow([])
-        writer.writerow(['DETAILED FUTURES DATA'])
-        writer.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage'])
+        # Detailed futures data
+        ws[f'A{row+2}'] = 'DETAILED FUTURES DATA'
+        ws[f'A{row+2}'].font = title_font
         
+        # Detailed data headers
+        detail_headers = ['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage']
+        for col, header in enumerate(detail_headers, 1):
+            cell = ws.cell(row=row+3, column=col)
+            cell.value = header
+            cell.font = title_font
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        # Detailed data
+        data_row = row + 4
         for future in all_futures_data:
             normalized = self.normalize_symbol(future['symbol'])
-            exchanges_list = symbol_coverage[normalized]
+            exchanges_list = symbol_coverage.get(normalized, [])
             available_on = ', '.join(sorted(exchanges_list))
             coverage = f"{len(exchanges_list)} exchanges"
             
-            writer.writerow([
-                future['symbol'],
-                future['exchange'],
-                normalized,
-                available_on,
-                coverage
-            ])
+            ws[f'A{data_row}'] = future['symbol']
+            ws[f'B{data_row}'] = future['exchange']
+            ws[f'C{data_row}'] = normalized
+            ws[f'D{data_row}'] = available_on
+            ws[f'E{data_row}'] = coverage
+            data_row += 1
         
-        return output.getvalue()
+        # Auto-adjust column widths (safe method)
+        for col in range(1, 6):  # Columns A to E
+            max_length = 0
+            column_letter = ws.cell(row=1, column=col).column_letter
+            
+            for row_num in range(1, data_row + 1):
+                cell = ws.cell(row=row_num, column=col)
+                if cell.value:
+                    try:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                    except:
+                        pass
+            
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to bytes
+        output = io.BytesIO()
+        wb.save(output)
+        excel_content = output.getvalue()
+        output.close()
+        
+        return excel_content
 
-    def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
-        """Create unique futures CSV"""
-        output = io.StringIO()
-        writer = csv.writer(output)
+    def create_unique_futures_excel(self, symbol_coverage, all_futures_data):
+        """Create unique futures Excel file"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Unique Futures"
         
-        writer.writerow(['UNIQUE FUTURES ANALYSIS'])
-        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-        writer.writerow([])
-        writer.writerow(['Symbol', 'Exchange', 'Normalized Symbol'])
+        # Styling
+        header_font = Font(bold=True, size=14)
+        title_font = Font(bold=True, size=12)
+        normal_font = Font(size=10)
         
+        # Write header
+        ws.merge_cells('A1:C1')
+        ws['A1'] = 'UNIQUE FUTURES ANALYSIS'
+        ws['A1'].font = header_font
+        ws['A1'].alignment = Alignment(horizontal='center')
+        
+        ws['A2'] = 'Generated'
+        ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ws['A2'].font = title_font
+        ws['B2'].font = normal_font
+        
+        # Headers
+        headers = ['Symbol', 'Exchange', 'Normalized Symbol']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=4, column=col)
+            cell.value = header
+            cell.font = title_font
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        # Data
+        row = 5
         unique_count = 0
         for normalized, exchanges_set in symbol_coverage.items():
             if len(exchanges_set) == 1:
@@ -809,13 +893,45 @@ class MEXCTracker:
                                     if self.normalize_symbol(f['symbol']) == normalized 
                                     and f['exchange'] == exchange), normalized)
                 
-                writer.writerow([original_symbol, exchange, normalized])
+                ws[f'A{row}'] = original_symbol
+                ws[f'B{row}'] = exchange
+                ws[f'C{row}'] = normalized
+                row += 1
         
-        writer.writerow([])
-        writer.writerow(['SUMMARY'])
-        writer.writerow(['Total unique futures', unique_count])
+        # Summary
+        ws[f'A{row+2}'] = 'SUMMARY'
+        ws[f'A{row+2}'].font = title_font
         
-        return output.getvalue()
+        ws[f'A{row+3}'] = 'Total unique futures'
+        ws[f'B{row+3}'] = unique_count
+        ws[f'A{row+3}'].font = title_font
+        ws[f'B{row+3}'].font = normal_font
+        
+        # Auto-adjust column widths (safe method)
+        for col in range(1, 4):  # Columns A to C
+            max_length = 0
+            column_letter = ws.cell(row=1, column=col).column_letter
+            
+            for row_num in range(1, row + 4):
+                cell = ws.cell(row=row_num, column=col)
+                if cell.value:
+                    try:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                    except:
+                        pass
+            
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to bytes
+        output = io.BytesIO()
+        wb.save(output)
+        excel_content = output.getvalue()
+        output.close()
+        
+        return excel_content
 
 
     def sheet_command(self, update: Update, context: CallbackContext):
@@ -1082,7 +1198,7 @@ class MEXCTracker:
             # Подготавливаем файл для отправки
             csv_data = output.getvalue().encode('utf-8')
             file_obj = io.BytesIO(csv_data)
-            file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
             
             update.message.reply_document(
                 document=file_obj,
@@ -1199,7 +1315,7 @@ class MEXCTracker:
                 
                 csv1_data = output1.getvalue().encode('utf-8')
                 file1 = io.BytesIO(csv1_data)
-                file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+                file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
                 
                 # CSV 2: Unique futures only
                 output2 = io.StringIO()
@@ -1224,7 +1340,7 @@ class MEXCTracker:
                 
                 csv2_data = output2.getvalue().encode('utf-8')
                 file2 = io.BytesIO(csv2_data)
-                file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+                file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
                 
                 # Send files
                 update.message.reply_document(
