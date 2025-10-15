@@ -999,17 +999,31 @@ class MEXCTracker:
         return excel_content
 
     def sheet_command(self, update: Update, context: CallbackContext):
-        """Get Google Sheet link"""
+        """Get Google Sheet link or create new one"""
         data = self.load_data()
         sheet_url = data.get('google_sheet_url')
         
         if sheet_url:
-            message = f"📋 <b>Google Sheet Analysis</b>\n\n{sheet_url}\n\nUse /analysis to create a new one."
+            keyboard = [
+                ['📊 Open Existing Sheet', '📈 Create New Analysis'],
+                ['❌ Cancel']
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            
+            update.message.reply_html(
+                f"📋 <b>Google Sheet Available</b>\n\n"
+                f"Existing sheet: {sheet_url}\n\n"
+                f"Choose an option:",
+                reply_markup=reply_markup
+            )
+            
+            # Store context for handling the choice
+            context.user_data['existing_sheet_url'] = sheet_url
         else:
-            message = "No analysis sheet found. Use /analysis to create one."
-        
-        update.message.reply_html(message)
-    
+            update.message.reply_html(
+                "No analysis sheet found. Use /export and choose Google Sheets option to create one."
+            )
+            
     def exchanges_command(self, update: Update, context: CallbackContext):
         """Show exchange information"""
         data = self.load_data()
@@ -1156,9 +1170,9 @@ class MEXCTracker:
         while True:
             schedule.run_pending()
             time.sleep(1)
-    
+        
     def export_command(self, update: Update, context: CallbackContext):
-        """Export data to Excel/JSON - get fresh data from APIs"""
+        """Export data to Excel/JSON/Google Sheets - get fresh data from APIs"""
         update.message.reply_html("🔄 <b>Getting fresh data from exchanges...</b>")
         
         try:
@@ -1172,7 +1186,8 @@ class MEXCTracker:
             # Создаем клавиатуру с опциями экспорта
             keyboard = [
                 ['📊 Excel Export', '📁 JSON Export'],
-                ['📈 Full Analysis', '❌ Cancel']
+                ['📊 Google Sheet', '📈 Full Google Sheet'],
+                ['❌ Cancel']
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
             
@@ -1194,6 +1209,293 @@ class MEXCTracker:
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Error collecting data:</b>\n{str(e)}")
+            
+
+    def export_to_google_sheet(self, update: Update, export_data):
+        """Export data to Google Sheets"""
+        if not self.gs_client:
+            update.message.reply_html("❌ Google Sheets not configured. Set GOOGLE_CREDENTIALS_JSON in .env")
+            return
+        
+        try:
+            update.message.reply_html("📊 <b>Creating Google Sheet...</b>")
+            
+            unique_futures = export_data['unique_futures']
+            exchange_stats = export_data['exchange_stats']
+            mexc_futures = export_data['mexc_futures']
+            
+            # Create new spreadsheet
+            spreadsheet_name = f"MEXC Unique Futures {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            spreadsheet = self.gs_client.create(spreadsheet_name)
+            
+            # Share with email if configured
+            share_email = os.getenv('GOOGLE_SHEET_EMAIL')
+            if share_email:
+                spreadsheet.share(share_email, perm_type='user', role='writer')
+            
+            # Sheet 1: Summary
+            summary_sheet = spreadsheet.get_worksheet(0)
+            summary_sheet.update_title("Summary")
+            
+            summary_data = [
+                ["MEXC UNIQUE FUTURES EXPORT", ""],
+                ["Generated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["", ""],
+                ["STATISTICS", ""],
+                ["Total Unique Futures", len(unique_futures)],
+                ["Total MEXC Futures", len(mexc_futures)],
+                ["Total Exchanges", len(exchange_stats) + 1],
+                ["", ""],
+                ["EXCHANGE STATISTICS", ""]
+            ]
+            
+            # Add MEXC first
+            summary_data.append(["MEXC", len(mexc_futures)])
+            
+            # Add other exchanges
+            for exchange, count in sorted(exchange_stats.items()):
+                summary_data.append([exchange, count])
+            
+            summary_sheet.update('A1', summary_data)
+            
+            # Sheet 2: Unique Futures
+            unique_sheet = spreadsheet.add_worksheet(title="Unique Futures", rows="1000", cols="4")
+            unique_data = [["Symbol", "Status", "Timestamp", "Normalized"]]
+            
+            for symbol in sorted(unique_futures):
+                normalized = self.normalize_symbol(symbol)
+                unique_data.append([symbol, "UNIQUE", export_data['timestamp'], normalized])
+            
+            unique_sheet.update('A1', unique_data)
+            
+            # Sheet 3: All MEXC Futures
+            mexc_sheet = spreadsheet.add_worksheet(title="All MEXC Futures", rows="1000", cols="3")
+            mexc_data = [["Symbol", "Normalized", "Status"]]
+            
+            for symbol in sorted(mexc_futures):
+                normalized = self.normalize_symbol(symbol)
+                status = "UNIQUE" if symbol in unique_futures else "MULTI_EXCHANGE"
+                mexc_data.append([symbol, normalized, status])
+            
+            mexc_sheet.update('A1', mexc_data)
+            
+            # Format sheets
+            self.format_google_sheet(summary_sheet)
+            self.format_google_sheet(unique_sheet)
+            self.format_google_sheet(mexc_sheet)
+            
+            # Save URL
+            data = self.load_data()
+            data['google_sheet_url'] = spreadsheet.url
+            self.save_data(data)
+            
+            update.message.reply_html(
+                f"✅ <b>Google Sheet Created!</b>\n\n"
+                f"📊 <a href='{spreadsheet.url}'>Open Google Sheet</a>\n\n"
+                f"• Unique futures: {len(unique_futures)}\n"
+                f"• Total exchanges: {len(exchange_stats) + 1}\n"
+                f"• Sheets: Summary, Unique Futures, All MEXC",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Google Sheets export error:</b>\n{str(e)}")
+            logger.error(f"Google Sheets export error: {e}")
+
+    def format_google_sheet(self, worksheet):
+        """Apply basic formatting to Google Sheet"""
+        try:
+            # Format header row
+            worksheet.format('A1:Z1', {
+                'textFormat': {'bold': True},
+                'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
+            })
+            
+            # Auto-resize columns
+            worksheet.columns_auto_resize(0, 10)
+            
+        except Exception as e:
+            logger.error(f"Sheet formatting error: {e}")
+
+    def export_comprehensive_google_sheet(self, update: Update, export_data):
+        """Create comprehensive Google Sheets analysis"""
+        if not self.gs_client:
+            update.message.reply_html("❌ Google Sheets not configured.")
+            return
+        
+        try:
+            update.message.reply_html("📈 <b>Creating comprehensive Google Sheet analysis...</b>")
+            
+            # Collect fresh data from all exchanges
+            all_futures_data = []
+            exchanges = {
+                'MEXC': self.get_mexc_futures,
+                'Binance': self.get_binance_futures,
+                'Bybit': self.get_bybit_futures,
+                'OKX': self.get_okx_futures,
+                'Gate.io': self.get_gate_futures,
+                'KuCoin': self.get_kucoin_futures,
+                'BingX': self.get_bingx_futures,
+                'BitGet': self.get_bitget_futures
+            }
+            
+            exchange_stats = {}
+            symbol_coverage = {}
+            
+            for name, method in exchanges.items():
+                futures = method()
+                exchange_stats[name] = len(futures)
+                
+                for symbol in futures:
+                    all_futures_data.append({
+                        'symbol': symbol,
+                        'exchange': name,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+                    # Track symbol coverage
+                    normalized = self.normalize_symbol(symbol)
+                    if normalized not in symbol_coverage:
+                        symbol_coverage[normalized] = set()
+                    symbol_coverage[normalized].add(name)
+                
+                time.sleep(0.5)  # Rate limiting
+            
+            # Create Google Sheet
+            spreadsheet_name = f"Futures Complete Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            spreadsheet = self.gs_client.create(spreadsheet_name)
+            
+            # Share with email if configured
+            share_email = os.getenv('GOOGLE_SHEET_EMAIL')
+            if share_email:
+                spreadsheet.share(share_email, perm_type='user', role='writer')
+            
+            # Sheet 1: Summary
+            summary_sheet = spreadsheet.get_worksheet(0)
+            summary_sheet.update_title("Summary")
+            
+            summary_data = [
+                ["COMPREHENSIVE FUTURES ANALYSIS", ""],
+                ["Created", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["", ""],
+                ["EXCHANGE", "FUTURES COUNT", "STATUS"]
+            ]
+            
+            total_futures = 0
+            working_exchanges = 0
+            for exchange, count in exchange_stats.items():
+                status = "✅ WORKING" if count > 0 else "❌ FAILED"
+                summary_data.append([exchange, count, status])
+                total_futures += count
+                if count > 0:
+                    working_exchanges += 1
+            
+            unique_count = len([s for s in symbol_coverage.values() if len(s) == 1])
+            
+            summary_data.extend([
+                ["", "", ""],
+                ["TOTAL STATISTICS", "", ""],
+                ["Total Futures", total_futures, ""],
+                ["Unique Symbols", len(symbol_coverage), ""],
+                ["Exclusive Listings", unique_count, ""],
+                ["Working Exchanges", f"{working_exchanges}/{len(exchanges)}", ""],
+                ["Total Exchanges", len(exchanges), ""]
+            ])
+            
+            summary_sheet.update('A1', summary_data)
+            
+            # Sheet 2: All Futures
+            all_sheet = spreadsheet.add_worksheet(title="All Futures", rows="5000", cols="6")
+            all_data = [["Symbol", "Exchange", "Normalized", "Available On", "Coverage", "Unique"]]
+            
+            for future in all_futures_data:
+                normalized = self.normalize_symbol(future['symbol'])
+                exchanges_list = symbol_coverage[normalized]
+                available_on = ", ".join(sorted(exchanges_list))
+                coverage = f"{len(exchanges_list)} exchanges"
+                is_unique = "✅" if len(exchanges_list) == 1 else ""
+                
+                all_data.append([
+                    future['symbol'],
+                    future['exchange'],
+                    normalized,
+                    available_on,
+                    coverage,
+                    is_unique
+                ])
+            
+            all_sheet.update('A1', all_data)
+            
+            # Sheet 3: Unique Futures
+            unique_sheet = spreadsheet.add_worksheet(title="Unique Futures", rows="1000", cols="5")
+            unique_data = [["Symbol", "Exchange", "Normalized", "Exchanges", "Timestamp"]]
+            
+            for normalized, exchanges_set in symbol_coverage.items():
+                if len(exchanges_set) == 1:
+                    exchange = list(exchanges_set)[0]
+                    original_symbol = next((f['symbol'] for f in all_futures_data 
+                                        if self.normalize_symbol(f['symbol']) == normalized 
+                                        and f['exchange'] == exchange), normalized)
+                    
+                    unique_data.append([
+                        original_symbol,
+                        exchange,
+                        normalized,
+                        ", ".join(exchanges_set),
+                        datetime.now().isoformat()
+                    ])
+            
+            unique_sheet.update('A1', unique_data)
+            
+            # Sheet 4: MEXC Analysis
+            mexc_sheet = spreadsheet.add_worksheet(title="MEXC Analysis", rows="1000", cols="6")
+            mexc_data = [["MEXC Symbol", "Normalized", "Available On", "Exchanges", "Status", "Unique"]]
+            
+            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+            for future in mexc_futures:
+                normalized = self.normalize_symbol(future['symbol'])
+                exchanges_list = symbol_coverage[normalized]
+                available_on = ", ".join(sorted(exchanges_list))
+                status = "Unique" if len(exchanges_list) == 1 else "Multi-exchange"
+                unique_flag = "✅" if len(exchanges_list) == 1 else "🔸"
+                
+                mexc_data.append([
+                    future['symbol'],
+                    normalized,
+                    available_on,
+                    len(exchanges_list),
+                    status,
+                    unique_flag
+                ])
+            
+            mexc_sheet.update('A1', mexc_data)
+            
+            # Format all sheets
+            for sheet in [summary_sheet, all_sheet, unique_sheet, mexc_sheet]:
+                self.format_google_sheet(sheet)
+            
+            # Save URL
+            data = self.load_data()
+            data['google_sheet_url'] = spreadsheet.url
+            self.save_data(data)
+            
+            update.message.reply_html(
+                f"📈 <b>Comprehensive Google Sheet Created!</b>\n\n"
+                f"📊 <a href='{spreadsheet.url}'>Open Complete Analysis</a>\n\n"
+                f"• Total symbols: {len(symbol_coverage)}\n"
+                f"• Unique listings: {unique_count}\n"
+                f"• Working exchanges: {working_exchanges}/{len(exchanges)}\n"
+                f"• Sheets: Summary, All Futures, Unique Futures, MEXC Analysis",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Comprehensive Google Sheets error:</b>\n{str(e)}")
+            logger.error(f"Comprehensive Google Sheets error: {e}")
+            
+
+
+
 
     def handle_export(self, update: Update, context: CallbackContext):
         """Handle export format selection"""
@@ -1214,10 +1516,14 @@ class MEXCTracker:
             self.export_to_json(update, export_data)
         elif choice == '📈 Full Analysis':
             self.export_full_analysis(update, export_data)
+        elif choice == '📊 Google Sheet':
+            self.export_to_google_sheet(update, export_data)
+        elif choice == '📈 Full Google Sheet':
+            self.export_comprehensive_google_sheet(update, export_data)
         
         # Очищаем контекст
         context.user_data.pop('export_data', None)
-
+        
     def export_to_excel(self, update: Update, export_data):
         """Export to Excel format"""
         try:
