@@ -17,7 +17,8 @@ import threading
 import atexit
 import io
 import csv
-
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill
 # Load environment variables
 load_dotenv()
 
@@ -753,54 +754,126 @@ class MEXCTracker:
         except Exception as e:
             update.message.reply_html(f"❌ <b>Error sending analysis:</b>\n{str(e)}")
 
+
     def create_complete_analysis_csv(self, all_futures_data, symbol_coverage, exchange_stats):
-        """Create complete analysis CSV with semicolon delimiter"""
-        output = io.StringIO()
-        writer = csv.writer(output, delimiter=';')  # Используем точку с запятой
+        """Create complete analysis Excel file"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Complete Analysis"
         
-        # Header
-        writer.writerow(['COMPLETE FUTURES ANALYSIS'])
-        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-        writer.writerow([])
+        # Header styling
+        header_font = Font(bold=True, size=14)
+        title_font = Font(bold=True, size=12)
+        normal_font = Font(size=10)
+        
+        # Write header
+        ws.merge_cells('A1:E1')
+        ws['A1'] = 'COMPLETE FUTURES ANALYSIS'
+        ws['A1'].font = header_font
+        ws['A1'].alignment = Alignment(horizontal='center')
+        
+        ws['A2'] = 'Generated'
+        ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ws['A2'].font = title_font
+        ws['B2'].font = normal_font
         
         # Exchange summary
-        writer.writerow(['EXCHANGE SUMMARY'])
-        writer.writerow(['Exchange', 'Status', 'Futures Count'])
+        ws['A4'] = 'EXCHANGE SUMMARY'
+        ws['A4'].font = title_font
+        
+        ws['A5'] = 'Exchange'
+        ws['B5'] = 'Status'
+        ws['C5'] = 'Futures Count'
+        for cell in ['A5', 'B5', 'C5']:
+            ws[cell].font = title_font
+            ws[cell].fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        row = 6
         for exchange, count in exchange_stats.items():
             status = 'WORKING' if count > 0 else 'FAILED'
-            writer.writerow([exchange, status, count])
+            ws[f'A{row}'] = exchange
+            ws[f'B{row}'] = status
+            ws[f'C{row}'] = count
+            row += 1
         
-        writer.writerow([])
-        writer.writerow(['DETAILED FUTURES DATA'])
-        writer.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage'])
+        # Detailed futures data
+        ws[f'A{row+1}'] = 'DETAILED FUTURES DATA'
+        ws[f'A{row+1}'].font = title_font
         
+        headers = ['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=row+2, column=col)
+            cell.value = header
+            cell.font = title_font
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        data_row = row + 3
         for future in all_futures_data:
             normalized = self.normalize_symbol(future['symbol'])
             exchanges_list = symbol_coverage[normalized]
-            # Заменяем запятые на точки с запятой в списке бирж
-            available_on = '; '.join(sorted(exchanges_list))
+            available_on = ', '.join(sorted(exchanges_list))
             coverage = f"{len(exchanges_list)} exchanges"
             
-            writer.writerow([
-                future['symbol'],
-                future['exchange'],
-                normalized,
-                available_on,
-                coverage
-            ])
+            ws[f'A{data_row}'] = future['symbol']
+            ws[f'B{data_row}'] = future['exchange']
+            ws[f'C{data_row}'] = normalized
+            ws[f'D{data_row}'] = available_on
+            ws[f'E{data_row}'] = coverage
+            data_row += 1
         
-        return output.getvalue()
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to bytes
+        from io import BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        return output
 
     def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
-        """Create unique futures CSV"""
-        output = io.StringIO()
-        writer = csv.writer(output)
+        """Create unique futures Excel file"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Unique Futures"
         
-        writer.writerow(['UNIQUE FUTURES ANALYSIS'])
-        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-        writer.writerow([])
-        writer.writerow(['Symbol', 'Exchange', 'Normalized Symbol'])
+        # Styling
+        header_font = Font(bold=True, size=14)
+        title_font = Font(bold=True, size=12)
+        normal_font = Font(size=10)
         
+        # Write header
+        ws.merge_cells('A1:C1')
+        ws['A1'] = 'UNIQUE FUTURES ANALYSIS'
+        ws['A1'].font = header_font
+        ws['A1'].alignment = Alignment(horizontal='center')
+        
+        ws['A2'] = 'Generated'
+        ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        ws['A2'].font = title_font
+        ws['B2'].font = normal_font
+        
+        # Headers
+        headers = ['Symbol', 'Exchange', 'Normalized Symbol']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=4, column=col)
+            cell.value = header
+            cell.font = title_font
+            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+        
+        # Data
+        row = 5
         unique_count = 0
         for normalized, exchanges_set in symbol_coverage.items():
             if len(exchanges_set) == 1:
@@ -810,13 +883,41 @@ class MEXCTracker:
                                     if self.normalize_symbol(f['symbol']) == normalized 
                                     and f['exchange'] == exchange), normalized)
                 
-                writer.writerow([original_symbol, exchange, normalized])
+                ws[f'A{row}'] = original_symbol
+                ws[f'B{row}'] = exchange
+                ws[f'C{row}'] = normalized
+                row += 1
         
-        writer.writerow([])
-        writer.writerow(['SUMMARY'])
-        writer.writerow(['Total unique futures', unique_count])
+        # Summary
+        ws[f'A{row+1}'] = 'SUMMARY'
+        ws[f'A{row+1}'].font = title_font
         
-        return output.getvalue()
+        ws[f'A{row+2}'] = 'Total unique futures'
+        ws[f'B{row+2}'] = unique_count
+        ws[f'A{row+2}'].font = title_font
+        ws[f'B{row+2}'].font = normal_font
+        
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to bytes
+        from io import BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        return output
+
 
 
     def sheet_command(self, update: Update, context: CallbackContext):
