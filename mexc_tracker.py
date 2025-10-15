@@ -16,7 +16,6 @@ import fcntl
 import threading
 import atexit
 import io
-import Excel
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from datetime import datetime
