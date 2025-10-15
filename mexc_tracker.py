@@ -33,6 +33,7 @@ class InteractiveFuturesTracker:
         self.application = Application.builder().token(self.bot_token).build()
         self.setup_handlers()
         self.init_data_file()
+        self.last_unique_futures = set()
     
     def setup_handlers(self):
         """Setup command handlers"""
@@ -109,7 +110,7 @@ class InteractiveFuturesTracker:
         
         if unique_count > 0:
             status_text += "\n\n<b>Current unique futures:</b>\n"
-            for symbol in sorted(data['unique_futures'])[:8]:  # Show first 8
+            for symbol in sorted(data['unique_futures'])[:8]:
                 status_text += f"• {symbol}\n"
             if unique_count > 8:
                 status_text += f"• ... and {unique_count - 8} more"
@@ -121,7 +122,7 @@ class InteractiveFuturesTracker:
         await update.message.reply_html("🔍 <b>Performing immediate check...</b>")
         
         try:
-            unique_futures = await self.find_unique_futures()
+            unique_futures = self.find_unique_futures_sync()
             data = self.load_data()
             
             # Update statistics
@@ -214,8 +215,8 @@ class InteractiveFuturesTracker:
                 pass
         return "Unknown"
     
-    async def find_unique_futures(self):
-        """Find unique futures on MEXC"""
+    def find_unique_futures_sync(self):
+        """Find unique futures on MEXC (synchronous version)"""
         try:
             # Get MEXC futures
             mexc_url = "https://contract.mexc.com/api/v1/contract/detail"
@@ -262,10 +263,8 @@ class InteractiveFuturesTracker:
             return set()
     
     async def send_broadcast_message(self, message):
-        """Send message to all users (for notifications)"""
+        """Send message to configured chat"""
         try:
-            # This would need to be implemented based on how you track users
-            # For now, just send to the configured chat
             if self.chat_id:
                 await self.application.bot.send_message(
                     chat_id=self.chat_id,
@@ -282,31 +281,48 @@ class InteractiveFuturesTracker:
                 await asyncio.sleep(self.update_interval * 60)
                 logger.info("Running scheduled check...")
                 
-                unique_futures = await self.find_unique_futures()
-                data = self.load_data()
-                previous_futures = set(data.get('unique_futures', []))
+                unique_futures = self.find_unique_futures_sync()
+                current_unique = set(unique_futures)
                 
-                if unique_futures != previous_futures:
+                # Check for changes
+                if current_unique != self.last_unique_futures:
+                    new_futures = current_unique - self.last_unique_futures
+                    removed_futures = self.last_unique_futures - current_unique
+                    
                     # Update data
-                    data['unique_futures'] = list(unique_futures)
+                    data = self.load_data()
+                    data['unique_futures'] = list(current_unique)
                     data['last_check'] = datetime.now().isoformat()
                     self.save_data(data)
                     
-                    # Send notification if new futures found
-                    new_futures = unique_futures - previous_futures
+                    # Send notifications
                     if new_futures:
                         message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
                         for symbol in sorted(new_futures):
                             message += f"✅ {symbol}\n"
-                        message += f"\n📊 Total unique: {len(unique_futures)}"
+                        message += f"\n📊 Total unique: {len(current_unique)}"
                         await self.send_broadcast_message(message)
+                    
+                    if removed_futures:
+                        message = "📉 <b>FUTURES NO LONGER UNIQUE:</b>\n\n"
+                        for symbol in sorted(removed_futures):
+                            message += f"❌ {symbol}\n"
+                        message += f"\n📊 Remaining unique: {len(current_unique)}"
+                        await self.send_broadcast_message(message)
+                    
+                    self.last_unique_futures = current_unique
                 
             except Exception as e:
                 logger.error(f"Auto-check error: {e}")
+                await asyncio.sleep(60)  # Wait before retrying
     
     async def run(self):
         """Start the bot"""
         try:
+            # Load initial data
+            data = self.load_data()
+            self.last_unique_futures = set(data.get('unique_futures', []))
+            
             # Start auto-check background task
             asyncio.create_task(self.run_auto_checks())
             
@@ -318,13 +334,14 @@ class InteractiveFuturesTracker:
             logger.info("Bot started successfully")
             
             # Send startup message
-            if self.chat_id:
-                await self.send_broadcast_message(
-                    "🤖 <b>MEXC Unique Futures Tracker Started</b>\n\n"
-                    "✅ Monitoring for unique perpetual contracts...\n"
-                    f"⏰ Auto-check interval: {self.update_interval} minutes\n"
-                    "💬 Use /help to see available commands"
-                )
+            await self.send_broadcast_message(
+                "🤖 <b>MEXC Unique Futures Tracker Started</b>\n\n"
+                "✅ Monitoring for unique perpetual contracts...\n"
+                f"⏰ Auto-check interval: {self.update_interval} minutes\n"
+                "💬 Use /help to see available commands"
+            )
+            
+            logger.info("Bot is now running and ready for commands...")
             
             # Keep running
             while True:
@@ -333,8 +350,6 @@ class InteractiveFuturesTracker:
         except Exception as e:
             logger.error(f"Bot run error: {e}")
             raise
-        finally:
-            await self.application.stop()
 
 async def main():
     tracker = InteractiveFuturesTracker()
