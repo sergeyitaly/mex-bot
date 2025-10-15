@@ -149,12 +149,13 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("export", self.export_command))
         self.dispatcher.add_handler(CommandHandler("autosheet", self.auto_sheet_command))
         self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
+        self.dispatcher.add_handler(CommandHandler("testsheets", self.test_sheets_command))  # Add this
 
-        # Add message handler for export choices
+        # Add message handler for export choices - FIX THE REGEX PATTERN
         from telegram.ext import MessageHandler, Filters
         self.dispatcher.add_handler(MessageHandler(
             Filters.text & (
-                Filters.regex('^(📊 Excel Export|📁 JSON Export|📈 Full Analysis|❌ Cancel)$')
+                Filters.regex('^(📊 Excel Export|📁 JSON Export|📊 Google Sheet|📈 Full Google Sheet|🔄 Auto-Update Sheet|❌ Cancel)$')
             ), 
             self.handle_export
         ))
@@ -1212,7 +1213,7 @@ class MEXCTracker:
         update.message.reply_html("🔄 <b>Getting fresh data from exchanges...</b>")
         
         try:
-            # Получаем свежие данные напрямую с API
+            # Get fresh data directly from APIs
             unique_futures, exchange_stats = self.find_unique_futures()
             
             if not unique_futures:
@@ -1222,22 +1223,21 @@ class MEXCTracker:
             # Check if Google Sheets is available
             sheets_available = self.gs_client is not None
             
-            # Create keyboard based on availability
-            if sheets_available:
-                keyboard = [
-                    ['📊 Excel Export', '📁 JSON Export'],
-                    ['📊 Google Sheet', '📈 Full Google Sheet'],
-                    ['🔄 Auto-Update Sheet', '❌ Cancel']
-                ]
-            else:
-                keyboard = [
-                    ['📊 Excel Export', '📁 JSON Export'],
-                    ['❌ Cancel']
-                ]
-                
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            # Create keyboard with ALL options - make sure the text matches exactly
+            keyboard = [
+                ['📊 Excel Export', '📁 JSON Export'],
+            ]
             
-            # Сохраняем данные в контексте
+            if sheets_available:
+                # Add Google Sheets options - use exact same text as in the handler regex
+                keyboard.append(['📊 Google Sheet', '📈 Full Google Sheet'])
+                keyboard.append(['🔄 Auto-Update Sheet'])
+            
+            keyboard.append(['❌ Cancel'])
+                
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            
+            # Save data in context
             context.user_data['export_data'] = {
                 'unique_futures': list(unique_futures),
                 'exchange_stats': exchange_stats,
@@ -1256,8 +1256,7 @@ class MEXCTracker:
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Error collecting data:</b>\n{str(e)}")
-                        
-
+            
     def export_to_google_sheet(self, update: Update, export_data):
         """Export data to Google Sheets"""
         if not self.gs_client:
@@ -1553,15 +1552,15 @@ class MEXCTracker:
             return
         
         export_data = context.user_data.get('export_data', {})
-        if not export_data:
-            update.message.reply_html("❌ No export data found. Use /export first.")
-            return
         
         if choice == '📊 Excel Export':
             self.export_to_excel(update, export_data)
         elif choice == '📁 JSON Export':
             self.export_to_json(update, export_data)
         elif choice == '📊 Google Sheet':
+            if not export_data:
+                update.message.reply_html("❌ No export data found. Use /export first.")
+                return
             self.export_to_google_sheet(update, export_data)
         elif choice == '📈 Full Google Sheet':
             self.export_comprehensive_google_sheet(update, export_data)
@@ -1570,9 +1569,9 @@ class MEXCTracker:
         else:
             update.message.reply_html("❌ Unknown export option.", reply_markup=ReplyKeyboardRemove())
         
-        # Очищаем контекст
+        # Clear context
         context.user_data.pop('export_data', None)
-                
+                    
     def export_to_excel(self, update: Update, export_data):
         """Export to Excel format"""
         try:
