@@ -3,12 +3,12 @@ import json
 import logging
 import os
 import asyncio
+import time
 from datetime import datetime
-from telegram import Bot
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.error import TelegramError
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from aiohttp import web
 
 # Load environment variables
 load_dotenv()
@@ -20,389 +20,326 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class FuturesTracker:
+class InteractiveFuturesTracker:
     def __init__(self):
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.update_interval = int(os.getenv('UPDATE_INTERVAL', 60))
         self.data_file = 'data.json'
-        self.restart_file = 'restart.json'
         
-        if not self.bot_token or not self.chat_id:
-            raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
+        if not self.bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN is required")
         
-        self.bot = Bot(token=self.bot_token)
-        self.scheduler = AsyncIOScheduler()
+        self.application = Application.builder().token(self.bot_token).build()
+        self.setup_handlers()
         self.init_data_file()
-        self.init_restart_file()
+    
+    def setup_handlers(self):
+        """Setup command handlers"""
+        self.application.add_handler(CommandHandler("start", self.start_command))
+        self.application.add_handler(CommandHandler("status", self.status_command))
+        self.application.add_handler(CommandHandler("check", self.check_command))
+        self.application.add_handler(CommandHandler("help", self.help_command))
+        self.application.add_handler(CommandHandler("stats", self.stats_command))
     
     def init_data_file(self):
-        """Initialize JSON data file"""
+        """Initialize data file"""
         if not os.path.exists(self.data_file):
             data = {
                 "unique_futures": [],
-                "last_update": None,
-                "tracking_history": [],
+                "last_check": None,
                 "statistics": {
-                    "total_unique_found": 0,
-                    "total_notifications_sent": 0,
-                    "first_run": datetime.now().isoformat()
+                    "checks_performed": 0,
+                    "unique_found_total": 0,
+                    "start_time": datetime.now().isoformat()
                 }
             }
             self.save_data(data)
-            logger.info("Created new data file")
-    
-    def init_restart_file(self):
-        """Initialize restart tracking file"""
-        if not os.path.exists(self.restart_file):
-            restart_data = {
-                "last_startup_message": None,
-                "restart_count": 0,
-                "last_restart": datetime.now().isoformat()
-            }
-            self.save_restart_data(restart_data)
     
     def load_data(self):
         """Load data from JSON file"""
         try:
-            with open(self.data_file, 'r', encoding='utf-8') as f:
+            with open(self.data_file, 'r') as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"unique_futures": [], "last_update": None, "tracking_history": [], "statistics": {}}
+        except:
+            return {"unique_futures": [], "last_check": None, "statistics": {}}
     
     def save_data(self, data):
         """Save data to JSON file"""
-        with open(self.data_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        with open(self.data_file, 'w') as f:
+            json.dump(data, f, indent=2)
     
-    def load_restart_data(self):
-        """Load restart data"""
-        try:
-            with open(self.restart_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"last_startup_message": None, "restart_count": 0, "last_restart": None}
-    
-    def save_restart_data(self, data):
-        """Save restart data"""
-        with open(self.restart_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    
-    async def send_telegram_message(self, message, silent=False):
-        """Send message to Telegram with error handling"""
-        try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=message,
-                parse_mode='HTML',
-                disable_notification=silent
-            )
-            logger.info("Telegram message sent")
-            return True
-        except TelegramError as e:
-            logger.error(f"Failed to send Telegram message: {e}")
-            return False
-    
-    async def send_startup_message(self):
-        """Send startup message only if it hasn't been sent recently"""
-        restart_data = self.load_restart_data()
-        last_startup = restart_data.get('last_startup_message')
-        
-        # Don't send startup message if we sent one in the last 30 minutes
-        if last_startup:
-            try:
-                last_dt = datetime.fromisoformat(last_startup)
-                time_since_last = (datetime.now() - last_dt).total_seconds()
-                if time_since_last < 1800:  # 30 minutes
-                    logger.info("Startup message sent recently, skipping")
-                    return
-            except:
-                pass
-        
-        restart_count = restart_data.get('restart_count', 0) + 1
-        
-        message = (
-            "🤖 <b>MEXC Unique Futures Tracker Started</b>\n\n"
-            "✅ <i>Monitoring for unique perpetual contracts...</i>\n"
-            f"⏰ Check interval: {self.update_interval} minutes\n"
-            f"🔄 Restart count: {restart_count}\n"
-            "🚀 Deployed on Fly.io"
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send welcome message when command /start is issued."""
+        user = update.effective_user
+        welcome_text = (
+            f"🤖 Hello {user.mention_html()}!\n\n"
+            "I'm <b>MEXC Unique Futures Tracker</b>\n"
+            "I monitor for perpetual contracts that are available on MEXC but not on other major exchanges.\n\n"
+            "<b>Available commands:</b>\n"
+            "/start - Show this welcome message\n"
+            "/status - Check current status\n"
+            "/check - Perform immediate check\n"
+            "/stats - Show statistics\n"
+            "/help - Show help information"
         )
-        
-        await self.send_telegram_message(message)
-        
-        # Update restart data
-        restart_data.update({
-            "last_startup_message": datetime.now().isoformat(),
-            "restart_count": restart_count,
-            "last_restart": datetime.now().isoformat()
-        })
-        self.save_restart_data(restart_data)
+        await update.message.reply_html(welcome_text)
+        logger.info(f"Start command received from user: {user.id}")
     
-    async def send_status_message(self):
-        """Send current status"""
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send current status when command /status is issued."""
         data = self.load_data()
         unique_count = len(data.get('unique_futures', []))
-        last_update = data.get('last_update', 'Never')
+        last_check = data.get('last_check', 'Never')
         
-        if last_update and last_update != 'Never':
+        if last_check != 'Never':
             try:
-                last_dt = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
-                last_update = last_dt.strftime("%Y-%m-%d %H:%M:%S")
+                last_dt = datetime.fromisoformat(last_check.replace('Z', '+00:00'))
+                last_check = last_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
             except:
                 pass
         
-        message = (
+        status_text = (
             "📊 <b>Current Status</b>\n\n"
-            f"🔄 Unique futures: <b>{unique_count}</b>\n"
-            f"⏰ Last update: {last_update}\n"
-            f"🔍 Next check in: {self.update_interval} minutes"
+            f"🔄 Unique futures found: <b>{unique_count}</b>\n"
+            f"⏰ Last check: {last_check}\n"
+            f"🔍 Auto-check interval: {self.update_interval} minutes\n"
+            f"🤖 Bot uptime: {self.get_uptime()}"
         )
         
         if unique_count > 0:
-            message += "\n\n<b>Current unique futures:</b>\n"
-            for symbol in sorted(data['unique_futures'])[:5]:
-                message += f"• {symbol}\n"
-            if unique_count > 5:
-                message += f"... and {unique_count - 5} more"
+            status_text += "\n\n<b>Current unique futures:</b>\n"
+            for symbol in sorted(data['unique_futures'])[:8]:  # Show first 8
+                status_text += f"• {symbol}\n"
+            if unique_count > 8:
+                status_text += f"• ... and {unique_count - 8} more"
         
-        await self.send_telegram_message(message)
+        await update.message.reply_html(status_text)
     
-    def get_mexc_futures(self):
-        """Get futures from MEXC"""
+    async def check_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Perform immediate check when command /check is issued."""
+        await update.message.reply_html("🔍 <b>Performing immediate check...</b>")
+        
         try:
-            url = "https://contract.mexc.com/api/v1/contract/detail"
-            response = requests.get(url, timeout=30)
-            data = response.json()
-            
-            futures = []
-            for contract in data.get('data', []):
-                symbol = contract.get('symbol', '')
-                if symbol and symbol.endswith('_USDT'):
-                    futures.append(symbol)
-            
-            logger.info(f"Found {len(futures)} MEXC futures")
-            return set(futures)
-        except Exception as e:
-            logger.error(f"MEXC error: {e}")
-            return set()
-    
-    def get_binance_futures(self):
-        """Get futures from Binance"""
-        try:
-            url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            response = requests.get(url, timeout=30)
-            data = response.json()
-            
-            futures = [s['symbol'] for s in data['symbols'] if s['contractType'] == 'PERPETUAL']
-            return set(futures)
-        except Exception as e:
-            logger.error(f"Binance error: {e}")
-            return set()
-    
-    def get_bybit_futures(self):
-        """Get futures from Bybit"""
-        try:
-            url = "https://api.bybit.com/v2/public/symbols"
-            response = requests.get(url, timeout=30)
-            data = response.json()
-            
-            futures = [item['name'] for item in data.get('result', [])]
-            return set(futures)
-        except Exception as e:
-            logger.error(f"Bybit error: {e}")
-            return set()
-    
-    def get_other_exchanges_futures(self):
-        """Get futures from other exchanges"""
-        exchanges = {
-            'binance': self.get_binance_futures,
-            'bybit': self.get_bybit_futures
-        }
-        
-        all_futures = set()
-        for name, method in exchanges.items():
-            try:
-                futures = method()
-                all_futures.update(futures)
-                logger.info(f"{name}: {len(futures)} futures")
-            except Exception as e:
-                logger.error(f"Exchange {name} error: {e}")
-        
-        return all_futures
-    
-    def normalize_symbol(self, symbol):
-        """Normalize symbol for comparison"""
-        return symbol.upper().replace('_USDT', '').replace('USDT', '').replace('-', '').replace('_', '')
-    
-    def find_unique_futures(self):
-        """Find unique futures on MEXC"""
-        mexc_futures = self.get_mexc_futures()
-        other_futures = self.get_other_exchanges_futures()
-        
-        if not mexc_futures:
-            return set()
-        
-        mexc_normalized = {self.normalize_symbol(s): s for s in mexc_futures}
-        other_normalized = {self.normalize_symbol(s) for s in other_futures}
-        
-        unique_futures = set()
-        for normalized, original in mexc_normalized.items():
-            if normalized not in other_normalized:
-                unique_futures.add(original)
-        
-        logger.info(f"Found {len(unique_futures)} unique futures")
-        return unique_futures
-    
-    async def check_for_changes(self):
-        """Check for changes and send notifications"""
-        try:
+            unique_futures = await self.find_unique_futures()
             data = self.load_data()
-            current_unique = set(data.get('unique_futures', []))
-            new_unique = self.find_unique_futures()
-            
-            added = new_unique - current_unique
-            removed = current_unique - new_unique
             
             # Update statistics
             stats = data.get('statistics', {})
-            stats['total_unique_found'] = stats.get('total_unique_found', 0) + len(added)
-            stats['total_notifications_sent'] = stats.get('total_notifications_sent', 0) + len(added) + len(removed)
-            stats['last_run'] = datetime.now().isoformat()
+            stats['checks_performed'] = stats.get('checks_performed', 0) + 1
+            stats['unique_found_total'] = max(stats.get('unique_found_total', 0), len(unique_futures))
             
             # Update data
-            data['unique_futures'] = list(new_unique)
-            data['last_update'] = datetime.now().isoformat()
+            data['unique_futures'] = list(unique_futures)
+            data['last_check'] = datetime.now().isoformat()
             data['statistics'] = stats
-            
-            # Add to history
-            for symbol in added:
-                data['tracking_history'].append({
-                    'symbol': symbol,
-                    'event': 'added',
-                    'timestamp': datetime.now().isoformat()
-                })
-            
-            for symbol in removed:
-                data['tracking_history'].append({
-                    'symbol': symbol,
-                    'event': 'removed', 
-                    'timestamp': datetime.now().isoformat()
-                })
-            
-            # Save data
             self.save_data(data)
             
-            # Send notifications
-            if added:
-                message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
-                for symbol in sorted(added):
-                    message += f"✅ {symbol}\n"
-                message += f"\n📊 Total unique: {len(new_unique)}"
-                await self.send_telegram_message(message)
-            
-            if removed:
-                message = "📉 <b>FUTURES NO LONGER UNIQUE</b>\n\n"
-                for symbol in sorted(removed):
-                    message += f"❌ {symbol}\n"
-                message += f"\n📊 Remaining unique: {len(new_unique)}"
-                await self.send_telegram_message(message)
-            
-            if not added and not removed:
-                logger.info("No changes detected")
+            if unique_futures:
+                message = "✅ <b>Check Complete!</b>\n\n"
+                message += f"🎯 Found <b>{len(unique_futures)}</b> unique futures:\n\n"
+                for symbol in sorted(unique_futures)[:10]:
+                    message += f"• {symbol}\n"
+                if len(unique_futures) > 10:
+                    message += f"• ... and {len(unique_futures) - 10} more"
             else:
-                logger.info(f"Changes: +{len(added)}, -{len(removed)}")
-                
+                message = "✅ <b>Check Complete!</b>\n\nNo unique futures found at the moment."
+            
+            await update.message.reply_html(message)
+            
         except Exception as e:
-            logger.error(f"Error in check_for_changes: {e}")
-            await self.send_telegram_message(f"❌ Error during check: {str(e)}")
+            error_msg = f"❌ <b>Check failed:</b>\n{str(e)}"
+            await update.message.reply_html(error_msg)
+            logger.error(f"Check command error: {e}")
     
-    async def start_scheduler(self):
-        """Start the scheduled tasks"""
-        # Add the main check job
-        self.scheduler.add_job(
-            self.check_for_changes,
-            trigger='interval',
-            minutes=self.update_interval,
-            id='main_check'
+    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show statistics when command /stats is issued."""
+        data = self.load_data()
+        stats = data.get('statistics', {})
+        
+        stats_text = (
+            "📈 <b>Bot Statistics</b>\n\n"
+            f"🔄 Checks performed: <b>{stats.get('checks_performed', 0)}</b>\n"
+            f"🎯 Max unique found: <b>{stats.get('unique_found_total', 0)}</b>\n"
+            f"⏰ Current unique: <b>{len(data.get('unique_futures', []))}</b>\n"
+            f"📅 Running since: {self.format_start_time(stats.get('start_time'))}\n"
+            f"🤖 Uptime: {self.get_uptime()}\n"
+            f"⚡ Auto-check: {self.update_interval} minutes"
         )
         
-        # Add status report every 6 hours
-        self.scheduler.add_job(
-            self.send_status_message,
-            trigger='interval',
-            hours=6,
-            id='status_report'
+        await update.message.reply_html(stats_text)
+    
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show help information when command /help is issued."""
+        help_text = (
+            "🆘 <b>Help - MEXC Unique Futures Tracker</b>\n\n"
+            "I monitor MEXC exchange for perpetual futures contracts that are NOT available on other major exchanges like Binance, Bybit, etc.\n\n"
+            "<b>Commands:</b>\n"
+            "/start - Welcome message\n"
+            "/status - Current status and unique futures\n"
+            "/check - Perform immediate check\n"
+            "/stats - Bot statistics\n"
+            "/help - This help message\n\n"
+            "<b>How it works:</b>\n"
+            "• I automatically check every 60 minutes\n"
+            "• You'll get notifications when new unique futures are found\n"
+            "• Use /check for immediate verification\n\n"
+            "⚡ <i>Happy trading!</i>"
         )
-        
-        self.scheduler.start()
-        logger.info("Scheduler started")
+        await update.message.reply_html(help_text)
+    
+    def get_uptime(self):
+        """Calculate bot uptime"""
+        data = self.load_data()
+        start_time = data.get('statistics', {}).get('start_time')
+        if start_time:
+            try:
+                start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                uptime = datetime.now() - start_dt
+                days = uptime.days
+                hours = uptime.seconds // 3600
+                minutes = (uptime.seconds % 3600) // 60
+                return f"{days}d {hours}h {minutes}m"
+            except:
+                pass
+        return "Unknown"
+    
+    def format_start_time(self, start_time):
+        """Format start time for display"""
+        if start_time:
+            try:
+                dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+        return "Unknown"
+    
+    async def find_unique_futures(self):
+        """Find unique futures on MEXC"""
+        try:
+            # Get MEXC futures
+            mexc_url = "https://contract.mexc.com/api/v1/contract/detail"
+            mexc_response = requests.get(mexc_url, timeout=30)
+            mexc_data = mexc_response.json()
+            
+            mexc_futures = set()
+            for contract in mexc_data.get('data', []):
+                symbol = contract.get('symbol', '')
+                if symbol and symbol.endswith('_USDT'):
+                    mexc_futures.add(symbol)
+            
+            logger.info(f"Found {len(mexc_futures)} MEXC futures")
+            
+            # Get Binance futures
+            binance_url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+            binance_response = requests.get(binance_url, timeout=30)
+            binance_data = binance_response.json()
+            
+            binance_futures = set()
+            for symbol_data in binance_data.get('symbols', []):
+                if symbol_data.get('contractType') == 'PERPETUAL':
+                    binance_futures.add(symbol_data['symbol'])
+            
+            logger.info(f"Found {len(binance_futures)} Binance futures")
+            
+            # Normalize and compare
+            def normalize(symbol):
+                return symbol.upper().replace('_USDT', '').replace('USDT', '').replace('-', '').replace('_', '')
+            
+            mexc_normalized = {normalize(s): s for s in mexc_futures}
+            binance_normalized = {normalize(s) for s in binance_futures}
+            
+            unique_futures = set()
+            for normalized, original in mexc_normalized.items():
+                if normalized not in binance_normalized:
+                    unique_futures.add(original)
+            
+            logger.info(f"Found {len(unique_futures)} unique futures")
+            return unique_futures
+            
+        except Exception as e:
+            logger.error(f"Error finding unique futures: {e}")
+            return set()
+    
+    async def send_broadcast_message(self, message):
+        """Send message to all users (for notifications)"""
+        try:
+            # This would need to be implemented based on how you track users
+            # For now, just send to the configured chat
+            if self.chat_id:
+                await self.application.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"Broadcast error: {e}")
+    
+    async def run_auto_checks(self):
+        """Run automatic checks in background"""
+        while True:
+            try:
+                await asyncio.sleep(self.update_interval * 60)
+                logger.info("Running scheduled check...")
+                
+                unique_futures = await self.find_unique_futures()
+                data = self.load_data()
+                previous_futures = set(data.get('unique_futures', []))
+                
+                if unique_futures != previous_futures:
+                    # Update data
+                    data['unique_futures'] = list(unique_futures)
+                    data['last_check'] = datetime.now().isoformat()
+                    self.save_data(data)
+                    
+                    # Send notification if new futures found
+                    new_futures = unique_futures - previous_futures
+                    if new_futures:
+                        message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
+                        for symbol in sorted(new_futures):
+                            message += f"✅ {symbol}\n"
+                        message += f"\n📊 Total unique: {len(unique_futures)}"
+                        await self.send_broadcast_message(message)
+                
+            except Exception as e:
+                logger.error(f"Auto-check error: {e}")
     
     async def run(self):
-        """Main run method"""
+        """Start the bot"""
         try:
-            # Send startup message (with protection)
-            await self.send_startup_message()
+            # Start auto-check background task
+            asyncio.create_task(self.run_auto_checks())
             
-            # Initial check
-            await self.check_for_changes()
+            # Start the bot
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling()
             
-            # Start scheduler
-            await self.start_scheduler()
+            logger.info("Bot started successfully")
             
-            logger.info("Bot is now running...")
+            # Send startup message
+            if self.chat_id:
+                await self.send_broadcast_message(
+                    "🤖 <b>MEXC Unique Futures Tracker Started</b>\n\n"
+                    "✅ Monitoring for unique perpetual contracts...\n"
+                    f"⏰ Auto-check interval: {self.update_interval} minutes\n"
+                    "💬 Use /help to see available commands"
+                )
             
-            # Keep the app running with better error handling
+            # Keep running
             while True:
-                try:
-                    await asyncio.sleep(3600)  # Sleep for 1 hour
-                except Exception as e:
-                    logger.error(f"Sleep interrupted: {e}")
-                    break
+                await asyncio.sleep(3600)
                 
         except Exception as e:
-            logger.error(f"Fatal error: {e}")
-            # Don't send error message on every restart to avoid spam
-            restart_data = self.load_restart_data()
-            restart_count = restart_data.get('restart_count', 0)
-            if restart_count < 3:  # Only send error for first few restarts
-                await self.send_telegram_message(f"❌ Bot crashed: {str(e)}")
+            logger.error(f"Bot run error: {e}")
             raise
+        finally:
+            await self.application.stop()
 
-# Health check endpoints
-async def health_check(request):
-    return web.json_response({
-        "status": "healthy",
-        "service": "mexc-futures-tracker",
-        "timestamp": datetime.now().isoformat()
-    })
-
-async def start_background_tasks(app):
-    app['tracker'] = FuturesTracker()
-    asyncio.create_task(app['tracker'].run())
-
-async def cleanup_background_tasks(app):
-    if 'tracker' in app:
-        app['tracker'].scheduler.shutdown()
-
-def init_app():
-    app = web.Application()
-    app.router.add_get('/', health_check)
-    app.router.add_get('/health', health_check)
-    
-    app.on_startup.append(start_background_tasks)
-    app.on_cleanup.append(cleanup_background_tasks)
-    
-    return app
+async def main():
+    tracker = InteractiveFuturesTracker()
+    await tracker.run()
 
 if __name__ == "__main__":
-    # For production with web server
-    if os.getenv('FLY_APP_NAME'):
-        web.run_app(init_app(), port=8080, host='0.0.0.0')
-    else:
-        # For local development
-        async def main():
-            tracker = FuturesTracker()
-            await tracker.run()
-        
-        asyncio.run(main())
+    print("Starting Interactive MEXC Futures Tracker...")
+    asyncio.run(main())
