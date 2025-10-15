@@ -51,25 +51,39 @@ class MEXCTracker:
         self.setup_google_sheets()
     
     def setup_google_sheets(self):
-        """Setup Google Sheets connection"""
+        """Setup Google Sheets connection with specific spreadsheet"""
         try:
             scope = ['https://spreadsheets.google.com/feeds',
-                    'https://www.googleapis.com/auth/drive']
+                    'https://www.googleapis.com/auth/drive',
+                    'https://www.googleapis.com/auth/spreadsheets']
             
+            # Method 1: Use service account JSON from environment
             creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
             if creds_json:
                 creds_dict = json.loads(creds_json)
                 self.creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
                 self.gs_client = gspread.authorize(self.creds)
-                logger.info("Google Sheets client initialized")
+                
+                # Try to open your specific spreadsheet
+                try:
+                    self.spreadsheet = self.gs_client.open_by_url(
+                        "https://docs.google.com/spreadsheets/d/1Axc4-JmvDtYV-uWhVxNqDHPOaXbwo2rJqnBKgnxGJY0/edit#gid=0"
+                    )
+                    logger.info(f"Connected to existing spreadsheet: {self.spreadsheet.title}")
+                except Exception as e:
+                    logger.warning(f"Could not open specific spreadsheet: {e}. Will create new ones.")
+                    self.spreadsheet = None
+                    
             else:
                 self.gs_client = None
-                logger.info("Google Sheets not configured")
+                self.spreadsheet = None
+                logger.info("Google Sheets not configured - no credentials found")
                 
         except Exception as e:
             logger.error(f"Google Sheets setup error: {e}")
             self.gs_client = None
-    
+            self.spreadsheet = None
+            
     def auto_sheet_command(self, update: Update, context: CallbackContext):
         """Get or create auto-update Google Sheet"""
         if not self.gs_client:
