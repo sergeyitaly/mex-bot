@@ -179,41 +179,71 @@ class MEXCTracker:
             return set()
     
     def get_binance_futures(self):
-        """Get futures from Binance"""
+        """Get futures from Binance with better error handling"""
         try:
             url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()  # This will raise an exception for bad status codes
+            
             data = response.json()
             
             futures = set()
             for symbol_data in data.get('symbols', []):
-                if symbol_data.get('contractType') == 'PERPETUAL':
+                if symbol_data.get('contractType') == 'PERPETUAL' and symbol_data.get('status') == 'TRADING':
                     futures.add(symbol_data['symbol'])
             
             logger.info(f"Binance: {len(futures)} futures")
             return futures
         except Exception as e:
-            logger.error(f"Binance error: {e}")
+            logger.error(f"Binance error: {e} - Response: {getattr(response, 'text', 'No response')}")
             return set()
-    
+
     def get_bybit_futures(self):
-        """Get futures from Bybit"""
+        """Get futures from Bybit with better error handling"""
         try:
             url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
-            response = requests.get(url, timeout=10)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, timeout=15, headers=headers)
+            response.raise_for_status()
+            
             data = response.json()
             
             futures = set()
-            for item in data.get('result', {}).get('list', []):
-                if item.get('status') == 'Trading':
-                    symbol = item.get('symbol', '')
-                    if symbol:
-                        futures.add(symbol)
+            if data.get('retCode') == 0:
+                for item in data.get('result', {}).get('list', []):
+                    if item.get('status') == 'Trading':
+                        symbol = item.get('symbol', '')
+                        if symbol:
+                            futures.add(symbol)
             
             logger.info(f"Bybit: {len(futures)} futures")
             return futures
         except Exception as e:
-            logger.error(f"Bybit error: {e}")
+            logger.error(f"Bybit error: {e} - Response: {getattr(response, 'text', 'No response')}")
+            return set()
+
+    def get_bitget_futures(self):
+        """Get futures from BitGet with better error handling"""
+        try:
+            url = "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            futures = set()
+            if data.get('code') == '00000' and data.get('data'):
+                for item in data.get('data', []):
+                    symbol = item.get('symbol', '')
+                    if symbol and item.get('status') == 'normal':
+                        futures.add(symbol)
+            
+            logger.info(f"BitGet: {len(futures)} futures")
+            return futures
+        except Exception as e:
+            logger.error(f"BitGet error: {e} - Response: {getattr(response, 'text', 'No response')}")
             return set()
     
     def get_okx_futures(self):
@@ -292,26 +322,7 @@ class MEXCTracker:
             logger.error(f"BingX error: {e}")
             return set()
     
-    def get_bitget_futures(self):
-        """Get futures from BitGet"""
-        try:
-            url = "https://api.bitget.com/api/mix/v1/market/contracts?productType=usdt-mix"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            
-            futures = set()
-            if data.get('code') == '00000' and data.get('data'):
-                for item in data.get('data', []):
-                    symbol = item.get('symbol', '')
-                    if symbol:
-                        futures.add(symbol)
-            
-            logger.info(f"BitGet: {len(futures)} futures")
-            return futures
-        except Exception as e:
-            logger.error(f"BitGet error: {e}")
-            return set()
-    
+   
     def get_all_exchanges_futures(self):
         """Get futures from all exchanges and return statistics"""
         exchanges = {
@@ -637,25 +648,176 @@ class MEXCTracker:
             update.message.reply_html(error_msg)
     
     def analysis_command(self, update: Update, context: CallbackContext):
-        """Create comprehensive analysis"""
-        update.message.reply_html("📈 <b>Creating comprehensive analysis...</b>\nThis may take a few minutes.")
+        """Create comprehensive analysis without Google Sheets"""
+        update.message.reply_html("📈 <b>Creating comprehensive analysis...</b>")
         
-        def send_analysis():
-            sheet_url = self.create_comprehensive_analysis()
-            if sheet_url.startswith("http"):
-                message = "✅ <b>Analysis Complete!</b>\n\n"
-                message += f"📊 Comprehensive analysis created:\n{sheet_url}\n\n"
-                message += "Use /sheet to get this link later."
-            else:
-                message = f"❌ <b>Analysis Failed:</b>\n{sheet_url}"
+        try:
+            # Collect data from all exchanges
+            all_futures_data = []
+            exchanges = {
+                'MEXC': self.get_mexc_futures,
+                'Binance': self.get_binance_futures,
+                'Bybit': self.get_bybit_futures,
+                'OKX': self.get_okx_futures,
+                'Gate.io': self.get_gate_futures,
+                'KuCoin': self.get_kucoin_futures,
+                'BingX': self.get_bingx_futures,
+                'BitGet': self.get_bitget_futures
+            }
             
-            update.message.reply_html(message)
+            exchange_stats = {}
+            symbol_coverage = {}
+            
+            for name, method in exchanges.items():
+                try:
+                    futures = method()
+                    exchange_stats[name] = len(futures)
+                    
+                    for symbol in futures:
+                        all_futures_data.append({
+                            'symbol': symbol,
+                            'exchange': name,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                        # Track symbol coverage
+                        normalized = self.normalize_symbol(symbol)
+                        if normalized not in symbol_coverage:
+                            symbol_coverage[normalized] = set()
+                        symbol_coverage[normalized].add(name)
+                    
+                    time.sleep(1)  # Rate limiting
+                    
+                except Exception as e:
+                    logger.error(f"Exchange {name} error: {e}")
+                    exchange_stats[name] = 0
+            
+            # Create and send analysis files directly
+            self.send_comprehensive_analysis(update, all_futures_data, exchange_stats, symbol_coverage)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
+
+    def send_comprehensive_analysis(self, update: Update, all_futures_data, exchange_stats, symbol_coverage):
+        """Send comprehensive analysis as CSV files"""
+        try:
+            # File 1: Complete analysis
+            csv1_content = self.create_complete_analysis_csv(all_futures_data, symbol_coverage, exchange_stats)
+            file1 = io.BytesIO(csv1_content.encode('utf-8'))
+            file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            
+            # File 2: Unique futures only
+            csv2_content = self.create_unique_futures_csv(symbol_coverage, all_futures_data)
+            file2 = io.BytesIO(csv2_content.encode('utf-8'))
+            file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            
+            # File 3: MEXC analysis
+            csv3_content = self.create_mexc_analysis_csv(all_futures_data, symbol_coverage)
+            file3 = io.BytesIO(csv3_content.encode('utf-8'))
+            file3.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
+            
+            # Send files
+            update.message.reply_document(
+                document=file1,
+                caption="📊 <b>Complete Futures Analysis</b>\n\nAll futures from all exchanges",
+                parse_mode='HTML'
+            )
+            
+            update.message.reply_document(
+                document=file2,
+                caption="💎 <b>Unique Futures</b>\n\nFutures available on only one exchange",
+                parse_mode='HTML'
+            )
+            
+            update.message.reply_document(
+                document=file3,
+                caption="🎯 <b>MEXC Analysis</b>\n\nDetailed MEXC futures coverage",
+                parse_mode='HTML'
+            )
+            
+            # Send summary
+            unique_count = len([s for s in symbol_coverage.values() if len(s) == 1])
+            working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+            
+            summary = (
+                "📈 <b>Analysis Complete!</b>\n\n"
+                f"🏢 Exchanges working: {working_exchanges}/{len(exchange_stats)}\n"
+                f"📊 Total symbols: {len(symbol_coverage)}\n"
+                f"💎 Unique listings: {unique_count}\n"
+                f"🔄 MEXC futures: {exchange_stats.get('MEXC', 0)}\n"
+                f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            
+            update.message.reply_html(summary)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Error sending analysis:</b>\n{str(e)}")
+
+    def create_complete_analysis_csv(self, all_futures_data, symbol_coverage, exchange_stats):
+        """Create complete analysis CSV"""
+        output = io.StringIO()
+        writer = csv.writer(output)
         
-        # Run in background to avoid timeout
-        import threading
-        thread = threading.Thread(target=send_analysis)
-        thread.start()
-    
+        # Header
+        writer.writerow(['COMPLETE FUTURES ANALYSIS'])
+        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        writer.writerow([])
+        
+        # Exchange summary
+        writer.writerow(['EXCHANGE SUMMARY'])
+        writer.writerow(['Exchange', 'Status', 'Futures Count'])
+        for exchange, count in exchange_stats.items():
+            status = '✅ WORKING' if count > 0 else '❌ FAILED'
+            writer.writerow([exchange, status, count])
+        
+        writer.writerow([])
+        writer.writerow(['DETAILED FUTURES DATA'])
+        writer.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage'])
+        
+        for future in all_futures_data:
+            normalized = self.normalize_symbol(future['symbol'])
+            exchanges_list = symbol_coverage[normalized]
+            available_on = ', '.join(sorted(exchanges_list))
+            coverage = f"{len(exchanges_list)} exchanges"
+            
+            writer.writerow([
+                future['symbol'],
+                future['exchange'],
+                normalized,
+                available_on,
+                coverage
+            ])
+        
+        return output.getvalue()
+
+    def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
+        """Create unique futures CSV"""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['UNIQUE FUTURES ANALYSIS'])
+        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        writer.writerow([])
+        writer.writerow(['Symbol', 'Exchange', 'Normalized Symbol'])
+        
+        unique_count = 0
+        for normalized, exchanges_set in symbol_coverage.items():
+            if len(exchanges_set) == 1:
+                unique_count += 1
+                exchange = list(exchanges_set)[0]
+                original_symbol = next((f['symbol'] for f in all_futures_data 
+                                    if self.normalize_symbol(f['symbol']) == normalized 
+                                    and f['exchange'] == exchange), normalized)
+                
+                writer.writerow([original_symbol, exchange, normalized])
+        
+        writer.writerow([])
+        writer.writerow(['SUMMARY'])
+        writer.writerow(['Total unique futures', unique_count])
+        
+        return output.getvalue()
+
+
     def sheet_command(self, update: Update, context: CallbackContext):
         """Get Google Sheet link"""
         data = self.load_data()
@@ -716,9 +878,8 @@ class MEXCTracker:
             "Gate.io, KuCoin, BingX, BitGet\n\n"
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
-            "/analysis - Full analysis (Google Sheets)\n"
-            "/export - Download data (CSV/JSON)\n"  # ← Новая команда
-            "/sheet - Get analysis sheet link\n"
+            "/analysis - Full analysis (CSV files)\n"
+            "/export - Download data (CSV/JSON)\n"
             "/status - Current status\n"
             "/exchanges - Exchange information\n\n"
             "<b>Auto-features:</b>\n"
@@ -728,7 +889,7 @@ class MEXCTracker:
             "⚡ <i>Happy trading!</i>"
         )
         update.message.reply_html(help_text)
-    
+        
     def get_uptime(self):
         """Calculate bot uptime"""
         data = self.load_data()
