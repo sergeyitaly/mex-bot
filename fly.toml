@@ -1,0 +1,22 @@
+app = "mexc-futures-tracker"
+primary_region = "iad"
+
+[build]
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 8080
+
+  [[services.http_checks]]
+    interval = 10000
+    grace_period = "5s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+    timeout = 2000
+
+# No scaling needed for this type of bot
+[env]

@@ -1,0 +1,1417 @@
+{
+  "unique_futures": [
+    "OPENLEDGER_USDT",
+    "GATA_USDT",
+    "MSFTSTOCK_USDT",
+    "ORCLSTOCK_USDT",
+    "DEVVE_USDT",
+    "KIND_USDT",
+    "MAMO_USDT",
+    "DEBT_USDT",
+    "APEX_USDT",
+    "COOK_USDT",
+    "AVGOSTOCK_USDT",
+    "IQ_USDT",
+    "PUMPFUN_USDT",
+    "MNT_USDT",
+    "IKA_USDT",
+    "ZKSYNC_USDT",
+    "1000000PEIPEI_USDT",
+    "PAAL_USDT",
+    "ES_USDT",
+    "DODO_USDT",
+    "SAROS_USDT",
+    "GIGA_USDT",
+    "PYR_USDT",
+    "CLASH_USDT",
+    "CORE_USDT",
+    "XEC_USDT",
+    "AAPLSTOCK_USDT",
+    "P_USDT",
+    "YZY_USDT",
+    "BRL_USDT",
+    "CAT_USDT",
+    "AVL_USDT",
+    "X_USDT",
+    "J_USDT",
+    "PLTRSTOCK_USDT",
+    "RBNT_USDT",
+    "WIN_USDT",
+    "FLR_USDT",
+    "SWEAT_USDT",
+    "AMDSTOCK_USDT",
+    "BOT_USDT",
+    "LAB_USDT",
+    "METASTOCK_USDT",
+    "SD_USDT",
+    "RICE_USDT",
+    "DOG_USDT",
+    "AGI_USDT",
+    "WBAI_USDT",
+    "FIGSTOCK_USDT",
+    "BIANRENSHENG_USDT",
+    "1000000BABYDOGE_USDT",
+    "L3_USDT",
+    "QUBIC_USDT",
+    "PUBLIC_USDT",
+    "OBT_USDT",
+    "RSS3_USDT",
+    "DBR_USDT",
+    "APPSTOCK_USDT",
+    "U_USDT",
+    "XCH_USDT",
+    "MEMERUSH_USDT",
+    "SPARK_USDT",
+    "AMP_USDT",
+    "FARM_USDT",
+    "NOBODY_USDT",
+    "RON_USDT",
+    "A8_USDT",
+    "POND_USDT",
+    "BABASTOCK_USDT",
+    "PI_USDT",
+    "VR_USDT",
+    "MCDSTOCK_USDT",
+    "SEND_USDT",
+    "LAZIO_USDT",
+    "CYPR_USDT",
+    "MVL_USDT",
+    "NS_USDT",
+    "GNO_USDT",
+    "TRY_USDT",
+    "LAVA_USDT",
+    "HARRY_USDT",
+    "SUNDOG_USDT",
+    "CAMP_USDT",
+    "SOLO_USDT",
+    "PUP_USDT",
+    "XDC_USDT",
+    "GORK_USDT",
+    "PIPE_USDT",
+    "BLAST_USDT",
+    "CPOOL_USDT",
+    "MAT_USDT",
+    "FORT_USDT",
+    "ZEUS_USDT",
+    "XION_USDT",
+    "ACS_USDT",
+    "CULT_USDT",
+    "ULTI_USDT",
+    "BAR_USDT",
+    "TESLA_USDT",
+    "KEFUXIAOHE_USDT",
+    "GODS_USDT",
+    "CAD_USDT",
+    "AIOZ_USDT",
+    "AUD_USDT",
+    "RION_USDT",
+    "CRCLSTOCK_USDT",
+    "ARCSOL_USDT",
+    "XDOG_USDT",
+    "MNDE_USDT",
+    "RACA_USDT",
+    "LMWR_USDT",
+    "RIVER_USDT",
+    "FRAG_USDT",
+    "ROBINHOOD_USDT",
+    "SUPRA_USDT",
+    "PSTAKE_USDT",
+    "SATS_USDT",
+    "ASP_USDT",
+    "BLUE_USDT",
+    "AMZNSTOCK_USDT",
+    "XCX_USDT",
+    "GOOGLSTOCK_USDT",
+    "HSK_USDT",
+    "GROK_USDT",
+    "LOOKS_USDT",
+    "XAUT_USDT",
+    "SYND_USDT",
+    "SIDEKICK_USDT",
+    "100000AIDOGE_USDT",
+    "SCA_USDT",
+    "QTO_USDT",
+    "MORI_USDT",
+    "POP_USDT",
+    "10000WEN_USDT",
+    "ZENT_USDT",
+    "BNBHOLDER_USDT",
+    "HAJIMI_USDT",
+    "ELX_USDT",
+    "REAL1_USDT",
+    "QKC_USDT",
+    "PRCL_USDT",
+    "EXO_USDT",
+    "MSTRSTOCK_USDT",
+    "CHEEMS_USDT",
+    "WMTX_USDT",
+    "ROAM_USDT",
+    "GOATED_USDT",
+    "NAVX_USDT",
+    "OKB_USDT",
+    "SERAPH_USDT",
+    "AIC_USDT",
+    "CHF_USDT",
+    "STRIKE_USDT",
+    "SWTCH_USDT",
+    "REX_USDT",
+    "NFLXSTOCK_USDT",
+    "ADBESTOCK_USDT",
+    "CSPR_USDT",
+    "ZBCN_USDT",
+    "NUMI_USDT",
+    "AUDIO_USDT",
+    "PEPE_USDT",
+    "FLOKI_USDT",
+    "BROCCOLI_USDT",
+    "TONCOIN_USDT",
+    "JPY_USDT",
+    "PEAQ_USDT",
+    "CARDS_USDT",
+    "FWOG_USDT",
+    "VELO_USDT",
+    "TFUEL_USDT",
+    "LAUNCHCOIN_USDT",
+    "ALU_USDT",
+    "SHIB_USDT",
+    "MASA_USDT",
+    "BAGWORK_USDT",
+    "MAJOR_USDT",
+    "CORL_USDT",
+    "AURASOL_USDT",
+    "GP_USDT",
+    "MGO_USDT",
+    "TRUMPOFFICIAL_USDT",
+    "BOBA_USDT",
+    "BOOST_USDT",
+    "NEIROCTO_USDT",
+    "NVIDIA_USDT",
+    "HNT_USDT",
+    "CLANKER_USDT",
+    "ULTIMA_USDT",
+    "MAIGA_USDT",
+    "CDL_USDT",
+    "1000BTT_USDT",
+    "UNITE_USDT",
+    "PALU_USDT",
+    "CITY_USDT",
+    "CLIPPY_USDT",
+    "TAI_USDT",
+    "OSMO_USDT",
+    "XIUXIAN_USDT",
+    "BSU_USDT",
+    "AVAIL_USDT",
+    "CTC_USDT",
+    "EUR_USDT",
+    "MANYU_USDT",
+    "DSYNC_USDT",
+    "MIRROR_USDT",
+    "CRO_USDT",
+    "REQ_USDT",
+    "SOONNETWORK_USDT",
+    "ICE_USDT",
+    "LUNC_USDT",
+    "BLOCK_USDT",
+    "RAIL_USDT",
+    "RSC_USDT",
+    "DONKEY_USDT",
+    "RHEA_USDT",
+    "BOBBSC_USDT",
+    "CLOUD_USDT",
+    "ALEO_USDT",
+    "FILECOIN_USDT",
+    "GBP_USDT",
+    "COINBASE_USDT",
+    "LUNANEW_USDT",
+    "AA_USDT",
+    "STREAMER_USDT",
+    "PINGPONG_USDT",
+    "XNO_USDT",
+    "MONAD_USDT",
+    "STARTUP_USDT",
+    "TRILLIONS_USDT",
+    "RFC_USDT",
+    "NEET_USDT",
+    "NODE_USDT",
+    "ELON_USDT"
+  ],
+  "last_update": "2025-10-15T17:32:26.551321",
+  "tracking_history": [
+    {
+      "symbol": "OPENLEDGER_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551329"
+    },
+    {
+      "symbol": "GATA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551337"
+    },
+    {
+      "symbol": "MSFTSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551344"
+    },
+    {
+      "symbol": "ORCLSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551350"
+    },
+    {
+      "symbol": "DEVVE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551357"
+    },
+    {
+      "symbol": "KIND_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551363"
+    },
+    {
+      "symbol": "MAMO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551369"
+    },
+    {
+      "symbol": "DEBT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551379"
+    },
+    {
+      "symbol": "APEX_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551384"
+    },
+    {
+      "symbol": "COOK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551388"
+    },
+    {
+      "symbol": "AVGOSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551392"
+    },
+    {
+      "symbol": "IQ_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551395"
+    },
+    {
+      "symbol": "PUMPFUN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551399"
+    },
+    {
+      "symbol": "MNT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551402"
+    },
+    {
+      "symbol": "IKA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551406"
+    },
+    {
+      "symbol": "ZKSYNC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551409"
+    },
+    {
+      "symbol": "1000000PEIPEI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551412"
+    },
+    {
+      "symbol": "PAAL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551416"
+    },
+    {
+      "symbol": "ES_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551419"
+    },
+    {
+      "symbol": "DODO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551423"
+    },
+    {
+      "symbol": "SAROS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551426"
+    },
+    {
+      "symbol": "GIGA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551430"
+    },
+    {
+      "symbol": "PYR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551433"
+    },
+    {
+      "symbol": "CLASH_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551436"
+    },
+    {
+      "symbol": "CORE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551440"
+    },
+    {
+      "symbol": "XEC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551443"
+    },
+    {
+      "symbol": "AAPLSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551447"
+    },
+    {
+      "symbol": "P_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551450"
+    },
+    {
+      "symbol": "YZY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551454"
+    },
+    {
+      "symbol": "BRL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551457"
+    },
+    {
+      "symbol": "CAT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551460"
+    },
+    {
+      "symbol": "AVL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551464"
+    },
+    {
+      "symbol": "X_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551467"
+    },
+    {
+      "symbol": "J_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551471"
+    },
+    {
+      "symbol": "PLTRSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551474"
+    },
+    {
+      "symbol": "RBNT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551478"
+    },
+    {
+      "symbol": "WIN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551481"
+    },
+    {
+      "symbol": "FLR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551484"
+    },
+    {
+      "symbol": "SWEAT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551488"
+    },
+    {
+      "symbol": "AMDSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551491"
+    },
+    {
+      "symbol": "BOT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551494"
+    },
+    {
+      "symbol": "LAB_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551498"
+    },
+    {
+      "symbol": "METASTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551501"
+    },
+    {
+      "symbol": "SD_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551504"
+    },
+    {
+      "symbol": "RICE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551508"
+    },
+    {
+      "symbol": "DOG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551511"
+    },
+    {
+      "symbol": "AGI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551514"
+    },
+    {
+      "symbol": "WBAI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551518"
+    },
+    {
+      "symbol": "FIGSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551521"
+    },
+    {
+      "symbol": "BIANRENSHENG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551524"
+    },
+    {
+      "symbol": "1000000BABYDOGE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551528"
+    },
+    {
+      "symbol": "L3_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551531"
+    },
+    {
+      "symbol": "QUBIC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551535"
+    },
+    {
+      "symbol": "PUBLIC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551539"
+    },
+    {
+      "symbol": "OBT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551542"
+    },
+    {
+      "symbol": "RSS3_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551545"
+    },
+    {
+      "symbol": "DBR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551549"
+    },
+    {
+      "symbol": "APPSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551552"
+    },
+    {
+      "symbol": "U_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551556"
+    },
+    {
+      "symbol": "XCH_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551559"
+    },
+    {
+      "symbol": "MEMERUSH_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551563"
+    },
+    {
+      "symbol": "SPARK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551566"
+    },
+    {
+      "symbol": "AMP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551570"
+    },
+    {
+      "symbol": "FARM_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551573"
+    },
+    {
+      "symbol": "NOBODY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551577"
+    },
+    {
+      "symbol": "RON_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551581"
+    },
+    {
+      "symbol": "A8_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551585"
+    },
+    {
+      "symbol": "POND_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551588"
+    },
+    {
+      "symbol": "BABASTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551591"
+    },
+    {
+      "symbol": "PI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551595"
+    },
+    {
+      "symbol": "VR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551598"
+    },
+    {
+      "symbol": "MCDSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551602"
+    },
+    {
+      "symbol": "SEND_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551605"
+    },
+    {
+      "symbol": "LAZIO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551609"
+    },
+    {
+      "symbol": "CYPR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551612"
+    },
+    {
+      "symbol": "MVL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551616"
+    },
+    {
+      "symbol": "NS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551619"
+    },
+    {
+      "symbol": "GNO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551624"
+    },
+    {
+      "symbol": "TRY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551628"
+    },
+    {
+      "symbol": "LAVA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551631"
+    },
+    {
+      "symbol": "HARRY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551635"
+    },
+    {
+      "symbol": "SUNDOG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551638"
+    },
+    {
+      "symbol": "CAMP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551642"
+    },
+    {
+      "symbol": "SOLO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551645"
+    },
+    {
+      "symbol": "PUP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551649"
+    },
+    {
+      "symbol": "XDC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551652"
+    },
+    {
+      "symbol": "GORK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551656"
+    },
+    {
+      "symbol": "PIPE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551659"
+    },
+    {
+      "symbol": "BLAST_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551662"
+    },
+    {
+      "symbol": "CPOOL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551666"
+    },
+    {
+      "symbol": "MAT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551669"
+    },
+    {
+      "symbol": "FORT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551672"
+    },
+    {
+      "symbol": "ZEUS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551676"
+    },
+    {
+      "symbol": "XION_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551680"
+    },
+    {
+      "symbol": "ACS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551683"
+    },
+    {
+      "symbol": "CULT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551687"
+    },
+    {
+      "symbol": "ULTI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551690"
+    },
+    {
+      "symbol": "BAR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551693"
+    },
+    {
+      "symbol": "TESLA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551697"
+    },
+    {
+      "symbol": "KEFUXIAOHE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551700"
+    },
+    {
+      "symbol": "GODS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551703"
+    },
+    {
+      "symbol": "CAD_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551707"
+    },
+    {
+      "symbol": "AIOZ_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551710"
+    },
+    {
+      "symbol": "AUD_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551714"
+    },
+    {
+      "symbol": "RION_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551717"
+    },
+    {
+      "symbol": "CRCLSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551720"
+    },
+    {
+      "symbol": "ARCSOL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551724"
+    },
+    {
+      "symbol": "XDOG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551727"
+    },
+    {
+      "symbol": "MNDE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551730"
+    },
+    {
+      "symbol": "RACA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551734"
+    },
+    {
+      "symbol": "LMWR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551738"
+    },
+    {
+      "symbol": "RIVER_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551741"
+    },
+    {
+      "symbol": "FRAG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551745"
+    },
+    {
+      "symbol": "ROBINHOOD_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551748"
+    },
+    {
+      "symbol": "SUPRA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551751"
+    },
+    {
+      "symbol": "PSTAKE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551755"
+    },
+    {
+      "symbol": "SATS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551758"
+    },
+    {
+      "symbol": "ASP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551761"
+    },
+    {
+      "symbol": "BLUE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551765"
+    },
+    {
+      "symbol": "AMZNSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551768"
+    },
+    {
+      "symbol": "XCX_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551771"
+    },
+    {
+      "symbol": "GOOGLSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551774"
+    },
+    {
+      "symbol": "HSK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551778"
+    },
+    {
+      "symbol": "GROK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551781"
+    },
+    {
+      "symbol": "LOOKS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551784"
+    },
+    {
+      "symbol": "XAUT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551788"
+    },
+    {
+      "symbol": "SYND_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551791"
+    },
+    {
+      "symbol": "SIDEKICK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551795"
+    },
+    {
+      "symbol": "100000AIDOGE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551798"
+    },
+    {
+      "symbol": "SCA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551802"
+    },
+    {
+      "symbol": "QTO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551806"
+    },
+    {
+      "symbol": "MORI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551809"
+    },
+    {
+      "symbol": "POP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551813"
+    },
+    {
+      "symbol": "10000WEN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551816"
+    },
+    {
+      "symbol": "ZENT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551819"
+    },
+    {
+      "symbol": "BNBHOLDER_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551823"
+    },
+    {
+      "symbol": "HAJIMI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551826"
+    },
+    {
+      "symbol": "ELX_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551829"
+    },
+    {
+      "symbol": "REAL1_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551833"
+    },
+    {
+      "symbol": "QKC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551836"
+    },
+    {
+      "symbol": "PRCL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551839"
+    },
+    {
+      "symbol": "EXO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551843"
+    },
+    {
+      "symbol": "MSTRSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551846"
+    },
+    {
+      "symbol": "CHEEMS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551849"
+    },
+    {
+      "symbol": "WMTX_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551853"
+    },
+    {
+      "symbol": "ROAM_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551856"
+    },
+    {
+      "symbol": "GOATED_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551859"
+    },
+    {
+      "symbol": "NAVX_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551862"
+    },
+    {
+      "symbol": "OKB_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551866"
+    },
+    {
+      "symbol": "SERAPH_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551870"
+    },
+    {
+      "symbol": "AIC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551873"
+    },
+    {
+      "symbol": "CHF_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551876"
+    },
+    {
+      "symbol": "STRIKE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551880"
+    },
+    {
+      "symbol": "SWTCH_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551883"
+    },
+    {
+      "symbol": "REX_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551886"
+    },
+    {
+      "symbol": "NFLXSTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551889"
+    },
+    {
+      "symbol": "ADBESTOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551893"
+    },
+    {
+      "symbol": "CSPR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551896"
+    },
+    {
+      "symbol": "ZBCN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551899"
+    },
+    {
+      "symbol": "NUMI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551903"
+    },
+    {
+      "symbol": "AUDIO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551906"
+    },
+    {
+      "symbol": "PEPE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551909"
+    },
+    {
+      "symbol": "FLOKI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551912"
+    },
+    {
+      "symbol": "BROCCOLI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551916"
+    },
+    {
+      "symbol": "TONCOIN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551919"
+    },
+    {
+      "symbol": "JPY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551922"
+    },
+    {
+      "symbol": "PEAQ_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551926"
+    },
+    {
+      "symbol": "CARDS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551929"
+    },
+    {
+      "symbol": "FWOG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551932"
+    },
+    {
+      "symbol": "VELO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551936"
+    },
+    {
+      "symbol": "TFUEL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551939"
+    },
+    {
+      "symbol": "LAUNCHCOIN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551942"
+    },
+    {
+      "symbol": "ALU_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551946"
+    },
+    {
+      "symbol": "SHIB_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551950"
+    },
+    {
+      "symbol": "MASA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551953"
+    },
+    {
+      "symbol": "BAGWORK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551956"
+    },
+    {
+      "symbol": "MAJOR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551960"
+    },
+    {
+      "symbol": "CORL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551963"
+    },
+    {
+      "symbol": "AURASOL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551966"
+    },
+    {
+      "symbol": "GP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551970"
+    },
+    {
+      "symbol": "MGO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551973"
+    },
+    {
+      "symbol": "TRUMPOFFICIAL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551976"
+    },
+    {
+      "symbol": "BOBA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551980"
+    },
+    {
+      "symbol": "BOOST_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551983"
+    },
+    {
+      "symbol": "NEIROCTO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551987"
+    },
+    {
+      "symbol": "NVIDIA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551990"
+    },
+    {
+      "symbol": "HNT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551993"
+    },
+    {
+      "symbol": "CLANKER_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.551997"
+    },
+    {
+      "symbol": "ULTIMA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552000"
+    },
+    {
+      "symbol": "MAIGA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552003"
+    },
+    {
+      "symbol": "CDL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552006"
+    },
+    {
+      "symbol": "1000BTT_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552010"
+    },
+    {
+      "symbol": "UNITE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552013"
+    },
+    {
+      "symbol": "PALU_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552016"
+    },
+    {
+      "symbol": "CITY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552020"
+    },
+    {
+      "symbol": "CLIPPY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552023"
+    },
+    {
+      "symbol": "TAI_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552026"
+    },
+    {
+      "symbol": "OSMO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552029"
+    },
+    {
+      "symbol": "XIUXIAN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552033"
+    },
+    {
+      "symbol": "BSU_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552036"
+    },
+    {
+      "symbol": "AVAIL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552040"
+    },
+    {
+      "symbol": "CTC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552043"
+    },
+    {
+      "symbol": "EUR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552046"
+    },
+    {
+      "symbol": "MANYU_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552050"
+    },
+    {
+      "symbol": "DSYNC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552053"
+    },
+    {
+      "symbol": "MIRROR_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552056"
+    },
+    {
+      "symbol": "CRO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552060"
+    },
+    {
+      "symbol": "REQ_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552063"
+    },
+    {
+      "symbol": "SOONNETWORK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552066"
+    },
+    {
+      "symbol": "ICE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552070"
+    },
+    {
+      "symbol": "LUNC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552073"
+    },
+    {
+      "symbol": "BLOCK_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552076"
+    },
+    {
+      "symbol": "RAIL_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552080"
+    },
+    {
+      "symbol": "RSC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552083"
+    },
+    {
+      "symbol": "DONKEY_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552086"
+    },
+    {
+      "symbol": "RHEA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552089"
+    },
+    {
+      "symbol": "BOBBSC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552093"
+    },
+    {
+      "symbol": "CLOUD_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552096"
+    },
+    {
+      "symbol": "ALEO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552099"
+    },
+    {
+      "symbol": "FILECOIN_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552103"
+    },
+    {
+      "symbol": "GBP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552106"
+    },
+    {
+      "symbol": "COINBASE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552109"
+    },
+    {
+      "symbol": "LUNANEW_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552113"
+    },
+    {
+      "symbol": "AA_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552116"
+    },
+    {
+      "symbol": "STREAMER_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552119"
+    },
+    {
+      "symbol": "PINGPONG_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552123"
+    },
+    {
+      "symbol": "XNO_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552126"
+    },
+    {
+      "symbol": "MONAD_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552129"
+    },
+    {
+      "symbol": "STARTUP_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552132"
+    },
+    {
+      "symbol": "TRILLIONS_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552136"
+    },
+    {
+      "symbol": "RFC_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552139"
+    },
+    {
+      "symbol": "NEET_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552142"
+    },
+    {
+      "symbol": "NODE_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552146"
+    },
+    {
+      "symbol": "ELON_USDT",
+      "event": "added",
+      "timestamp": "2025-10-15T17:32:26.552149"
+    }
+  ],
+  "statistics": {
+    "total_unique_found": 234,
+    "total_notifications_sent": 234,
+    "first_run": "2025-10-15T17:32:24.180304",
+    "last_run": "2025-10-15T17:32:26.551298"
+  }
+}
