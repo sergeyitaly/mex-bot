@@ -826,23 +826,13 @@ class MEXCTracker:
             ws[f'E{data_row}'] = coverage
             data_row += 1
         
-        # Auto-adjust column widths (safe method)
-        for col in range(1, 6):  # Columns A to E
-            max_length = 0
-            column_letter = ws.cell(row=1, column=col).column_letter
-            
-            for row_num in range(1, data_row + 1):
-                cell = ws.cell(row=row_num, column=col)
-                if cell.value:
-                    try:
-                        cell_length = len(str(cell.value))
-                        if cell_length > max_length:
-                            max_length = cell_length
-                    except:
-                        pass
-            
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
+        # SIMPLE COLUMN WIDTH ADJUSTMENT - NO ITERATION OVER COLUMNS
+        # Manually set reasonable column widths
+        ws.column_dimensions['A'].width = 20  # Symbol
+        ws.column_dimensions['B'].width = 15  # Exchange
+        ws.column_dimensions['C'].width = 20  # Normalized Symbol
+        ws.column_dimensions['D'].width = 30  # Available On
+        ws.column_dimensions['E'].width = 15  # Coverage
         
         # Save to bytes
         output = io.BytesIO()
@@ -907,23 +897,10 @@ class MEXCTracker:
         ws[f'A{row+3}'].font = title_font
         ws[f'B{row+3}'].font = normal_font
         
-        # Auto-adjust column widths (safe method)
-        for col in range(1, 4):  # Columns A to C
-            max_length = 0
-            column_letter = ws.cell(row=1, column=col).column_letter
-            
-            for row_num in range(1, row + 4):
-                cell = ws.cell(row=row_num, column=col)
-                if cell.value:
-                    try:
-                        cell_length = len(str(cell.value))
-                        if cell_length > max_length:
-                            max_length = cell_length
-                    except:
-                        pass
-            
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
+        # SIMPLE COLUMN WIDTH ADJUSTMENT - NO ITERATION OVER COLUMNS
+        ws.column_dimensions['A'].width = 25  # Symbol
+        ws.column_dimensions['B'].width = 15  # Exchange
+        ws.column_dimensions['C'].width = 25  # Normalized Symbol
         
         # Save to bytes
         output = io.BytesIO()
@@ -932,7 +909,6 @@ class MEXCTracker:
         output.close()
         
         return excel_content
-
 
     def sheet_command(self, update: Update, context: CallbackContext):
         """Get Google Sheet link"""
