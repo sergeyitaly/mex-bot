@@ -1133,6 +1133,44 @@ class MEXCTracker:
             update.message.reply_html(f"❌ <b>JSON export error:</b>\n{str(e)}")
             logger.error(f"JSON export error: {e}")
 
+    def create_mexc_analysis_csv(self, all_futures_data, symbol_coverage):
+        """Create MEXC-specific analysis CSV"""
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        writer.writerow(['MEXC FUTURES ANALYSIS'])
+        writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        writer.writerow([])
+        writer.writerow(['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 'Status'])
+        
+        mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+        unique_count = 0
+        
+        for future in mexc_futures:
+            normalized = self.normalize_symbol(future['symbol'])
+            exchanges_list = symbol_coverage[normalized]
+            available_on = ', '.join(sorted(exchanges_list))
+            status = "UNIQUE" if len(exchanges_list) == 1 else f"On {len(exchanges_list)} exchanges"
+            
+            if len(exchanges_list) == 1:
+                unique_count += 1
+            
+            writer.writerow([
+                future['symbol'],
+                normalized,
+                available_on,
+                len(exchanges_list),
+                status
+            ])
+        
+        writer.writerow([])
+        writer.writerow(['MEXC SUMMARY'])
+        writer.writerow(['Total MEXC futures', len(mexc_futures)])
+        writer.writerow(['Unique MEXC futures', unique_count])
+        writer.writerow(['Multi-exchange futures', len(mexc_futures) - unique_count])
+        
+        return output.getvalue()
+
     def export_full_analysis(self, update: Update):
         """Create and send full analysis files"""
         update.message.reply_html("📈 <b>Creating full analysis export...</b>")
