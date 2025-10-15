@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import schedule
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Bot, Update
 from telegram import Bot, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
@@ -51,69 +51,75 @@ class MEXCTracker:
         self.setup_google_sheets()
     
     def setup_google_sheets(self):
-        """Setup Google Sheets connection with specific spreadsheet"""
+        """Setup Google Sheets connection using the existing spreadsheet"""
         try:
-            scope = ['https://spreadsheets.google.com/feeds',
-                    'https://www.googleapis.com/auth/drive',
-                    'https://www.googleapis.com/auth/spreadsheets']
-            
-            # Method 1: Use service account JSON from environment
             creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
-            if creds_json:
+            if not creds_json:
+                logger.info("Google Sheets not configured - no credentials found")
+                self.gs_client = None
+                self.spreadsheet = None
+                return
+
+            try:
                 creds_dict = json.loads(creds_json)
+                logger.info(f"Google Sheets credentials loaded for: {creds_dict.get('client_email')}")
+            except Exception as e:
+                logger.error(f"Failed to parse GOOGLE_CREDENTIALS_JSON: {e}")
+                self.gs_client = None
+                self.spreadsheet = None
+                return
+
+            # Use the scope that worked in diagnostics
+            scope = ['https://www.googleapis.com/auth/spreadsheets']
+            
+            try:
                 self.creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
                 self.gs_client = gspread.authorize(self.creds)
                 
-                # Try to open your specific spreadsheet
-                try:
-                    self.spreadsheet = self.gs_client.open_by_url(
-                        "https://docs.google.com/spreadsheets/d/1Axc4-JmvDtYV-uWhVxNqDHPOaXbwo2rJqnBKgnxGJY0/edit#gid=0"
-                    )
-                    logger.info(f"Connected to existing spreadsheet: {self.spreadsheet.title}")
-                except Exception as e:
-                    logger.warning(f"Could not open specific spreadsheet: {e}. Will create new ones.")
-                    self.spreadsheet = None
-                    
-            else:
+                # Connect to your existing spreadsheet
+                self.spreadsheet = self.gs_client.open_by_key("1Axc4-JmvDtYV-uWhVxNqDHPOaXbwo2rJqnBKgnxGJY0")
+                logger.info(f"✅ Connected to existing spreadsheet: {self.spreadsheet.title}")
+                
+            except Exception as e:
+                logger.error(f"Failed to connect to spreadsheet: {e}")
                 self.gs_client = None
                 self.spreadsheet = None
-                logger.info("Google Sheets not configured - no credentials found")
-                
+
         except Exception as e:
             logger.error(f"Google Sheets setup error: {e}")
             self.gs_client = None
             self.spreadsheet = None
-            
+
     def auto_sheet_command(self, update: Update, context: CallbackContext):
-        """Get or create auto-update Google Sheet"""
-        if not self.gs_client:
-            update.message.reply_html("❌ Google Sheets not configured. Set GOOGLE_CREDENTIALS_JSON in .env")
+        """Setup auto-update on the existing Google Sheet"""
+        if not self.gs_client or not self.spreadsheet:
+            update.message.reply_html("❌ Google Sheets not configured or connected.")
             return
         
         try:
-            update.message.reply_html("🔄 <b>Setting up auto-update Google Sheet...</b>")
+            update.message.reply_html("🔄 <b>Setting up auto-update on your existing Google Sheet...</b>")
             
             spreadsheet = self.setup_auto_update_sheet()
             if spreadsheet:
-                # Do an initial update
+                # Do initial data update
                 self.update_google_sheet()
                 
                 update.message.reply_html(
-                    f"✅ <b>Auto-Update Google Sheet Ready!</b>\n\n"
-                    f"📊 <a href='{spreadsheet.url}'>Open Auto-Update Sheet</a>\n\n"
+                    f"✅ <b>Auto-Update Configured!</b>\n\n"
+                    f"📊 <a href='{spreadsheet.url}'>Open Your Sheet</a>\n\n"
+                    f"• Using existing: {spreadsheet.title}\n"
                     f"• Auto-updates every {self.update_interval} minutes\n"
                     f"• Live data from all exchanges\n"
-                    f"• Real-time unique futures tracking\n"
-                    f"• Dashboard with key metrics\n\n"
-                    f"<i>The sheet will automatically update with fresh data during each scheduled check.</i>",
+                    f"• Real-time unique futures tracking\n\n"
+                    f"<i>Your sheet will automatically update with fresh data.</i>",
                     reply_markup=ReplyKeyboardRemove()
                 )
             else:
-                update.message.reply_html("❌ Failed to setup auto-update sheet.")
+                update.message.reply_html("❌ Failed to setup auto-update.")
                 
         except Exception as e:
             update.message.reply_html(f"❌ <b>Auto-sheet error:</b>\n{str(e)}")
-            
+           
     def force_update_command(self, update: Update, context: CallbackContext):
         """Force immediate Google Sheet update"""
         if not self.gs_client:
@@ -1835,104 +1841,66 @@ class MEXCTracker:
         thread.start()
             
     def setup_auto_update_sheet(self):
-        """Setup or get the auto-update Google Sheet"""
-        if not self.gs_client:
-            logger.error("Google Sheets client not available")
+        """Setup auto-update using the existing spreadsheet"""
+        if not self.gs_client or not self.spreadsheet:
+            logger.error("Google Sheets client or spreadsheet not available")
             return None
         
         try:
-            data = self.load_data()
-            sheet_url = data.get('auto_update_sheet_url')
+            # Use the existing spreadsheet we're already connected to
+            spreadsheet = self.spreadsheet
             
-            if sheet_url:
-                # Try to open existing sheet
-                try:
-                    spreadsheet = self.gs_client.open_by_url(sheet_url)
-                    logger.info("Found existing auto-update sheet")
-                    return spreadsheet
-                except Exception as e:
-                    logger.warning(f"Could not open existing sheet: {e}. Creating new one.")
-            
-            # Create new auto-update sheet
-            spreadsheet_name = "MEXC Futures Auto-Update"
-            spreadsheet = self.gs_client.create(spreadsheet_name)
-            
-            # Share with email if configured
-            share_email = os.getenv('GOOGLE_SHEET_EMAIL')
-            if share_email:
-                spreadsheet.share(share_email, perm_type='user', role='writer')
-            
-            # Initialize sheets
+            # Initialize or update the sheets structure
             self.initialize_auto_update_sheets(spreadsheet)
             
-            # Save URL
+            # Save URL for reference
+            data = self.load_data()
             data['auto_update_sheet_url'] = spreadsheet.url
             self.save_data(data)
             
-            logger.info(f"Created new auto-update sheet: {spreadsheet.url}")
+            logger.info(f"✅ Auto-update configured for: {spreadsheet.title}")
             return spreadsheet
-            
+                
         except Exception as e:
             logger.error(f"Error setting up auto-update sheet: {e}")
             return None
 
     def initialize_auto_update_sheets(self, spreadsheet):
-        """Initialize all sheets for auto-update"""
+        """Initialize the sheet structure in your existing spreadsheet"""
         try:
-            # Clear existing sheets
-            for worksheet in spreadsheet.worksheets():
-                if worksheet.title not in ['Dashboard', 'Unique Futures', 'All Futures', 'MEXC Analysis', 'Exchange Stats']:
-                    continue
+            # Clear existing worksheets except the first one (Лист1)
+            existing_sheets = spreadsheet.worksheets()
             
-            # Create/update Dashboard sheet
-            try:
-                dashboard = spreadsheet.worksheet('Dashboard')
-            except gspread.WorksheetNotFound:
-                dashboard = spreadsheet.add_worksheet(title='Dashboard', rows='50', cols='10')
+            # Keep the first sheet, remove others
+            if len(existing_sheets) > 1:
+                for sheet in existing_sheets[1:]:
+                    spreadsheet.del_worksheet(sheet)
             
-            dashboard_data = [
-                ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
-                ["Last Updated", "=NOW()"],
-                ["Update Interval", f"{self.update_interval} minutes"],
-                ["", ""],
-                ["QUICK STATS", ""],
-                ["Total Unique Futures", "=COUNTA('Unique Futures'!A2:A)"],
-                ["Total MEXC Futures", "=COUNTA('MEXC Analysis'!A2:A)"],
-                ["Working Exchanges", "=COUNTIF('Exchange Stats'!C2:C, \"✅ WORKING\")"],
-                ["Total Exchanges", "=COUNTA('Exchange Stats'!A2:A)"],
-                ["", ""],
-                ["LIVE DATA", ""],
-                ["Next Auto-Update", "=A2+TIME(0,Update_Interval,0)"],
-                ["Bot Status", "🟢 RUNNING"],
-                ["", ""],
-                ["LINKS", ""],
-                ["Open Full Analysis", "=HYPERLINK(\"" + spreadsheet.url + "\", \"Click Here\")"]
+            # Rename first sheet to Dashboard
+            main_sheet = existing_sheets[0]
+            main_sheet.update_title("Dashboard")
+            
+            # Create other sheets
+            sheets_to_create = [
+                ("Unique Futures", 5),
+                ("All Futures", 7), 
+                ("MEXC Analysis", 6),
+                ("Exchange Stats", 5)
             ]
             
-            dashboard.update('A1', dashboard_data)
+            for sheet_name, cols in sheets_to_create:
+                try:
+                    spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=str(cols))
+                except Exception as e:
+                    logger.warning(f"Could not create sheet {sheet_name}: {e}")
             
-            # Initialize other sheets with headers
-            self.initialize_sheet_with_headers(spreadsheet, 'Unique Futures', [
-                ['Symbol', 'Status', 'Last Seen', 'Normalized', 'First Detected']
-            ])
+            # Setup Dashboard
+            self.setup_dashboard_sheet(main_sheet)
             
-            self.initialize_sheet_with_headers(spreadsheet, 'All Futures', [
-                ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Last Updated', 'Unique']
-            ])
-            
-            self.initialize_sheet_with_headers(spreadsheet, 'MEXC Analysis', [
-                ['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges', 'Status', 'Unique', 'Last Checked']
-            ])
-            
-            self.initialize_sheet_with_headers(spreadsheet, 'Exchange Stats', [
-                ['Exchange', 'Futures Count', 'Status', 'Last Update', 'Success Rate']
-            ])
-            
-            # Apply formatting
-            self.format_auto_update_sheets(spreadsheet)
+            logger.info("✅ Sheet structure initialized successfully")
             
         except Exception as e:
-            logger.error(f"Error initializing auto-update sheets: {e}")
+            logger.error(f"Error initializing sheets: {e}")
 
     def initialize_sheet_with_headers(self, spreadsheet, sheet_name, headers):
         """Initialize a sheet with headers if it doesn't exist"""
@@ -1972,18 +1940,15 @@ class MEXCTracker:
             logger.error(f"Error formatting sheets: {e}")
 
     def update_google_sheet(self):
-        """Update the auto-update Google Sheet with fresh data"""
-        if not self.gs_client:
+        """Update the Google Sheet with fresh data"""
+        if not self.gs_client or not self.spreadsheet:
+            logger.warning("Google Sheets not available for update")
             return
         
         try:
-            spreadsheet = self.setup_auto_update_sheet()
-            if not spreadsheet:
-                return
+            logger.info("🔄 Starting Google Sheet update...")
             
-            logger.info("Starting Google Sheet auto-update...")
-            
-            # Collect fresh data
+            # Collect fresh data (your existing methods)
             all_futures_data = []
             exchanges = {
                 'MEXC': self.get_mexc_futures,
@@ -2025,25 +1990,17 @@ class MEXCTracker:
                     logger.error(f"Exchange {name} error during sheet update: {e}")
                     exchange_stats[name] = 0
             
-            # Update Unique Futures sheet
-            self.update_unique_futures_sheet(spreadsheet, symbol_coverage, all_futures_data, current_time)
+            # Update all sheets with fresh data
+            self.update_unique_futures_sheet(symbol_coverage, all_futures_data, current_time)
+            self.update_all_futures_sheet(all_futures_data, symbol_coverage, current_time)
+            self.update_mexc_analysis_sheet(all_futures_data, symbol_coverage, current_time)
+            self.update_exchange_stats_sheet(exchange_stats, current_time)
+            self.update_dashboard_stats(exchange_stats, len(symbol_coverage))
             
-            # Update All Futures sheet
-            self.update_all_futures_sheet(spreadsheet, all_futures_data, symbol_coverage, current_time)
-            
-            # Update MEXC Analysis sheet
-            self.update_mexc_analysis_sheet(spreadsheet, all_futures_data, symbol_coverage, current_time)
-            
-            # Update Exchange Stats sheet
-            self.update_exchange_stats_sheet(spreadsheet, exchange_stats, current_time)
-            
-            # Update Dashboard timestamp
-            self.update_dashboard_timestamp(spreadsheet)
-            
-            logger.info("Google Sheet auto-update completed successfully")
+            logger.info("✅ Google Sheet update completed successfully")
             
         except Exception as e:
-            logger.error(f"Google Sheet auto-update error: {e}")
+            logger.error(f"Google Sheet update error: {e}")
 
     def update_unique_futures_sheet(self, spreadsheet, symbol_coverage, all_futures_data, timestamp):
         """Update Unique Futures sheet"""
@@ -2170,6 +2127,41 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error updating Exchange Stats sheet: {e}")
 
+    def update_dashboard_stats(self, exchange_stats, unique_symbols_count):
+        """Update the dashboard with current statistics"""
+        if not self.spreadsheet:
+            return
+        
+        try:
+            worksheet = self.spreadsheet.worksheet("Dashboard")
+            
+            # Count working exchanges
+            working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+            total_exchanges = len(exchange_stats)
+            
+            # Get unique futures count
+            try:
+                unique_ws = self.spreadsheet.worksheet("Unique Futures")
+                unique_count = len(unique_ws.get_all_values()) - 1  # Subtract header
+            except:
+                unique_count = 0
+            
+            stats_update = [
+                ["Total Unique Futures", unique_count],
+                ["Total MEXC Futures", exchange_stats.get('MEXC', 0)],
+                ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+                ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')]
+            ]
+            
+            # Update stats section (starting at row 6)
+            for i, (label, value) in enumerate(stats_update):
+                worksheet.update(f'A{6+i}:B{6+i}', [[label, value]])
+                
+        except Exception as e:
+            logger.error(f"Error updating dashboard stats: {e}")
+
+
+
     def update_dashboard_timestamp(self, spreadsheet):
         """Update the last updated timestamp on Dashboard"""
         try:
@@ -2177,6 +2169,36 @@ class MEXCTracker:
             worksheet.update('B2', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         except Exception as e:
             logger.error(f"Error updating dashboard timestamp: {e}")
+    def setup_dashboard_sheet(self, worksheet):
+        """Setup the dashboard sheet with basic info"""
+        try:
+            dashboard_data = [
+                ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
+                ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["Update Interval", f"{self.update_interval} minutes"],
+                ["", ""],
+                ["QUICK STATS", ""],
+                ["Total Unique Futures", "Will update automatically"],
+                ["Total MEXC Futures", "Will update automatically"],
+                ["Working Exchanges", "Will update automatically"],
+                ["", ""],
+                ["BOT STATUS", "🟢 RUNNING"],
+                ["Next Auto-Update", "Will update automatically"],
+                ["", ""],
+                ["SHEETS", ""],
+                ["Dashboard", "Overview and stats"],
+                ["Unique Futures", "Futures only on MEXC"],
+                ["All Futures", "All futures from all exchanges"],
+                ["MEXC Analysis", "Detailed MEXC coverage"],
+                ["Exchange Stats", "Exchange performance"]
+            ]
+            
+            worksheet.update('A1', dashboard_data)
+            logger.info("✅ Dashboard sheet initialized")
+            
+        except Exception as e:
+            logger.error(f"Error setting up dashboard: {e}")
+
 
     def test_google_sheets(self, update: Update, context: CallbackContext):
         """Test Google Sheets connection"""
