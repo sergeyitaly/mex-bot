@@ -14,6 +14,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import fcntl
 import threading
+import atexit
 
 # Load environment variables
 load_dotenv()
@@ -1087,8 +1088,14 @@ class MEXCTracker:
         thread = threading.Thread(target=create_analysis)
         thread.start()
 
+            
     def run(self):
-        """Start the bot"""
+        """Start the bot with single instance lock"""
+        # Acquire lock to ensure only one instance runs
+        if not self.acquire_lock():
+            logger.error("Another instance is already running. Exiting.")
+            return
+        
         try:
             # Load initial data
             data = self.load_data()
@@ -1105,30 +1112,60 @@ class MEXCTracker:
             # Start the bot
             self.updater.start_polling()
             
-            logger.info("Bot started successfully")
+            logger.info("Bot started successfully - single instance running")
             
             # Send startup message
             self.send_broadcast_message(
                 "🤖 <b>MEXC Futures Tracker Started</b>\n\n"
                 "✅ Monitoring 8 exchanges\n"
                 f"⏰ Auto-check: {self.update_interval} minutes\n"
-                "📊 Google Sheets analysis available\n"
+                "📤 Data export available (/export)\n"
                 "💬 Use /help for commands"
             )
             
-            logger.info("Bot is now running...")
+            logger.info("Bot is now running and ready for commands...")
             
-            # Keep running
-            self.updater.idle()
-            
+            # Keep running with proper cleanup
+            try:
+                self.updater.idle()
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+            finally:
+                self.cleanup()
+                
         except Exception as e:
             logger.error(f"Bot run error: {e}")
+            self.cleanup()
             raise
+
+    def acquire_lock(self):
+        """Acquire lock to ensure only one instance runs"""
+        try:
+            self.lock_file = open('/tmp/mexc_bot.lock', 'w')
+            fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            atexit.register(self.cleanup)
+            return True
+        except (IOError, BlockingIOError):
+            return False
+
+    def cleanup(self):
+        """Cleanup resources on exit"""
+        try:
+            if hasattr(self, 'lock_file') and self.lock_file:
+                fcntl.flock(self.lock_file, fcntl.LOCK_UN)
+                self.lock_file.close()
+                try:
+                    os.unlink('/tmp/mexc_bot.lock')
+                except:
+                    pass
+            logger.info("Bot cleanup completed")
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
 
 def main():
     tracker = MEXCTracker()
     tracker.run()
 
 if __name__ == "__main__":
-    print("Starting MEXC Futures Tracker with Google Sheets...")
+    print("Starting MEXC Futures Tracker...")
     main()
