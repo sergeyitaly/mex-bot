@@ -19,6 +19,7 @@ import io
 import csv
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
+import base64
 # Load environment variables
 load_dotenv()
 
@@ -756,7 +757,7 @@ class MEXCTracker:
 
 
     def create_complete_analysis_csv(self, all_futures_data, symbol_coverage, exchange_stats):
-        """Create complete analysis Excel file"""
+        """Create complete analysis Excel file and return base64 encoded string"""
         wb = Workbook()
         ws = wb.active
         ws.title = "Complete Analysis"
@@ -837,16 +838,17 @@ class MEXCTracker:
         for col_letter, width in column_widths.items():
             ws.column_dimensions[col_letter].width = min(width + 2, 50)
         
-        # Save to bytes and return the bytes content directly
+        # Save to bytes and return base64 encoded string
         output = io.BytesIO()
         wb.save(output)
-        excel_content = output.getvalue()
+        excel_bytes = output.getvalue()
         output.close()
         
-        return excel_content
+        # Return base64 encoded string that can be used in various contexts
+        return base64.b64encode(excel_bytes).decode('utf-8')
 
     def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
-        """Create unique futures Excel file"""
+        """Create unique futures Excel file and return base64 encoded string"""
         wb = Workbook()
         ws = wb.active
         ws.title = "Unique Futures"
@@ -912,13 +914,15 @@ class MEXCTracker:
         for col_letter, width in column_widths.items():
             ws.column_dimensions[col_letter].width = min(width + 2, 50)
         
-        # Save to bytes and return the bytes content directly
+        # Save to bytes and return base64 encoded string
         output = io.BytesIO()
         wb.save(output)
-        excel_content = output.getvalue()
+        excel_bytes = output.getvalue()
         output.close()
         
-        return excel_content
+        # Return base64 encoded string that can be used in various contexts
+        return base64.b64encode(excel_bytes).decode('utf-8')
+
 
 
     def sheet_command(self, update: Update, context: CallbackContext):
