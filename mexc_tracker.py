@@ -11,6 +11,8 @@ from telegram.error import TelegramError
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
+import fcntl
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -100,17 +102,56 @@ class MEXCTracker:
             self.save_data(data)
     
     def load_data(self):
-        """Load data from JSON file"""
+        """Load data from JSON file with error handling"""
         try:
-            with open(self.data_file, 'r') as f:
+            # Проверяем существует ли файл
+            if not os.path.exists(self.data_file):
+                return self.get_default_data()
+            
+            with open(self.data_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
-            return {"unique_futures": [], "last_check": None, "statistics": {}, "exchange_stats": {}, "google_sheet_url": None}
-    
+        except Exception as e:
+            logger.error(f"Error loading data from {self.data_file}: {e}")
+            return self.get_default_data()
+
     def save_data(self, data):
-        """Save data to JSON file"""
-        with open(self.data_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        """Save data to JSON file with error handling"""
+        try:
+            # Создаем backup на случай ошибки
+            backup_file = f"{self.data_file}.backup"
+            if os.path.exists(self.data_file):
+                import shutil
+                shutil.copy2(self.data_file, backup_file)
+            
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Data saved to {self.data_file}")
+            
+        except Exception as e:
+            logger.error(f"Error saving data to {self.data_file}: {e}")
+            # Пробуем сохранить в временный файл
+            try:
+                temp_file = f"{self.data_file}.temp"
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                logger.info(f"Data saved to temporary file: {temp_file}")
+            except Exception as e2:
+                logger.error(f"Failed to save even to temporary file: {e2}")
+
+    def get_default_data(self):
+        """Return default data structure"""
+        return {
+            "unique_futures": [],
+            "last_check": None,
+            "statistics": {
+                "checks_performed": 0,
+                "unique_found_total": 0,
+                "start_time": datetime.now().isoformat()
+            },
+            "exchange_stats": {},
+            "google_sheet_url": None
+        }
 
     # ==================== EXCHANGE API METHODS ====================
     
@@ -774,27 +815,42 @@ class MEXCTracker:
 
 
     def export_command(self, update: Update, context: CallbackContext):
-        """Export data to CSV/JSON"""
-        data = self.load_data()
-        unique_futures = data.get('unique_futures', [])
-        exchange_stats = data.get('exchange_stats', {})
+        """Export data to CSV/JSON - get fresh data from APIs"""
+        update.message.reply_html("🔄 <b>Getting fresh data from exchanges...</b>")
         
-        if not unique_futures:
-            update.message.reply_html("❌ No data to export. Use /check first.")
-            return
-        
-        # Create export options keyboard
-        from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove
-        keyboard = [
-            ['📊 CSV Export', '📁 JSON Export'],
-            ['📈 Full Analysis', '❌ Cancel']
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-        
-        update.message.reply_html(
-            "📤 <b>Choose export format:</b>",
-            reply_markup=reply_markup
-        )
+        try:
+            # Получаем свежие данные напрямую с API
+            unique_futures, exchange_stats = self.find_unique_futures()
+            
+            if not unique_futures:
+                update.message.reply_html("❌ No unique futures found to export.")
+                return
+            
+            # Создаем клавиатуру с опциями экспорта
+            keyboard = [
+                ['📊 CSV Export', '📁 JSON Export'],
+                ['📈 Full Analysis', '❌ Cancel']
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+            
+            # Сохраняем данные в контексте
+            context.user_data['export_data'] = {
+                'unique_futures': list(unique_futures),
+                'exchange_stats': exchange_stats,
+                'mexc_futures': list(self.get_mexc_futures()),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            update.message.reply_html(
+                f"✅ <b>Data collected!</b>\n\n"
+                f"🎯 Unique futures: {len(unique_futures)}\n"
+                f"🏢 Exchanges: {len(exchange_stats) + 1}\n\n"
+                f"<b>Choose export format:</b>",
+                reply_markup=reply_markup
+            )
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Error collecting data:</b>\n{str(e)}")
 
     def handle_export(self, update: Update, context: CallbackContext):
         """Handle export format selection"""
@@ -804,55 +860,61 @@ class MEXCTracker:
             update.message.reply_html("Export cancelled.", reply_markup=ReplyKeyboardRemove())
             return
         
-        data = self.load_data()
-        unique_futures = data.get('unique_futures', [])
-        exchange_stats = data.get('exchange_stats', {})
+        export_data = context.user_data.get('export_data', {})
+        if not export_data:
+            update.message.reply_html("❌ No export data found. Use /export first.")
+            return
         
         if choice == '📊 CSV Export':
-            self.export_to_csv(update, unique_futures, exchange_stats)
+            self.export_to_csv(update, export_data)
         elif choice == '📁 JSON Export':
-            self.export_to_json(update, data)
+            self.export_to_json(update, export_data)
         elif choice == '📈 Full Analysis':
-            self.export_full_analysis(update)
+            self.export_full_analysis(update, export_data)
+        
+        # Очищаем контекст
+        context.user_data.pop('export_data', None)
 
-    def export_to_csv(self, update: Update, unique_futures, exchange_stats):
+    def export_to_csv(self, update: Update, export_data):
         """Export to CSV format"""
         try:
-            import csv
-            import io
+            unique_futures = export_data['unique_futures']
+            exchange_stats = export_data['exchange_stats']
+            mexc_futures = export_data['mexc_futures']
             
-            # Create CSV in memory
+            # Создаем CSV в памяти
             output = io.StringIO()
             writer = csv.writer(output)
             
-            # Write header
-            writer.writerow(['Symbol', 'Exchange', 'Available On Exchanges', 'Timestamp'])
-            
-            # Get all futures for context
-            mexc_futures = self.get_mexc_futures()
-            all_futures, _ = self.get_all_exchanges_futures()
-            
-            for symbol in unique_futures:
-                normalized = self.normalize_symbol(symbol)
-                
-                # Find which exchanges have this symbol
-                available_on = ['MEXC']  # Always on MEXC since it's unique
-                
-                writer.writerow([
-                    symbol,
-                    'MEXC',
-                    ', '.join(available_on),
-                    datetime.now().isoformat()
-                ])
-            
-            # Add exchange summary
+            # Заголовок
+            writer.writerow(['MEXC UNIQUE FUTURES EXPORT'])
+            writer.writerow(['Generated', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
             writer.writerow([])
-            writer.writerow(['EXCHANGE', 'FUTURES COUNT'])
+            
+            # Уникальные фьючерсы
+            writer.writerow(['UNIQUE FUTURES ON MEXC'])
+            writer.writerow(['Symbol', 'Status', 'Timestamp'])
+            for symbol in sorted(unique_futures):
+                writer.writerow([symbol, 'UNIQUE', export_data['timestamp']])
+            
+            writer.writerow([])
+            
+            # Статистика по биржам
+            writer.writerow(['EXCHANGE STATISTICS'])
+            writer.writerow(['Exchange', 'Futures Count'])
             writer.writerow(['MEXC', len(mexc_futures)])
-            for exchange, count in exchange_stats.items():
+            for exchange, count in sorted(exchange_stats.items()):
                 writer.writerow([exchange, count])
             
-            # Prepare file for sending
+            writer.writerow([])
+            
+            # Сводка
+            writer.writerow(['SUMMARY'])
+            writer.writerow(['Total Unique Futures', len(unique_futures)])
+            writer.writerow(['Total Exchanges', len(exchange_stats) + 1])
+            writer.writerow(['Total MEXC Futures', len(mexc_futures)])
+            
+            # Подготавливаем файл для отправки
             csv_data = output.getvalue().encode('utf-8')
             file_obj = io.BytesIO(csv_data)
             file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.csv'
@@ -861,32 +923,36 @@ class MEXCTracker:
                 document=file_obj,
                 caption="📊 <b>MEXC Unique Futures Export</b>\n\n"
                     f"✅ {len(unique_futures)} unique futures\n"
-                    f"🏢 {len(exchange_stats) + 1} exchanges monitored",
-                parse_mode='HTML'
+                    f"🏢 {len(exchange_stats) + 1} exchanges monitored\n"
+                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                parse_mode='HTML',
+                reply_markup=ReplyKeyboardRemove()
             )
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>CSV export error:</b>\n{str(e)}")
+            logger.error(f"CSV export error: {e}")
 
-    def export_to_json(self, update: Update, data):
+    def export_to_json(self, update: Update, export_data):
         """Export to JSON format"""
         try:
-            import io
-            
-            # Create enhanced JSON data
-            export_data = {
-                'export_timestamp': datetime.now().isoformat(),
-                'statistics': data.get('statistics', {}),
-                'exchange_stats': data.get('exchange_stats', {}),
-                'unique_futures': data.get('unique_futures', []),
-                'last_check': data.get('last_check'),
-                'total_exchanges': len(data.get('exchange_stats', {})) + 1
+            # Создаем структуру данных для JSON
+            json_data = {
+                "metadata": {
+                    "export_timestamp": export_data['timestamp'],
+                    "total_exchanges": len(export_data['exchange_stats']) + 1,
+                    "unique_futures_count": len(export_data['unique_futures']),
+                    "mexc_futures_count": len(export_data['mexc_futures'])
+                },
+                "unique_futures": export_data['unique_futures'],
+                "exchange_statistics": export_data['exchange_stats'],
+                "mexc_futures": export_data['mexc_futures']
             }
             
-            # Convert to JSON string
-            json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+            # Конвертируем в JSON строку
+            json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
             
-            # Prepare file for sending
+            # Подготавливаем файл для отправки
             file_obj = io.BytesIO(json_str.encode('utf-8'))
             file_obj.name = f'mexc_futures_data_{datetime.now().strftime("%Y%m%d_%H%M")}.json'
             
@@ -894,11 +960,13 @@ class MEXCTracker:
                 document=file_obj,
                 caption="📁 <b>MEXC Futures Data Export</b>\n\n"
                     "Complete dataset in JSON format",
-                parse_mode='HTML'
+                parse_mode='HTML',
+                reply_markup=ReplyKeyboardRemove()
             )
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>JSON export error:</b>\n{str(e)}")
+            logger.error(f"JSON export error: {e}")
 
     def export_full_analysis(self, update: Update):
         """Create and send full analysis files"""
