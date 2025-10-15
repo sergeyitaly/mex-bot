@@ -16,6 +16,8 @@ import fcntl
 import threading
 import atexit
 import io
+import csv
+
 # Load environment variables
 load_dotenv()
 
