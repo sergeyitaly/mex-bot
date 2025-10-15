@@ -825,11 +825,11 @@ class MEXCTracker:
             ws[f'E{data_row}'] = coverage
             data_row += 1
         
-        # Auto-adjust column widths - SIMPLIFIED VERSION
+        # Auto-adjust column widths
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
-                if cell.value and hasattr(cell, 'column_letter'):  # Only regular cells
+                if cell.value and hasattr(cell, 'column_letter'):
                     length = len(str(cell.value))
                     if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
                         column_widths[cell.column_letter] = length
@@ -837,12 +837,13 @@ class MEXCTracker:
         for col_letter, width in column_widths.items():
             ws.column_dimensions[col_letter].width = min(width + 2, 50)
         
-        # Save to bytes
+        # Save to bytes and return the bytes content directly
         output = io.BytesIO()
         wb.save(output)
-        output.seek(0)
+        excel_content = output.getvalue()
+        output.close()
         
-        return output
+        return excel_content
 
     def create_unique_futures_csv(self, symbol_coverage, all_futures_data):
         """Create unique futures Excel file"""
@@ -899,11 +900,11 @@ class MEXCTracker:
         ws[f'A{row+3}'].font = title_font
         ws[f'B{row+3}'].font = normal_font
         
-        # Auto-adjust column widths - SIMPLIFIED VERSION
+        # Auto-adjust column widths
         column_widths = {}
         for row in ws.iter_rows():
             for cell in row:
-                if cell.value and hasattr(cell, 'column_letter'):  # Only regular cells
+                if cell.value and hasattr(cell, 'column_letter'):
                     length = len(str(cell.value))
                     if cell.column_letter not in column_widths or length > column_widths[cell.column_letter]:
                         column_widths[cell.column_letter] = length
@@ -911,12 +912,13 @@ class MEXCTracker:
         for col_letter, width in column_widths.items():
             ws.column_dimensions[col_letter].width = min(width + 2, 50)
         
-        # Save to bytes
+        # Save to bytes and return the bytes content directly
         output = io.BytesIO()
         wb.save(output)
-        output.seek(0)
+        excel_content = output.getvalue()
+        output.close()
         
-        return output
+        return excel_content
 
 
     def sheet_command(self, update: Update, context: CallbackContext):
