@@ -648,70 +648,144 @@ class MEXCTracker:
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit data through third-party APIs that aren't blocked"""
+        """
+        Get Bybit data through third-party APIs that aren't blocked.
+        Returns set of normalized symbols like 'BTCUSDT', 'ETHUSDT', etc.
+        """
         try:
             logger.info("🔄 Fetching Bybit futures via third-party...")
-            
             futures = set()
-            
-            # Option 1: Use CoinGecko API (has Bybit data)
+
+            # Helper normalizers ------------------------------------------------
+            import re
+
+            def normalize_candidate(sym: str):
+                if not sym:
+                    return None
+                s = sym.strip()
+                # common separators -> unify
+                s = s.replace('/', '').replace(' ', '').replace(':', '').replace('.', '').upper()
+                # Common PERP markers to remove, keep the market (e.g. BTCUSDT)
+                s = re.sub(r'[-_]?PERP(ETUAL)?$', '', s)         # remove PERP or -PERP/_PERP suffix
+                s = re.sub(r'[-_]?FUT$', '', s)                  # remove FUT (if any)
+                s = re.sub(r'[-_]?USDT-PERP$', 'USDT', s)        # rare forms
+                # Some tickers are like "BTC-PERP" -> becomes "BTC"
+                # If we detect a separator like '-' between base and quote, turn into concatenated base+quote
+                # Attempt to find common quote tokens
+                # Strip leading numeric multipliers (e.g. 1000000BABYDOGEUSDT -> BABYDOGEUSDT)
+                s = re.sub(r'^[0-9]+', '', s)
+                # If contains a known quote at end, return as-is (e.g. BTCUSDT)
+                quotes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD']
+                for q in quotes:
+                    if s.endswith(q):
+                        return s
+                # If it contains a dash like BTC-USDT or BTC_USDT, unify
+                m = re.match(r'^([A-Z0-9]+)[\-_]([A-Z0-9]+)$', s)
+                if m:
+                    base, quote = m.group(1), m.group(2)
+                    return f"{base}{quote}"
+                # If it ends with PERP removed and now ends with nothing, try append USDT as fallback (risky)
+                # But we prefer to return the token without adding quote if unknown.
+                return s
+
+            # ---------- Option 1: CoinGecko derivatives exchange endpoint ----------
             try:
                 url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    tickers = data.get('tickers', [])
-                    for ticker in tickers:
-                        symbol = ticker.get('symbol', '')
-                        if symbol and 'USDT' in symbol and 'PERP' in symbol:
-                            # Convert from "BTCUSDT-PERP" to "BTCUSDT"
-                            clean_symbol = symbol.replace('-PERP', '')
-                            futures.add(clean_symbol)
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json() or {}
+                    tickers = data.get('tickers') or data.get('pairs') or []
+                    for t in tickers:
+                        # tickers from different CG versions may use different fields:
+                        # 'symbol' e.g. "BTCUSDT-PERP", 'pair' e.g. "BTCUSDT/PERP", 'instrument' etc.
+                        candidate = None
+                        # try common fields
+                        for key in ('symbol', 'pair', 'instrument', 'contract'):
+                            if isinstance(t, dict) and t.get(key):
+                                candidate = t.get(key)
+                                break
+                        # sometimes the ticker entry is a simple string
+                        if candidate is None and isinstance(t, str):
+                            candidate = t
+                        if not candidate:
+                            # sometimes the pair is split: base & quote & contract_type
+                            base = t.get('base') if isinstance(t, dict) else None
+                            quote = t.get('target') or t.get('quote') if isinstance(t, dict) else None
+                            if base and quote:
+                                candidate = f"{base}{quote}"
+                        if not candidate:
+                            continue
+
+                        norm = normalize_candidate(candidate)
+                        if not norm:
+                            continue
+                        # include only USDT or common quote markets to match your focus on perpetuals
+                        if any(norm.endswith(q) for q in ('USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD')):
+                            futures.add(norm)
                     logger.info(f"✅ CoinGecko Bybit data: {len(futures)} symbols")
             except Exception as e:
                 logger.warning(f"⚠️ CoinGecko failed: {e}")
-            
-            # Option 2: Use CoinMarketCap API
+
+            # ---------- Option 2: CoinMarketCap (requires API key) ----------
+            # keep as optional fallback; user must insert API key in settings.env
             if not futures:
                 try:
-                    # This requires an API key, but free tier might work
-                    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?exchange=bybit"
-                    headers = {
-                        'X-CMC_PRO_API_KEY': 'your-api-key-here'  # Get from coinmarketcap.com
-                    }
-                    response = requests.get(url, headers=headers, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        # Process CoinMarketCap data
-                        logger.info(f"✅ CoinMarketCap Bybit data: {len(futures)} symbols")
+                    cmc_key = getattr(self, 'COINMARKETCAP_KEY', None) or None
+                    if cmc_key:
+                        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map"
+                        headers = {'X-CMC_PRO_API_KEY': cmc_key}
+                        params = {'exchange': 'BYBIT'}  # Note: endpoint semantics may vary
+                        resp = requests.get(url, headers=headers, params=params, timeout=10)
+                        if resp.status_code == 200:
+                            data = resp.json() or {}
+                            for item in data.get('data', []):
+                                # CMC mapping may not give contract tickers; skip if not useful
+                                sym = item.get('symbol') or item.get('slug') or None
+                                if sym:
+                                    norm = normalize_candidate(sym)
+                                    if norm and any(norm.endswith(q) for q in ('USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD')):
+                                        futures.add(norm)
+                            logger.info(f"✅ CoinMarketCap Bybit data: {len(futures)} symbols")
+                    else:
+                        logger.info("ℹ️ CoinMarketCap skipped (no API key configured)")
                 except Exception as e:
                     logger.warning(f"⚠️ CoinMarketCap failed: {e}")
-            
-            # Option 3: Use DeFiLlama
+
+            # ---------- Option 3: Cryptorank markets (public) ----------
+            # Cryptorank often lists exchange markets - good fallback
             if not futures:
                 try:
-                    url = "https://api.llama.fi/overview/derivatives/bybit?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"
-                    response = requests.get(url, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        # Process DeFiLlama data
-                        protocols = data.get('protocols', [])
-                        for protocol in protocols:
-                            symbol = protocol.get('symbol', '')
-                            if symbol:
-                                futures.add(f"{symbol}USDT")
-                        logger.info(f"✅ DeFiLlama Bybit data: {len(futures)} symbols")
+                    url = "https://api.cryptorank.io/v1/exchanges/bybit/markets"
+                    resp = requests.get(url, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json() or {}
+                        for item in data.get('data', []):
+                            # item may contain 'symbol' or 'pair'
+                            candidate = item.get('symbol') or item.get('pair') or item.get('market')
+                            if not candidate:
+                                continue
+                            norm = normalize_candidate(candidate)
+                            if norm and any(norm.endswith(q) for q in ('USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD')):
+                                futures.add(norm)
+                        logger.info(f"✅ Cryptorank Bybit data: {len(futures)} symbols")
                 except Exception as e:
-                    logger.warning(f"⚠️ DeFiLlama failed: {e}")
-            
-        
-            logger.info(f"🎯 Bybit via third-party: {len(futures)} futures")
-            return futures
-            
+                    logger.warning(f"⚠️ Cryptorank failed: {e}")
+
+            # Final dedupe + sanity: remove very short tokens
+            cleaned = set()
+            for s in futures:
+                if not s or len(s) < 4:
+                    continue
+                # remove things like trailing PERP leftovers
+                s = re.sub(r'PERP$', '', s)
+                cleaned.add(s)
+
+            logger.info(f"🎯 Bybit via third-party: {len(cleaned)} futures")
+            return cleaned
+
         except Exception as e:
             logger.error(f"❌ Bybit third-party error: {e}")
             return set()
-
 
 
     def get_binance_futures_fallback(self):
