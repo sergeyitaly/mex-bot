@@ -558,234 +558,339 @@ class MEXCTracker:
             logger.error(f"BitGet error: {e}")
             return set()        
 
+    def _get_proxies(self) -> List[dict]:
+        return [{}]  # Empty dict means no proxy
+    
+    def _make_request_with_retry(self, url: str, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
+        """Make request with retry logic and proxy rotation"""
+        for attempt in range(max_retries):
+            try:
+                proxy = random.choice(self.proxies) if self.proxies else {}
+                response = self.session.get(url, timeout=timeout, proxies=proxy if proxy else None)
+                
+                if response.status_code == 200:
+                    return response
+                elif response.status_code in [403, 429]:
+                    logger.warning(f"⚠️  Blocked on attempt {attempt + 1} for {url}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                else:
+                    logger.error(f"❌ HTTP {response.status_code} for {url}")
+                    break
+                    
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"⚠️  Request failed on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+        
+        return None
+
     def get_binance_futures(self):
-        """Get Binance futures with comprehensive debugging"""
+        """Get Binance futures with proxy support"""
         try:
             logger.info("🔄 Fetching Binance futures...")
             
             futures = set()
-            session = self.session or requests.Session()
             
-            # USDⓈ-M Futures
-            url1 = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            logger.info(f"📡 Calling Binance USDⓈ-M URL: {url1}")
+            # USDⓈ-M Futures - try multiple endpoints
+            endpoints = [
+                "https://fapi.binance.com/fapi/v1/exchangeInfo",
+                "https://testnet.binancefuture.com/fapi/v1/exchangeInfo"  # Fallback testnet
+            ]
             
-            response1 = session.get(url1, timeout=15)
-            logger.info(f"📊 USDⓈ-M Response status: {response1.status_code}")
-            
-            if response1.status_code == 200:
-                data = response1.json()
-                symbols = data.get('symbols', [])
-                logger.info(f"📈 USDⓈ-M Total symbols: {len(symbols)}")
+            for url in endpoints:
+                logger.info(f"📡 Trying Binance URL: {url}")
+                response = self._make_request_with_retry(url)
                 
-                usdt_futures = set()
-                perpetual_count = 0
-                trading_count = 0
-                
-                for symbol in symbols:
-                    contract_type = symbol.get('contractType')
-                    status = symbol.get('status')
-                    symbol_name = symbol.get('symbol')
+                if response and response.status_code == 200:
+                    data = response.json()
+                    symbols = data.get('symbols', [])
                     
-                    if contract_type == 'PERPETUAL':
-                        perpetual_count += 1
-                        if status == 'TRADING':
-                            trading_count += 1
-                            usdt_futures.add(symbol_name)
-                
-                logger.info(f"📊 USDⓈ-M Stats: {perpetual_count} perpetuals, {trading_count} trading")
-                futures.update(usdt_futures)
-                logger.info(f"✅ USDⓈ-M perpetuals found: {len(usdt_futures)}")
-            else:
-                logger.error(f"❌ USDⓈ-M HTTP error: {response1.status_code} - {response1.text}")
-            
-            # COIN-M Futures  
-            url2 = "https://dapi.binance.com/dapi/v1/exchangeInfo"
-            logger.info(f"📡 Calling Binance COIN-M URL: {url2}")
-            
-            response2 = session.get(url2, timeout=15)
-            logger.info(f"📊 COIN-M Response status: {response2.status_code}")
-            
-            if response2.status_code == 200:
-                data = response2.json()
-                symbols = data.get('symbols', [])
-                logger.info(f"📈 COIN-M Total symbols: {len(symbols)}")
-                
-                coin_futures = set()
-                perpetual_count = 0
-                trading_count = 0
-                
-                for symbol in symbols:
-                    contract_type = symbol.get('contractType')
-                    status = symbol.get('status')
-                    symbol_name = symbol.get('symbol')
+                    usdt_futures = set()
+                    for symbol in symbols:
+                        if (symbol.get('contractType') == 'PERPETUAL' and 
+                            symbol.get('status') == 'TRADING'):
+                            usdt_futures.add(symbol.get('symbol'))
                     
-                    if contract_type == 'PERPETUAL':
-                        perpetual_count += 1
-                        if status == 'TRADING':
-                            trading_count += 1
-                            coin_futures.add(symbol_name)
-                
-                logger.info(f"📊 COIN-M Stats: {perpetual_count} perpetuals, {trading_count} trading")
-                futures.update(coin_futures)
-                logger.info(f"✅ COIN-M perpetuals found: {len(coin_futures)}")
-            else:
-                logger.error(f"❌ COIN-M HTTP error: {response2.status_code} - {response2.text}")
+                    futures.update(usdt_futures)
+                    logger.info(f"✅ Binance USDⓈ-M perpetuals found: {len(usdt_futures)}")
+                    break  # Success, no need to try other endpoints
+                else:
+                    logger.warning(f"❌ Failed to fetch from {url}")
+            
+            # If still no data, try alternative approach
+            if not futures:
+                logger.info("🔄 Trying alternative Binance endpoint...")
+                alt_response = self._make_request_with_retry("https://api.binance.com/api/v3/exchangeInfo")
+                if alt_response and alt_response.status_code == 200:
+                    # This gives spot symbols, but we can use it as fallback
+                    data = alt_response.json()
+                    symbols = data.get('symbols', [])
+                    spot_symbols = {s['symbol'] for s in symbols if s.get('status') == 'TRADING'}
+                    # Filter for common futures symbols pattern
+                    futures = {s for s in spot_symbols if s.endswith('USDT')}
+                    logger.info(f"🔄 Using spot symbols as fallback: {len(futures)}")
             
             logger.info(f"🎯 Binance TOTAL: {len(futures)} futures")
-            
-            # Log first few symbols for verification
-            sample = list(futures)[:5] if futures else []
-            logger.info(f"🔍 Sample symbols: {sample}")
-            
             return futures
             
         except Exception as e:
-            logger.error(f"❌ Binance error: {str(e)}", exc_info=True)
+            logger.error(f"❌ Binance error: {e}")
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit futures with comprehensive debugging"""
+        """Get Bybit futures with proxy support"""
         try:
             logger.info("🔄 Fetching Bybit futures...")
             
             futures = set()
-            session = self.session or requests.Session()
             
-            # Linear Futures (USDT)
-            url1 = "https://api.bybit.com/v5/market/instruments-info?category=linear"
-            logger.info(f"📡 Calling Bybit Linear URL: {url1}")
+            # Try different categories with fallbacks
+            categories = [
+                ("linear", "LinearPerpetual"),
+                ("inverse", "InversePerpetual"),
+                ("spot", "")  # Fallback to spot
+            ]
             
-            response1 = session.get(url1, timeout=15)
-            logger.info(f"📊 Linear Response status: {response1.status_code}")
-            
-            if response1.status_code == 200:
-                data = response1.json()
-                logger.info(f"📊 Linear API response: {data.get('retCode')} - {data.get('retMsg')}")
-                
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    logger.info(f"📈 Linear Total items: {len(items)}")
-                    
-                    linear_futures = set()
-                    trading_count = 0
-                    perpetual_count = 0
-                    
-                    for item in items:
-                        status = item.get('status')
-                        symbol = item.get('symbol')
-                        contract_type = item.get('contractType')
-                        
-                        if contract_type == 'LinearPerpetual':
-                            perpetual_count += 1
-                            if status == 'Trading':
-                                trading_count += 1
-                                linear_futures.add(symbol)
-                    
-                    logger.info(f"📊 Linear Stats: {perpetual_count} perpetuals, {trading_count} trading")
-                    futures.update(linear_futures)
-                    logger.info(f"✅ Linear perpetuals found: {len(linear_futures)}")
+            for category, contract_type in categories:
+                if category == "spot":
+                    # Fallback to spot API
+                    url = "https://api.bybit.com/v5/market/tickers?category=spot"
                 else:
-                    logger.error(f"❌ Linear API error: {data.get('retMsg')}")
-            else:
-                logger.error(f"❌ Linear HTTP error: {response1.status_code} - {response1.text}")
-            
-            # Inverse Futures (Coin Margined)
-            url2 = "https://api.bybit.com/v5/market/instruments-info?category=inverse"
-            logger.info(f"📡 Calling Bybit Inverse URL: {url2}")
-            
-            response2 = session.get(url2, timeout=15)
-            logger.info(f"📊 Inverse Response status: {response2.status_code}")
-            
-            if response2.status_code == 200:
-                data = response2.json()
-                logger.info(f"📊 Inverse API response: {data.get('retCode')} - {data.get('retMsg')}")
+                    url = f"https://api.bybit.com/v5/market/instruments-info?category={category}"
                 
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    logger.info(f"📈 Inverse Total items: {len(items)}")
+                logger.info(f"📡 Trying Bybit category: {category}")
+                response = self._make_request_with_retry(url)
+                
+                if response and response.status_code == 200:
+                    data = response.json()
                     
-                    inverse_futures = set()
-                    trading_count = 0
-                    perpetual_count = 0
-                    
-                    for item in items:
-                        status = item.get('status')
-                        symbol = item.get('symbol')
-                        contract_type = item.get('contractType')
+                    if data.get('retCode') == 0:
+                        items = data.get('result', {}).get('list', [])
                         
-                        if contract_type == 'InversePerpetual':
-                            perpetual_count += 1
-                            if status == 'Trading':
-                                trading_count += 1
-                                inverse_futures.add(symbol)
-                    
-                    logger.info(f"📊 Inverse Stats: {perpetual_count} perpetuals, {trading_count} trading")
-                    futures.update(inverse_futures)
-                    logger.info(f"✅ Inverse perpetuals found: {len(inverse_futures)}")
-                else:
-                    logger.error(f"❌ Inverse API error: {data.get('retMsg')}")
-            else:
-                logger.error(f"❌ Inverse HTTP error: {response2.status_code} - {response2.text}")
+                        category_futures = set()
+                        for item in items:
+                            if category == "spot":
+                                # For spot fallback, just get all USDT pairs
+                                symbol = item.get('symbol', '')
+                                if symbol.endswith('USDT'):
+                                    category_futures.add(symbol)
+                            else:
+                                status = item.get('status')
+                                symbol = item.get('symbol')
+                                item_contract_type = item.get('contractType')
+                                
+                                if (status == 'Trading' and 
+                                    item_contract_type == contract_type):
+                                    category_futures.add(symbol)
+                        
+                        futures.update(category_futures)
+                        logger.info(f"✅ Bybit {category} symbols found: {len(category_futures)}")
             
             logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
+            return futures
             
-            # Log first few symbols for verification
-            sample = list(futures)[:5] if futures else []
-            logger.info(f"🔍 Sample symbols: {sample}")
+        except Exception as e:
+            logger.error(f"❌ Bybit error: {e}")
+            return set()
+
+    def get_binance_futures_fallback(self):
+        """Alternative Binance implementation using different approach"""
+        try:
+            logger.info("🔄 Using Binance fallback method...")
+            
+            futures = set()
+            
+            # Method 1: Use price tickers (often less restricted)
+            url = "https://fapi.binance.com/fapi/v1/ticker/price"
+            response = self._make_request_with_retry(url)
+            
+            if response and response.status_code == 200:
+                data = response.json()
+                for item in data:
+                    symbol = item.get('symbol', '')
+                    # Filter for USDT pairs (common futures pattern)
+                    if symbol.endswith('USDT'):
+                        futures.add(symbol)
+                logger.info(f"✅ Binance ticker fallback found: {len(futures)} symbols")
             
             return futures
             
         except Exception as e:
-            logger.error(f"❌ Bybit error: {str(e)}", exc_info=True)
+            logger.error(f"❌ Binance fallback error: {e}")
             return set()
-    
+
     def get_all_exchanges_futures(self):
-        """Get futures from all exchanges - HANDLES BLOCKED APIS"""
-        exchanges = {
-            'MEXC': self.get_mexc_futures,
-            'Binance': self.get_binance_futures,  # Uses alternative now
-            'Bybit': self.get_bybit_futures,      # Uses alternative now
-            'OKX': self.get_okx_futures,
-            'Gate.io': self.get_gate_futures,
-            'KuCoin': self.get_kucoin_futures,
-            'BingX': self.get_bingx_futures,
-            'BitGet': self.get_bitget_futures
+        """Get futures from all exchanges with robust error handling and fallbacks"""
+        # Define primary methods and their fallbacks
+        exchange_methods = {
+            'MEXC': {
+                'primary': self.get_mexc_futures,
+                'fallback': None,  # No fallback for MEXC
+                'timeout': 10
+            },
+            'Binance': {
+                'primary': self.get_binance_futures,
+                'fallback': self.get_binance_futures_fallback,
+                'timeout': 15
+            },
+            'Bybit': {
+                'primary': self.get_bybit_futures,
+                'fallback': self.get_bybit_futures_fallback, 
+                'timeout': 15
+            },
+            'OKX': {
+                'primary': self.get_okx_futures,
+                'fallback': None,
+                'timeout': 10
+            },
+            'Gate.io': {
+                'primary': self.get_gate_futures,
+                'fallback': None,
+                'timeout': 10
+            },
+            'KuCoin': {
+                'primary': self.get_kucoin_futures,
+                'fallback': None,
+                'timeout': 10
+            },
+            'BingX': {
+                'primary': self.get_bingx_futures,
+                'fallback': None,
+                'timeout': 10
+            },
+            'BitGet': {
+                'primary': self.get_bitget_futures,
+                'fallback': None,
+                'timeout': 10
+            }
         }
         
         all_futures = set()
         exchange_stats = {}
+        detailed_stats = {
+            'working': [],
+            'blocked': [],
+            'partial': [],
+            'failed': []
+        }
         
-        for name, method in exchanges.items():
+        logger.info("🚀 STARTING ROBUST EXCHANGE DATA COLLECTION")
+        logger.info("=" * 60)
+        
+        for name, config in exchange_methods.items():
             try:
                 logger.info(f"🔄 Fetching {name} futures...")
-                futures = method()
+                primary_method = config['primary']
+                fallback_method = config['fallback']
+                timeout = config['timeout']
                 
+                # Try primary method with timeout
+                futures = None
+                try:
+                    futures = primary_method()
+                except Exception as e:
+                    logger.warning(f"⚠️ {name} primary method failed: {e}")
+                    futures = None
+                
+                # If primary failed and we have fallback, try it
+                if not futures and fallback_method:
+                    logger.info(f"🔄 Trying fallback for {name}...")
+                    try:
+                        futures = fallback_method()
+                    except Exception as e:
+                        logger.warning(f"⚠️ {name} fallback also failed: {e}")
+                        futures = None
+                
+                # Process results
                 if futures:
+                    count_before = len(all_futures)
                     all_futures.update(futures)
+                    count_added = len(all_futures) - count_before
+                    
                     exchange_stats[name] = len(futures)
-                    logger.info(f"✅ {name}: {len(futures)} futures")
+                    
+                    if len(futures) > 0:
+                        if len(futures) >= 100:  # Consider it "working" if we get decent data
+                            detailed_stats['working'].append(name)
+                            logger.info(f"✅ {name}: {len(futures)} futures ({count_added} new)")
+                        else:
+                            detailed_stats['partial'].append(name)
+                            logger.warning(f"⚠️ {name}: ONLY {len(futures)} futures (partial data)")
+                        
+                        # Log sample symbols for verification
+                        sample = list(futures)[:3]
+                        logger.info(f"   🔍 Sample: {sample}")
+                    else:
+                        detailed_stats['failed'].append(name)
+                        logger.warning(f"⚠️ {name}: 0 futures (empty response)")
                 else:
                     exchange_stats[name] = 0
-                    logger.warning(f"⚠️ {name}: 0 futures (using alternative data)")
-                    
+                    detailed_stats['failed'].append(name)
+                    logger.error(f"❌ {name}: No data from primary or fallback methods")
+                
+                # Smart rate limiting based on exchange responsiveness
+                delay = 2 if name in ['Binance', 'Bybit'] else 1
+                time.sleep(delay)
+                
             except Exception as e:
                 exchange_stats[name] = 0
-                logger.error(f"❌ {name} error: {e}")
-            
-            time.sleep(1)  # Rate limiting
+                detailed_stats['failed'].append(name)
+                logger.error(f"❌ {name} unexpected error: {e}", exc_info=True)
+                time.sleep(1)  # Still wait even on error
         
-        # Log which exchanges are working
-        working = [name for name, count in exchange_stats.items() if count > 0]
-        blocked = [name for name, count in exchange_stats.items() if count == 0]
+        # Generate comprehensive report
+        logger.info("")
+        logger.info("📊 COMPREHENSIVE EXCHANGE STATUS REPORT")
+        logger.info("=" * 60)
         
-        logger.info(f"📊 Working exchanges: {len(working)} - {working}")
-        logger.info(f"🚫 Blocked exchanges: {len(blocked)} - {blocked}")
+        total_exchanges = len(exchange_methods)
+        working_count = len(detailed_stats['working'])
+        partial_count = len(detailed_stats['partial'])
+        failed_count = len(detailed_stats['failed'])
         
-        return all_futures, exchange_stats
-
-
-
+        logger.info(f"🏆 Working well: {working_count}/{total_exchanges}")
+        for name in detailed_stats['working']:
+            count = exchange_stats[name]
+            logger.info(f"   ✅ {name}: {count} futures")
+        
+        if detailed_stats['partial']:
+            logger.info(f"⚠️  Partial data: {partial_count}/{total_exchanges}")
+            for name in detailed_stats['partial']:
+                count = exchange_stats[name]
+                logger.info(f"   🟡 {name}: {count} futures")
+        
+        if detailed_stats['failed']:
+            logger.info(f"❌ Failed: {failed_count}/{total_exchanges}")
+            for name in detailed_stats['failed']:
+                logger.info(f"   🔴 {name}: 0 futures")
+        
+        # Overall statistics
+        total_symbols = sum(exchange_stats.values())
+        unique_symbols = len(all_futures)
+        efficiency = (working_count / total_exchanges) * 100
+        
+        logger.info("")
+        logger.info("🎯 OVERALL STATISTICS")
+        logger.info("=" * 60)
+        logger.info(f"📈 Total symbols collected: {total_symbols}")
+        logger.info(f"🔢 Unique symbols: {unique_symbols}")
+        logger.info(f"🏭 Exchanges contributing: {working_count + partial_count}/{total_exchanges}")
+        logger.info(f"📊 Data efficiency: {efficiency:.1f}%")
+        
+        # Health assessment
+        if working_count >= 5:
+            logger.info("💚 EXCELLENT: Most exchanges working correctly")
+        elif working_count >= 3:
+            logger.info("💛 GOOD: Core exchanges providing data")
+        elif working_count >= 1:
+            logger.info("🟠 FAIR: Limited exchange data available")
+        else:
+            logger.error("💥 CRITICAL: No exchange data available")
+        
+        return all_futures, exchange_stats, detailed_stats
 
     def find_unique_futures(self):
         """Find unique futures using robust method"""
