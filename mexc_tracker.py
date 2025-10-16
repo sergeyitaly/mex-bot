@@ -423,74 +423,6 @@ class MEXCTracker:
             logger.error(f"MEXC error: {e}")
             return set()
 
-    def get_binance_futures(self):
-        """Get ALL futures from Binance"""
-        try:
-            url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            futures = set()
-            for symbol_data in data.get('symbols', []):
-                if symbol_data.get('contractType') == 'PERPETUAL' and symbol_data.get('status') == 'TRADING':
-                    futures.add(symbol_data['symbol'])
-            
-            logger.info(f"Binance: {len(futures)} futures")
-            return futures
-        except Exception as e:
-            logger.error(f"Binance error: {e}")
-            return set()
-
-    def get_bybit_futures(self):
-        """Get ALL futures from Bybit"""
-        try:
-            url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            response = requests.get(url, timeout=15, headers=headers)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            futures = set()
-            if data.get('retCode') == 0:
-                for item in data.get('result', {}).get('list', []):
-                    if item.get('status') == 'Trading':
-                        symbol = item.get('symbol', '')
-                        if symbol:
-                            futures.add(symbol)
-            
-            logger.info(f"Bybit: {len(futures)} futures")
-            return futures
-        except Exception as e:
-            logger.error(f"Bybit error: {e}")
-            return set()
-
-    def get_bitget_futures(self):
-        """Get ALL futures from BitGet"""
-        try:
-            url = "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            futures = set()
-            if data.get('code') == '00000' and data.get('data'):
-                for item in data.get('data', []):
-                    symbol = item.get('symbol', '')
-                    if symbol and item.get('status') == 'normal':
-                        futures.add(symbol)
-            
-            logger.info(f"BitGet: {len(futures)} futures")
-            return futures
-        except Exception as e:
-            logger.error(f"BitGet error: {e}")
-            return set()
-
     def get_okx_futures(self):
         """Get ALL futures from OKX"""
         try:
@@ -565,6 +497,162 @@ class MEXCTracker:
             return futures
         except Exception as e:
             logger.error(f"BingX error: {e}")
+            return set()
+        
+    def get_binance_futures(self):
+        """Get futures from Binance with better error handling"""
+        try:
+            url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(url, timeout=15, headers=headers)
+            
+            if response.status_code == 451:
+                logger.warning("Binance API blocked (451). Using alternative endpoint...")
+                # Try alternative endpoint
+                return self.get_binance_futures_alternative()
+                
+            response.raise_for_status()
+            
+            data = response.json()
+            futures = set()
+            for symbol_data in data.get('symbols', []):
+                if symbol_data.get('contractType') == 'PERPETUAL' and symbol_data.get('status') == 'TRADING':
+                    futures.add(symbol_data['symbol'])
+            
+            logger.info(f"Binance: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Binance error: {e}")
+            return set()
+
+    def get_binance_futures_alternative(self):
+        """Alternative method to get Binance futures"""
+        try:
+            # Try getting just the tickers instead of full exchange info
+            url = "https://fapi.binance.com/fapi/v1/ticker/price"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, timeout=15, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                futures = {item['symbol'] for item in data}
+                logger.info(f"Binance (alternative): {len(futures)} futures")
+                return futures
+            return set()
+        except Exception as e:
+            logger.error(f"Binance alternative error: {e}")
+            return set()
+
+    def get_bybit_futures(self):
+        """Get futures from Bybit with better error handling"""
+        try:
+            url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'application/json',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            response = requests.get(url, timeout=15, headers=headers)
+            
+            if response.status_code == 403:
+                logger.warning("Bybit API blocked (403). Using alternative endpoint...")
+                return self.get_bybit_futures_alternative()
+                
+            response.raise_for_status()
+            
+            data = response.json()
+            futures = set()
+            if data.get('retCode') == 0:
+                for item in data.get('result', {}).get('list', []):
+                    if item.get('status') == 'Trading':
+                        symbol = item.get('symbol', '')
+                        if symbol:
+                            futures.add(symbol)
+            
+            logger.info(f"Bybit: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Bybit error: {e}")
+            return set()
+
+    def get_bybit_futures_alternative(self):
+        """Alternative method to get Bybit futures"""
+        try:
+            # Try different category or public endpoint
+            urls = [
+                "https://api.bybit.com/derivatives/v3/public/instruments-info?category=linear",
+                "https://api.bybit.com/v2/public/symbols"
+            ]
+            
+            for url in urls:
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    response = requests.get(url, timeout=10, headers=headers)
+                    if response.status_code == 200:
+                        data = response.json()
+                        futures = set()
+                        
+                        # Parse based on endpoint structure
+                        if 'result' in data and 'list' in data['result']:
+                            for item in data['result']['list']:
+                                if item.get('status') == 'Trading':
+                                    futures.add(item.get('symbol', ''))
+                        elif 'result' in data:
+                            for item in data['result']:
+                                futures.add(item.get('name', ''))
+                        
+                        if futures:
+                            logger.info(f"Bybit (alternative): {len(futures)} futures")
+                            return futures
+                except:
+                    continue
+                    
+            return set()
+        except Exception as e:
+            logger.error(f"Bybit alternative error: {e}")
+            return set()
+
+    def get_bitget_futures(self):
+        """Get futures from BitGet with improved error handling"""
+        try:
+            # Try multiple product types
+            product_types = ['USDT-FUTURES', 'USDC-FUTURES', 'SUSDT-FUTURES']
+            
+            futures = set()
+            for product_type in product_types:
+                try:
+                    url = f"https://api.bitget.com/api/v2/mix/market/contracts?productType={product_type}"
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    response = requests.get(url, timeout=15, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('code') == '00000' and data.get('data'):
+                            for item in data.get('data', []):
+                                symbol = item.get('symbol', '')
+                                if symbol and item.get('status') == 'normal':
+                                    futures.add(symbol)
+                    
+                    time.sleep(0.5)  # Rate limiting
+                except Exception as e:
+                    logger.warning(f"BitGet {product_type} error: {e}")
+                    continue
+            
+            logger.info(f"BitGet: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"BitGet error: {e}")
             return set()
         
 
