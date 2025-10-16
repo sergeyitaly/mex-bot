@@ -138,7 +138,7 @@ class MEXCTracker:
     def check_symbol_command(self, update: Update, context: CallbackContext):
         """Check if a symbol is unique to MEXC"""
         if not context.args:
-            update.message.reply_html("Usage: /checksymbol SYMBOL\nExample: /checksymbol BTCUSDT")
+            update.message.reply_html("Usage: /checksymbol SYMBOL\nExample: /checksymbol BTC")
             return
         
         symbol = context.args[0].upper()
@@ -150,18 +150,21 @@ class MEXCTracker:
             if not exchanges:
                 response = f"❌ Symbol not found on any exchange: {symbol}"
             elif len(exchanges) == 1 and 'MEXC' in exchanges:
-                response = f"🎯 UNIQUE TO MEXC! {symbol}\nOnly available on: MEXC"
+                response = f"🎯 <b>UNIQUE TO MEXC!</b>\n\n{symbol} - Only available on: <b>MEXC</b>"
             elif 'MEXC' in exchanges:
                 other_exchanges = [e for e in exchanges if e != 'MEXC']
-                response = f"📊 {symbol} available on:\n• MEXC\n• " + "\n• ".join(other_exchanges)
+                response = (f"📊 <b>{symbol} - Multi-Exchange</b>\n\n"
+                        f"✅ Available on MEXC\n"
+                        f"🔸 Also on: {', '.join(other_exchanges)}\n"
+                        f"📈 Total exchanges: {len(exchanges)}")
             else:
-                response = f"📊 {symbol} available on:\n• " + "\n• ".join(exchanges)
+                response = f"📊 <b>{symbol}</b>\n\nNot on MEXC, available on:\n• " + "\n• ".join(exchanges)
             
             update.message.reply_html(response)
             
         except Exception as e:
             update.message.reply_html(f"❌ Error checking symbol: {str(e)}")
-
+            
     def setup_handlers(self):
         """Setup command handlers"""
         self.dispatcher.add_handler(CommandHandler("start", self.start_command))
@@ -175,7 +178,14 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("export", self.export_command))
         self.dispatcher.add_handler(CommandHandler("autosheet", self.auto_sheet_command))
         self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
+        
+        # Symbols management handlers
         self.dispatcher.add_handler(CommandHandler("checksymbol", self.check_symbol_command))
+        self.dispatcher.add_handler(CommandHandler("watch", self.watch_symbol_command))
+        self.dispatcher.add_handler(CommandHandler("unwatch", self.unwatch_symbol_command))
+        self.dispatcher.add_handler(CommandHandler("watchlist", self.watchlist_command))
+        self.dispatcher.add_handler(CommandHandler("coverage", self.coverage_command))
+        self.dispatcher.add_handler(CommandHandler("findunique", self.find_unique_command))
 
         from telegram.ext import MessageHandler, Filters
         self.dispatcher.add_handler(MessageHandler(
@@ -184,7 +194,7 @@ class MEXCTracker:
             ), 
             self.handle_export
         ))
-        
+            
     def init_data_file(self):
         """Initialize data file"""
         if not os.path.exists(self.data_file):
@@ -197,7 +207,8 @@ class MEXCTracker:
                     "start_time": datetime.now().isoformat()
                 },
                 "exchange_stats": {},
-                "google_sheet_url": None
+                "google_sheet_url": None,
+                "watchlist": []  
             }
             self.save_data(data)
     
@@ -250,11 +261,149 @@ class MEXCTracker:
                 "start_time": datetime.now().isoformat()
             },
             "exchange_stats": {},
-            "google_sheet_url": None
+            "google_sheet_url": None,
+            "watchlist": []  
         }
 
     # ==================== EXCHANGE API METHODS ====================
-    
+    def watch_symbol_command(self, update: Update, context: CallbackContext):
+        """Add symbol to watchlist"""
+        if not context.args:
+            update.message.reply_html("Usage: /watch SYMBOL\nExample: /watch BTC")
+            return
+        
+        symbol = context.args[0].upper()
+        
+        # Load data and update watchlist
+        data = self.load_data()
+        if 'watchlist' not in data:
+            data['watchlist'] = []
+        
+        if symbol in data['watchlist']:
+            update.message.reply_html(f"⚠️ {symbol} is already in your watchlist")
+            return
+        
+        data['watchlist'].append(symbol)
+        self.save_data(data)
+        
+        update.message.reply_html(f"✅ Added {symbol} to watchlist\n\nUse /watchlist to see all watched symbols")
+
+    def unwatch_symbol_command(self, update: Update, context: CallbackContext):
+        """Remove symbol from watchlist"""
+        if not context.args:
+            update.message.reply_html("Usage: /unwatch SYMBOL\nExample: /unwatch BTC")
+            return
+        
+        symbol = context.args[0].upper()
+        
+        data = self.load_data()
+        if 'watchlist' not in data or symbol not in data['watchlist']:
+            update.message.reply_html(f"❌ {symbol} not found in watchlist")
+            return
+        
+        data['watchlist'].remove(symbol)
+        self.save_data(data)
+        
+        update.message.reply_html(f"✅ Removed {symbol} from watchlist")
+
+    def watchlist_command(self, update: Update, context: CallbackContext):
+        """Show watched symbols and their status"""
+        data = self.load_data()
+        watchlist = data.get('watchlist', [])
+        
+        if not watchlist:
+            update.message.reply_html("📝 Your watchlist is empty\n\nUse /watch SYMBOL to add symbols")
+            return
+        
+        update.message.reply_html("🔄 Checking watchlist status...")
+        
+        try:
+            # Get current unique futures
+            unique_futures, _ = self.find_unique_futures()
+            unique_normalized = {self.normalize_symbol(s): s for s in unique_futures}
+            
+            response = "📝 <b>Your Watchlist</b>\n\n"
+            
+            for symbol in watchlist:
+                normalized = self.normalize_symbol(symbol)
+                if normalized in unique_normalized:
+                    response += f"✅ <b>{symbol}</b> - UNIQUE TO MEXC\n"
+                else:
+                    exchanges = self.analyze_symbol_coverage(symbol)
+                    if 'MEXC' in exchanges:
+                        response += f"🔸 <b>{symbol}</b> - On MEXC + {len(exchanges)-1} other(s)\n"
+                    else:
+                        response += f"❌ <b>{symbol}</b> - Not on MEXC\n"
+            
+            response += f"\nTotal watched symbols: {len(watchlist)}"
+            update.message.reply_html(response)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error checking watchlist: {str(e)}")
+
+    def coverage_command(self, update: Update, context: CallbackContext):
+        """Show detailed exchange coverage for a symbol"""
+        if not context.args:
+            update.message.reply_html("Usage: /coverage SYMBOL\nExample: /coverage BTC")
+            return
+        
+        symbol = context.args[0].upper()
+        update.message.reply_html(f"🔍 Analyzing exchange coverage for: {symbol}")
+        
+        try:
+            exchanges = self.analyze_symbol_coverage(symbol)
+            normalized = self.normalize_symbol(symbol)
+            
+            if not exchanges:
+                response = f"❌ Symbol not found on any exchange: {symbol}"
+            else:
+                response = (f"📊 <b>Exchange Coverage: {symbol}</b>\n\n"
+                        f"Normalized: {normalized}\n"
+                        f"Total exchanges: {len(exchanges)}\n\n"
+                        f"<b>Available on:</b>\n")
+                
+                for exchange in sorted(exchanges):
+                    if exchange == 'MEXC':
+                        response += f"✅ <b>{exchange}</b>\n"
+                    else:
+                        response += f"• {exchange}\n"
+                
+                if len(exchanges) == 1 and 'MEXC' in exchanges:
+                    response += f"\n🎯 <b>EXCLUSIVE MEXC LISTING!</b>"
+            
+            update.message.reply_html(response)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error analyzing coverage: {str(e)}")
+            
+    def find_unique_command(self, update: Update, context: CallbackContext):
+        """Find and display currently unique symbols"""
+        update.message.reply_html("🔍 Scanning for unique MEXC symbols...")
+        
+        try:
+            unique_futures, exchange_stats = self.find_unique_futures()
+            
+            if not unique_futures:
+                update.message.reply_html("❌ No unique symbols found on MEXC")
+                return
+            
+            response = f"🎯 <b>Unique MEXC Symbols Found: {len(unique_futures)}</b>\n\n"
+            
+            # Display symbols in a readable format
+            symbols_list = sorted(unique_futures)
+            for i, symbol in enumerate(symbols_list[:15], 1):  # Show first 15
+                response += f"{i}. {symbol}\n"
+            
+            if len(symbols_list) > 15:
+                response += f"\n... and {len(symbols_list) - 15} more symbols"
+            
+            response += f"\n\n💡 Use /checksymbol SYMBOL for detailed analysis"
+            
+            update.message.reply_html(response)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error finding unique symbols: {str(e)}")
+
     def get_mexc_futures(self):
         """Get futures from MEXC"""
         try:
@@ -573,7 +722,7 @@ class MEXCTracker:
                 if normalized in normalized_futures:
                     exchanges_with_symbol.append(exchange_name)
             except Exception as e:
-                logger.error(f"Error checking {exchange_name}: {e}")
+                logger.error(f"Error checking {exchange_name} for {symbol}: {e}")
         
         return exchanges_with_symbol
 
@@ -748,7 +897,8 @@ class MEXCTracker:
             "• Real-time monitoring of 8 exchanges\n"
             "• Unique futures detection\n"
             "• Google Sheets analysis\n"
-            "• Automatic alerts\n\n"
+            "• Automatic alerts\n"
+            "• Symbols management & tracking\n\n"
             "<b>Commands:</b>\n"
             "/start - Welcome message\n"
             "/status - Current status\n"
@@ -757,7 +907,14 @@ class MEXCTracker:
             "/sheet - Google Sheet link\n"
             "/exchanges - Exchange info\n"
             "/stats - Bot statistics\n"
-            "/help - Help information"
+            "/help - Help information\n\n"
+            "<b>Symbols Management:</b>\n"
+            "/checksymbol SYMBOL - Check specific symbol\n"
+            "/watch SYMBOL - Add symbol to watchlist\n"
+            "/unwatch SYMBOL - Remove from watchlist\n"
+            "/watchlist - Show watched symbols\n"
+            "/coverage SYMBOL - Show exchange coverage\n"
+            "/findunique - Find currently unique symbols"
         )
         update.message.reply_html(welcome_text)
     
