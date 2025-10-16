@@ -717,6 +717,7 @@ class MEXCTracker:
         # Clean up any double separators or edge cases
         normalized = re.sub(r'[-_ ]+', '', normalized)
         
+        # Remove common futures modifiers when they appear at the end
         futures_modifiers = ['M', 'T', 'Z', 'H', 'U', 'P']  # Common futures suffixes
         if len(normalized) > 4 and normalized[-1] in futures_modifiers:
             # Only remove if it looks like a modifier (preceded by letters/numbers)
@@ -953,6 +954,10 @@ class MEXCTracker:
         unique_count = len(data.get('unique_futures', []))
         last_check = data.get('last_check', 'Never')
         
+        # Get stats from data or use defaults
+        stats = data.get('stats', {})
+        exchange_stats = data.get('exchange_stats', {})
+        
         if last_check != 'Never':
             try:
                 last_dt = datetime.fromisoformat(last_check.replace('Z', '+00:00'))
@@ -964,11 +969,12 @@ class MEXCTracker:
             "📈 <b>Bot Statistics</b>\n\n"
             f"🔄 Checks performed: <b>{stats.get('checks_performed', 0)}</b>\n"
             f"🎯 Max unique found: <b>{stats.get('unique_found_total', 0)}</b>\n"
-            f"⏰ Current unique: <b>{len(data.get('unique_futures', []))}</b>\n"
+            f"⏰ Current unique: <b>{unique_count}</b>\n"
             f"🏢 Exchanges: <b>{len(exchange_stats) + 1}</b>\n"
             f"📅 Running since: {self.format_start_time(stats.get('start_time'))}\n"
             f"🤖 Uptime: {self.get_uptime()}\n"
-            f"⚡ Auto-check: {self.update_interval}min"
+            f"⚡ Auto-check: {self.update_interval}min\n"
+            f"📝 Last check: {last_check}"
         )
         
         if unique_count > 0:
@@ -979,7 +985,8 @@ class MEXCTracker:
                 status_text += f"• ... and {unique_count - 5} more"
         
         update.message.reply_html(status_text)
-    
+
+
     def check_command(self, update: Update, context: CallbackContext):
         """Perform immediate check"""
         update.message.reply_html("🔍 <b>Checking all exchanges...</b>")
