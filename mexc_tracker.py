@@ -649,143 +649,192 @@ class MEXCTracker:
 
     def get_bybit_futures(self):
         """
-        Get Bybit data through third-party APIs that aren't blocked.
-        Returns set of normalized symbols like 'BTCUSDT', 'ETHUSDT', etc.
+        Robust Bybit futures fetcher:
+        1) Try Bybit V5 official API (category=linear and category=inverse)
+        2) If empty/blocked, fallback to CoinGecko and Cryptorank with defensive parsing
+        Returns a set of normalized symbols like 'BTCUSDT', 'ETHUSDT', 'ABCUSDT', etc.
         """
         try:
-            logger.info("🔄 Fetching Bybit futures via third-party...")
-            futures = set()
+            logger.info("🔄 Fetching Bybit futures (primary: Bybit V5 API)...")
+            results = set()
 
-            # Helper normalizers ------------------------------------------------
-            import re
-
-            def normalize_candidate(sym: str):
+            def normalize(sym: str):
+                import re
                 if not sym:
                     return None
-                s = sym.strip()
-                # common separators -> unify
-                s = s.replace('/', '').replace(' ', '').replace(':', '').replace('.', '').upper()
-                # Common PERP markers to remove, keep the market (e.g. BTCUSDT)
-                s = re.sub(r'[-_]?PERP(ETUAL)?$', '', s)         # remove PERP or -PERP/_PERP suffix
-                s = re.sub(r'[-_]?FUT$', '', s)                  # remove FUT (if any)
-                s = re.sub(r'[-_]?USDT-PERP$', 'USDT', s)        # rare forms
-                # Some tickers are like "BTC-PERP" -> becomes "BTC"
-                # If we detect a separator like '-' between base and quote, turn into concatenated base+quote
-                # Attempt to find common quote tokens
-                # Strip leading numeric multipliers (e.g. 1000000BABYDOGEUSDT -> BABYDOGEUSDT)
+                s = str(sym).strip().upper()
+                # remove common separators/spaces/colons/slashes
+                s = re.sub(r'[\s/:._]+', '', s)
+                # strip trailing/perp markers
+                s = re.sub(r'[-_]?PERP(ETUAL)?$', '', s)
+                s = re.sub(r'[-_]?FUT(URES)?$', '', s)
+                # remove leading digits (e.g. 1000000BABYDOGEUSDT -> BABYDOGEUSDT)
                 s = re.sub(r'^[0-9]+', '', s)
-                # If contains a known quote at end, return as-is (e.g. BTCUSDT)
-                quotes = ['USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD']
-                for q in quotes:
-                    if s.endswith(q):
-                        return s
-                # If it contains a dash like BTC-USDT or BTC_USDT, unify
-                m = re.match(r'^([A-Z0-9]+)[\-_]([A-Z0-9]+)$', s)
-                if m:
-                    base, quote = m.group(1), m.group(2)
-                    return f"{base}{quote}"
-                # If it ends with PERP removed and now ends with nothing, try append USDT as fallback (risky)
-                # But we prefer to return the token without adding quote if unknown.
+                # collapse multiple non-alnum
+                s = re.sub(r'[^A-Z0-9]', '', s)
+                if not s:
+                    return None
                 return s
 
-            # ---------- Option 1: CoinGecko derivatives exchange endpoint ----------
+            # -------------------- 1. Official Bybit V5 (preferred) --------------------
             try:
-                url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
-                resp = requests.get(url, timeout=10)
-                if resp.status_code == 200:
-                    data = resp.json() or {}
-                    tickers = data.get('tickers') or data.get('pairs') or []
-                    for t in tickers:
-                        # tickers from different CG versions may use different fields:
-                        # 'symbol' e.g. "BTCUSDT-PERP", 'pair' e.g. "BTCUSDT/PERP", 'instrument' etc.
-                        candidate = None
-                        # try common fields
-                        for key in ('symbol', 'pair', 'instrument', 'contract'):
-                            if isinstance(t, dict) and t.get(key):
-                                candidate = t.get(key)
-                                break
-                        # sometimes the ticker entry is a simple string
-                        if candidate is None and isinstance(t, str):
-                            candidate = t
-                        if not candidate:
-                            # sometimes the pair is split: base & quote & contract_type
-                            base = t.get('base') if isinstance(t, dict) else None
-                            quote = t.get('target') or t.get('quote') if isinstance(t, dict) else None
-                            if base and quote:
-                                candidate = f"{base}{quote}"
-                        if not candidate:
-                            continue
-
-                        norm = normalize_candidate(candidate)
-                        if not norm:
-                            continue
-                        # include only USDT or common quote markets to match your focus on perpetuals
-                        if any(norm.endswith(q) for q in ('USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD')):
-                            futures.add(norm)
-                    logger.info(f"✅ CoinGecko Bybit data: {len(futures)} symbols")
-            except Exception as e:
-                logger.warning(f"⚠️ CoinGecko failed: {e}")
-
-            # ---------- Option 2: CoinMarketCap (requires API key) ----------
-            # keep as optional fallback; user must insert API key in settings.env
-            if not futures:
-                try:
-                    cmc_key = getattr(self, 'COINMARKETCAP_KEY', None) or None
-                    if cmc_key:
-                        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map"
-                        headers = {'X-CMC_PRO_API_KEY': cmc_key}
-                        params = {'exchange': 'BYBIT'}  # Note: endpoint semantics may vary
-                        resp = requests.get(url, headers=headers, params=params, timeout=10)
-                        if resp.status_code == 200:
-                            data = resp.json() or {}
-                            for item in data.get('data', []):
-                                # CMC mapping may not give contract tickers; skip if not useful
-                                sym = item.get('symbol') or item.get('slug') or None
-                                if sym:
-                                    norm = normalize_candidate(sym)
-                                    if norm and any(norm.endswith(q) for q in ('USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD')):
-                                        futures.add(norm)
-                            logger.info(f"✅ CoinMarketCap Bybit data: {len(futures)} symbols")
-                    else:
-                        logger.info("ℹ️ CoinMarketCap skipped (no API key configured)")
-                except Exception as e:
-                    logger.warning(f"⚠️ CoinMarketCap failed: {e}")
-
-            # ---------- Option 3: Cryptorank markets (public) ----------
-            # Cryptorank often lists exchange markets - good fallback
-            if not futures:
-                try:
-                    url = "https://api.cryptorank.io/v1/exchanges/bybit/markets"
+                for category in ('linear', 'inverse'):
+                    url = f"https://api.bybit.com/v5/market/instruments-info?category={category}"
                     resp = requests.get(url, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json() or {}
-                        for item in data.get('data', []):
-                            # item may contain 'symbol' or 'pair'
-                            candidate = item.get('symbol') or item.get('pair') or item.get('market')
-                            if not candidate:
-                                continue
-                            norm = normalize_candidate(candidate)
-                            if norm and any(norm.endswith(q) for q in ('USDT', 'USDC', 'USD', 'BTC', 'ETH', 'BUSD')):
-                                futures.add(norm)
-                        logger.info(f"✅ Cryptorank Bybit data: {len(futures)} symbols")
+                    if resp.status_code != 200:
+                        logger.warning(f"Bybit V5 {category} responded {resp.status_code}")
+                        continue
+                    data = resp.json()
+                    # sample defensive checks - Bybit returns { "retCode":0, "result": {"list": [...] } }
+                    if isinstance(data, dict):
+                        retcode = data.get('retCode', data.get('ret_code'))
+                        # If Bybit returns an error code, log and skip
+                        if retcode not in (None, 0, '0'):
+                            logger.warning(f"Bybit V5 {category} returned retCode={retcode}")
+                            continue
+                        # find list in common places
+                        items = None
+                        if 'result' in data and isinstance(data['result'], dict):
+                            items = data['result'].get('list') or data['result'].get('rows') or data['result'].get('data')
+                        items = items or data.get('list') or data.get('data') or []
+                    else:
+                        items = []
+
+                    if not items:
+                        logger.info(f"Bybit V5 {category}: 0 items returned")
+                    else:
+                        count_added = 0
+                        for it in items:
+                            # possible symbol field names: 'symbol', 'name', 'instId'
+                            sym = it.get('symbol') or it.get('name') or it.get('instId') or it.get('instrument')
+                            status = it.get('status') or it.get('state') or ''
+                            ctype = it.get('contractType') or it.get('contract_type') or ''
+                            # include only active trading perpetuals
+                            # Bybit examples: status == 'Trading', contractType in ('LinearPerpetual','InversePerpetual')
+                            if isinstance(status, str) and status.lower() not in ('trading', 'open', ''):
+                                # skip non-trading (but be lenient)
+                                pass
+                            # accept if contract type name suggests perpetual
+                            if isinstance(ctype, str) and 'PERPETUAL' in ctype.upper():
+                                sym_norm = normalize(sym)
+                                if sym_norm:
+                                    results.add(sym_norm)
+                                    count_added += 1
+                            else:
+                                # some items may lack contractType but still be perpetual -> attempt by symbol suffix
+                                sym_norm = normalize(sym)
+                                if sym_norm and any(sym_norm.endswith(q) for q in ('USDT','USDC','USD','BTC','ETH','BUSD','PERP')):
+                                    # strip trailing PERP if present
+                                    sym_norm = sym_norm.replace('PERP','')
+                                    results.add(sym_norm)
+                                    count_added += 1
+                        logger.info(f"Bybit V5 {category}: parsed {count_added} symbols")
+            except Exception as e:
+                logger.warning(f"Bybit V5 primary fetch failed: {e}")
+
+            # If we found results via official API, return them
+            if results:
+                cleaned = set(s for s in results if s and len(s) >= 4)
+                logger.info(f"✅ Bybit official API total: {len(cleaned)}")
+                return cleaned
+
+            # -------------------- 2. Fallbacks: CoinGecko then Cryptorank --------------------
+            logger.info("⚠️ Bybit official API returned no usable data — falling back to 3rd-party sources")
+
+            # helper to try a provider and return parsed set
+            def try_thirdparty(url, parser_func, provider_name):
+                try:
+                    r = requests.get(url, timeout=10)
+                    if r.status_code != 200:
+                        logger.warning(f"{provider_name} responded {r.status_code}")
+                        # log small snippet for debugging
+                        logger.debug(f"{provider_name} response snippet: {r.text[:1000]}")
+                        return set(), r.text[:2000]
+                    payload = r.json()
+                    parsed = parser_func(payload)
+                    logger.info(f"✅ {provider_name} parsed {len(parsed)} symbols")
+                    return parsed, None
                 except Exception as e:
-                    logger.warning(f"⚠️ Cryptorank failed: {e}")
+                    logger.warning(f"{provider_name} fetch/parse failed: {e}")
+                    return set(), None
 
-            # Final dedupe + sanity: remove very short tokens
-            cleaned = set()
-            for s in futures:
-                if not s or len(s) < 4:
-                    continue
-                # remove things like trailing PERP leftovers
-                s = re.sub(r'PERP$', '', s)
-                cleaned.add(s)
+            # parser for CoinGecko derivatives exchange format
+            def parse_coingecko(payload):
+                out = set()
+                # payload likely has 'tickers' list or similar
+                tickers = payload.get('tickers') or payload.get('pairs') or payload.get('data') or []
+                for t in tickers:
+                    candidate = None
+                    if isinstance(t, dict):
+                        # common fields
+                        candidate = t.get('symbol') or t.get('pair') or t.get('instrument') or t.get('contract')
+                        # some entries have base/target
+                        if not candidate:
+                            base = t.get('base') or t.get('token') or None
+                            target = t.get('target') or t.get('quote') or None
+                            if base and target:
+                                candidate = f"{base}{target}"
+                    elif isinstance(t, str):
+                        candidate = t
+                    if not candidate:
+                        continue
+                    s = normalize(candidate)
+                    if not s:
+                        continue
+                    # include only common quote markets (focus on USDT/perps)
+                    if any(s.endswith(q) for q in ('USDT','USDC','USD','BTC','ETH','BUSD')) or 'PERP' in candidate.upper():
+                        s = s.replace('PERP','')
+                        out.add(s)
+                return out
 
-            logger.info(f"🎯 Bybit via third-party: {len(cleaned)} futures")
-            return cleaned
+            # parser for Cryptorank markets format
+            def parse_cryptorank(payload):
+                out = set()
+                arr = payload.get('data') or payload.get('markets') or []
+                for it in arr:
+                    candidate = None
+                    if isinstance(it, dict):
+                        candidate = it.get('symbol') or it.get('pair') or it.get('market') or it.get('name')
+                    elif isinstance(it, str):
+                        candidate = it
+                    if not candidate:
+                        continue
+                    s = normalize(candidate)
+                    if not s:
+                        continue
+                    if any(s.endswith(q) for q in ('USDT','USDC','USD','BTC','ETH','BUSD')) or 'PERP' in candidate.upper():
+                        s = s.replace('PERP','')
+                        out.add(s)
+                return out
+
+            # CoinGecko
+            cg_url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
+            parsed, snippet = try_thirdparty(cg_url, parse_coingecko, "CoinGecko")
+            if parsed:
+                logger.info(f"✅ Used CoinGecko fallback: {len(parsed)} symbols")
+                return parsed
+            else:
+                if snippet:
+                    logger.info(f"CoinGecko response snippet (first 2k chars):\n{snippet}")
+
+            # Cryptorank
+            cr_url = "https://api.cryptorank.io/v1/exchanges/bybit/markets"
+            parsed, snippet = try_thirdparty(cr_url, parse_cryptorank, "Cryptorank")
+            if parsed:
+                logger.info(f"✅ Used Cryptorank fallback: {len(parsed)} symbols")
+                return parsed
+            else:
+                if snippet:
+                    logger.info(f"Cryptorank response snippet (first 2k chars):\n{snippet}")
+
+            # Nothing found — return empty set but log clearly
+            logger.info("🎯 Bybit via third-party: 0 futures (no data found from fallbacks)")
+            return set()
 
         except Exception as e:
-            logger.error(f"❌ Bybit third-party error: {e}")
+            logger.error(f"❌ Bybit overall error: {e}")
             return set()
+
 
 
     def get_binance_futures_fallback(self):
