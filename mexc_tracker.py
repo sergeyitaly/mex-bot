@@ -649,192 +649,228 @@ class MEXCTracker:
 
     def get_bybit_futures(self):
         """
-        Robust Bybit futures fetcher:
-        1) Try Bybit V5 official API (category=linear and category=inverse)
-        2) If empty/blocked, fallback to CoinGecko and Cryptorank with defensive parsing
-        Returns a set of normalized symbols like 'BTCUSDT', 'ETHUSDT', 'ABCUSDT', etc.
+        Robust Bybit fetcher:
+        1) Try Bybit V5 with browser-like headers and initial homepage visit to gather cookies.
+        2) If 403 persists, attempt HTML scrape of Bybit public markets page and extract embedded JSON.
+        3) Fallback to CoinGecko parser.
+        Returns set of normalized symbols like 'BTCUSDT'.
         """
+        import requests, re, json, time
+        logger.info("🔄 Fetching Bybit futures (robust mode)...")
+        out = set()
+
+        # Normalizer: remove separators, leading digits, PERP markers
+        def normalize(sym):
+            if not sym:
+                return None
+            s = str(sym).strip().upper()
+            s = re.sub(r'[\s/:._]+', '', s)          # remove separators
+            s = re.sub(r'^[0-9]+', '', s)            # drop numeric multipliers
+            s = re.sub(r'[-_]?PERP(ETUAL)?$', '', s) # remove PERP suffix
+            s = re.sub(r'[^A-Z0-9]', '', s)
+            return s or None
+
+        # Browser-like headers (more complete)
+        browser_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.bybit.com/",
+            "Origin": "https://www.bybit.com",
+            "Sec-Fetch-Site": "same-site",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+        }
+
+        session = requests.Session()
+        session.headers.update(browser_headers)
+        session.timeout = 10
+
+        # ---------- 1) Try official V5 with pre-flight homepage request ----------
         try:
-            logger.info("🔄 Fetching Bybit futures (primary: Bybit V5 API)...")
-            results = set()
-
-            def normalize(sym: str):
-                import re
-                if not sym:
-                    return None
-                s = str(sym).strip().upper()
-                # remove common separators/spaces/colons/slashes
-                s = re.sub(r'[\s/:._]+', '', s)
-                # strip trailing/perp markers
-                s = re.sub(r'[-_]?PERP(ETUAL)?$', '', s)
-                s = re.sub(r'[-_]?FUT(URES)?$', '', s)
-                # remove leading digits (e.g. 1000000BABYDOGEUSDT -> BABYDOGEUSDT)
-                s = re.sub(r'^[0-9]+', '', s)
-                # collapse multiple non-alnum
-                s = re.sub(r'[^A-Z0-9]', '', s)
-                if not s:
-                    return None
-                return s
-
-            # -------------------- 1. Official Bybit V5 (preferred) --------------------
+            # Pre-flight: get homepage to collect cookies and possibly CF tokens
             try:
-                for category in ('linear', 'inverse'):
-                    url = f"https://api.bybit.com/v5/market/instruments-info?category={category}"
-                    resp = requests.get(url, timeout=10)
-                    if resp.status_code != 200:
-                        logger.warning(f"Bybit V5 {category} responded {resp.status_code}")
-                        continue
-                    data = resp.json()
-                    # sample defensive checks - Bybit returns { "retCode":0, "result": {"list": [...] } }
-                    if isinstance(data, dict):
-                        retcode = data.get('retCode', data.get('ret_code'))
-                        # If Bybit returns an error code, log and skip
-                        if retcode not in (None, 0, '0'):
-                            logger.warning(f"Bybit V5 {category} returned retCode={retcode}")
-                            continue
-                        # find list in common places
-                        items = None
-                        if 'result' in data and isinstance(data['result'], dict):
-                            items = data['result'].get('list') or data['result'].get('rows') or data['result'].get('data')
-                        items = items or data.get('list') or data.get('data') or []
-                    else:
-                        items = []
-
-                    if not items:
-                        logger.info(f"Bybit V5 {category}: 0 items returned")
-                    else:
-                        count_added = 0
-                        for it in items:
-                            # possible symbol field names: 'symbol', 'name', 'instId'
-                            sym = it.get('symbol') or it.get('name') or it.get('instId') or it.get('instrument')
-                            status = it.get('status') or it.get('state') or ''
-                            ctype = it.get('contractType') or it.get('contract_type') or ''
-                            # include only active trading perpetuals
-                            # Bybit examples: status == 'Trading', contractType in ('LinearPerpetual','InversePerpetual')
-                            if isinstance(status, str) and status.lower() not in ('trading', 'open', ''):
-                                # skip non-trading (but be lenient)
-                                pass
-                            # accept if contract type name suggests perpetual
-                            if isinstance(ctype, str) and 'PERPETUAL' in ctype.upper():
-                                sym_norm = normalize(sym)
-                                if sym_norm:
-                                    results.add(sym_norm)
-                                    count_added += 1
-                            else:
-                                # some items may lack contractType but still be perpetual -> attempt by symbol suffix
-                                sym_norm = normalize(sym)
-                                if sym_norm and any(sym_norm.endswith(q) for q in ('USDT','USDC','USD','BTC','ETH','BUSD','PERP')):
-                                    # strip trailing PERP if present
-                                    sym_norm = sym_norm.replace('PERP','')
-                                    results.add(sym_norm)
-                                    count_added += 1
-                        logger.info(f"Bybit V5 {category}: parsed {count_added} symbols")
+                h = session.get("https://www.bybit.com/", timeout=10)
+                logger.debug(f"Bybit homepage status: {h.status_code}")
             except Exception as e:
-                logger.warning(f"Bybit V5 primary fetch failed: {e}")
+                logger.debug(f"Bybit homepage fetch failed: {e}")
 
-            # If we found results via official API, return them
-            if results:
-                cleaned = set(s for s in results if s and len(s) >= 4)
-                logger.info(f"✅ Bybit official API total: {len(cleaned)}")
-                return cleaned
-
-            # -------------------- 2. Fallbacks: CoinGecko then Cryptorank --------------------
-            logger.info("⚠️ Bybit official API returned no usable data — falling back to 3rd-party sources")
-
-            # helper to try a provider and return parsed set
-            def try_thirdparty(url, parser_func, provider_name):
+            v5_urls = [
+                "https://api.bybit.com/v5/market/instruments-info?category=linear",
+                "https://api.bybit.com/v5/market/instruments-info?category=inverse",
+            ]
+            v5_snippets = []
+            for u in v5_urls:
                 try:
-                    r = requests.get(url, timeout=10)
-                    if r.status_code != 200:
-                        logger.warning(f"{provider_name} responded {r.status_code}")
-                        # log small snippet for debugging
-                        logger.debug(f"{provider_name} response snippet: {r.text[:1000]}")
-                        return set(), r.text[:2000]
-                    payload = r.json()
-                    parsed = parser_func(payload)
-                    logger.info(f"✅ {provider_name} parsed {len(parsed)} symbols")
-                    return parsed, None
+                    r = session.get(u, timeout=10)
+                    logger.debug(f"Bybit V5 {u} -> {r.status_code}")
+                    if r.status_code == 200:
+                        data = r.json()
+                        # Defensive extraction of list
+                        items = []
+                        if isinstance(data, dict):
+                            # common places: data['result']['list'] or data['list']
+                            if "result" in data and isinstance(data["result"], dict):
+                                items = data["result"].get("list") or data["result"].get("rows") or []
+                            items = items or data.get("list") or data.get("data") or []
+                        if not items and isinstance(data, list):
+                            items = data
+                        if items:
+                            for it in items:
+                                sym = it.get("symbol") or it.get("instId") or it.get("name") or it.get("instrument")
+                                status = (it.get("status") or "").lower() if isinstance(it, dict) else ""
+                                ctype = (it.get("contractType") or it.get("contract_type") or "").upper() if isinstance(it, dict) else ""
+                                # accept Trading or unknown statuses but require perpetual-like contractType OR symbol suffix
+                                if (not status or status in ("trading", "open")) and (("PERPETUAL" in ctype) or (isinstance(sym, str) and any(s in sym.upper() for s in ("USDT","USDC","PERP","BTC","ETH")))):
+                                    n = normalize(sym)
+                                    if n:
+                                        out.add(n)
+                            logger.info(f"Bybit V5 parsed {len(out)} symbols so far")
+                            return out  # return early if successful
+                    else:
+                        # record snippet for debugging
+                        try:
+                            v5_snippets.append((u, r.status_code, r.text[:1000]))
+                        except Exception:
+                            v5_snippets.append((u, r.status_code, "<no-text>"))
                 except Exception as e:
-                    logger.warning(f"{provider_name} fetch/parse failed: {e}")
-                    return set(), None
+                    logger.warning(f"Bybit V5 request failed for {u}: {e}")
+            # If we reach here, V5 didn't return usable data
+            if v5_snippets:
+                for (u, code, snippet) in v5_snippets:
+                    logger.warning(f"Bybit V5 {u} -> {code}. Snippet: {snippet[:400]}")
+        except Exception as e:
+            logger.error(f"Bybit V5 overall error: {e}")
 
-            # parser for CoinGecko derivatives exchange format
-            def parse_coingecko(payload):
-                out = set()
-                # payload likely has 'tickers' list or similar
+        # ---------- 2) If V5 blocked -> try marketplace HTML scrape ----------
+        # Many sites embed market lists in page JS or provide a public JSON endpoint on web domain.
+        try:
+            logger.info("⚠️ Bybit V5 blocked (403). Trying public website scrape for markets...")
+            # Candidate pages to scrape: markets, derivatives pages, US site paths
+            candidate_pages = [
+                "https://www.bybit.com/en-US/markets/derivatives",   # derivatives listing (varies by locale)
+                "https://www.bybit.com/en-US/markets",               # general markets
+                "https://www.bybit.com/en-US/futures",               # some sites have futures route
+                "https://www.bybit.com/markets/derivatives",
+                "https://www.bybit.com/markets"
+            ]
+            page_snippets = []
+            for page in candidate_pages:
+                try:
+                    r = session.get(page, timeout=10)
+                    logger.debug(f"Scrape {page} -> {r.status_code}")
+                    if r.status_code != 200:
+                        page_snippets.append((page, r.status_code, r.text[:1000]))
+                        continue
+                    html = r.text
+                    # Heuristics: find JSON blobs in <script> tags or window.__INITIAL_STATE__ etc.
+                    # 1) JSON inside "window.__INITIAL_STATE__ = {...};"
+                    m = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});\s*</script>', html, flags=re.S)
+                    if not m:
+                        # 2) common pattern: "root.App.push({ ... })" or "__DATA__ = {...}"
+                        m = re.search(r'window\.__DATA__\s*=\s*({.+?});', html, flags=re.S)
+                    if not m:
+                        # 3) any large JSON-like object in a <script> tag (fallback)
+                        m = re.search(r'<script[^>]*>\s*({\s*".+?})\s*</script>', html, flags=re.S)
+                    parsed = False
+                    if m:
+                        blob = m.group(1)
+                        # try to locate the biggest JSON-ish blob for markets by searching for '"symbol"' or '"pair"'
+                        # find the substring containing "symbol" nearby
+                        try:
+                            # sanitize by finding balanced braces around the candidate
+                            # attempt to load directly
+                            j = json.loads(blob)
+                            # search recursively for lists of markets
+                            def find_symbols(obj):
+                                res = set()
+                                if isinstance(obj, dict):
+                                    for k, v in obj.items():
+                                        if k.lower() in ("symbols","markets","pairs","instruments","tickers","contracts"):
+                                            if isinstance(v, list):
+                                                for it in v:
+                                                    if isinstance(it, dict):
+                                                        candidate = it.get('symbol') or it.get('pair') or it.get('instId') or it.get('name') or it.get('contract')
+                                                        if candidate:
+                                                            n = normalize(candidate)
+                                                            if n:
+                                                                res.add(n)
+                                            # else continue
+                                        else:
+                                            res.update(find_symbols(v))
+                                elif isinstance(obj, list):
+                                    for item in obj:
+                                        res.update(find_symbols(item))
+                                return res
+                            found = find_symbols(j)
+                            if found:
+                                out.update(found)
+                                parsed = True
+                                logger.info(f"Scrape JSON found {len(found)} symbols from {page}")
+                                return out
+                        except Exception:
+                            # sometimes blob isn't pure JSON (single quotes or JS functions), try loosened extraction
+                            pass
+                    # 4) fallback simple regex: look for tickers like "BTCUSDT" or "ETHUSDT" patterns in HTML
+                    cand = set(re.findall(r'\b([A-Z0-9]{2,20}(?:USDT|USDC|USD|BTC|ETH|BUSD))\b', html))
+                    if cand:
+                        normalized = {normalize(x) for x in cand if normalize(x)}
+                        out.update(normalized)
+                        logger.info(f"Scrape regex found {len(normalized)} symbols on {page}")
+                        return out
+                    page_snippets.append((page, r.status_code, html[:1000]))
+                except Exception as e:
+                    logger.debug(f"Scrape {page} failed: {e}")
+            # log snippets if nothing found
+            for (p, code, s) in page_snippets:
+                logger.debug(f"Scrape candidate {p} -> {code}. Snippet: {s[:400]}")
+        except Exception as e:
+            logger.warning(f"Website scrape attempt failed: {e}")
+
+        # ---------- 3) Final fallback: aggressive CoinGecko parse ----------
+        try:
+            logger.info("⚠️ Falling back to CoinGecko derivatives endpoint (aggressive parser)...")
+            cg_url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
+            r = requests.get(cg_url, timeout=10)
+            if r.status_code == 200:
+                payload = r.json()
+                # try multiple locations for tickers
                 tickers = payload.get('tickers') or payload.get('pairs') or payload.get('data') or []
+                parsed = set()
                 for t in tickers:
                     candidate = None
                     if isinstance(t, dict):
-                        # common fields
-                        candidate = t.get('symbol') or t.get('pair') or t.get('instrument') or t.get('contract')
-                        # some entries have base/target
+                        candidate = t.get('symbol') or t.get('pair') or t.get('base') or t.get('instrument') or t.get('contract') or t.get('ticker')
                         if not candidate:
-                            base = t.get('base') or t.get('token') or None
-                            target = t.get('target') or t.get('quote') or None
-                            if base and target:
-                                candidate = f"{base}{target}"
+                            # some entries include nested fields
+                            for k in ('market', 'market_pair', 'marketPair'):
+                                if isinstance(t.get(k), dict):
+                                    candidate = (t[k].get('symbol') or '') or (t[k].get('pair') or '')
+                                    if candidate:
+                                        break
                     elif isinstance(t, str):
                         candidate = t
                     if not candidate:
                         continue
-                    s = normalize(candidate)
-                    if not s:
-                        continue
-                    # include only common quote markets (focus on USDT/perps)
-                    if any(s.endswith(q) for q in ('USDT','USDC','USD','BTC','ETH','BUSD')) or 'PERP' in candidate.upper():
-                        s = s.replace('PERP','')
-                        out.add(s)
-                return out
-
-            # parser for Cryptorank markets format
-            def parse_cryptorank(payload):
-                out = set()
-                arr = payload.get('data') or payload.get('markets') or []
-                for it in arr:
-                    candidate = None
-                    if isinstance(it, dict):
-                        candidate = it.get('symbol') or it.get('pair') or it.get('market') or it.get('name')
-                    elif isinstance(it, str):
-                        candidate = it
-                    if not candidate:
-                        continue
-                    s = normalize(candidate)
-                    if not s:
-                        continue
-                    if any(s.endswith(q) for q in ('USDT','USDC','USD','BTC','ETH','BUSD')) or 'PERP' in candidate.upper():
-                        s = s.replace('PERP','')
-                        out.add(s)
-                return out
-
-            # CoinGecko
-            cg_url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
-            parsed, snippet = try_thirdparty(cg_url, parse_coingecko, "CoinGecko")
-            if parsed:
-                logger.info(f"✅ Used CoinGecko fallback: {len(parsed)} symbols")
-                return parsed
+                    n = normalize(candidate)
+                    if n and any(n.endswith(q) for q in ("USDT","USDC","USD","BTC","ETH","BUSD")):
+                        parsed.add(n.replace('PERP',''))
+                if parsed:
+                    logger.info(f"CoinGecko aggressive parsed {len(parsed)} symbols")
+                    out.update(parsed)
+                    return out
+                else:
+                    logger.info("CoinGecko parsed 0 symbols with aggressive parser")
+                    logger.debug(f"CoinGecko raw snippet: {r.text[:1000]}")
             else:
-                if snippet:
-                    logger.info(f"CoinGecko response snippet (first 2k chars):\n{snippet}")
-
-            # Cryptorank
-            cr_url = "https://api.cryptorank.io/v1/exchanges/bybit/markets"
-            parsed, snippet = try_thirdparty(cr_url, parse_cryptorank, "Cryptorank")
-            if parsed:
-                logger.info(f"✅ Used Cryptorank fallback: {len(parsed)} symbols")
-                return parsed
-            else:
-                if snippet:
-                    logger.info(f"Cryptorank response snippet (first 2k chars):\n{snippet}")
-
-            # Nothing found — return empty set but log clearly
-            logger.info("🎯 Bybit via third-party: 0 futures (no data found from fallbacks)")
-            return set()
-
+                logger.warning(f"CoinGecko responded {r.status_code}")
         except Exception as e:
-            logger.error(f"❌ Bybit overall error: {e}")
-            return set()
+            logger.warning(f"CoinGecko fallback failed: {e}")
 
+        # nothing found: report and return empty set
+        logger.info("🎯 Bybit fetch returned 0 symbols after all fallbacks. See debug logs/snippets above.")
+        return set()
 
 
     def get_binance_futures_fallback(self):
