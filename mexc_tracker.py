@@ -622,17 +622,21 @@ class MEXCTracker:
                     items = data.get('data', [])
                     logger.info(f"Bitget USDT-FUTURES: {len(items)} total items")
                     
+                    # DEBUG: Show first item structure
+                    if items:
+                        first_item = items[0]
+                        logger.info(f"Bitget first item keys: {list(first_item.keys())}")
+                        logger.info(f"Bitget first item: {first_item}")
+                    
                     for item in items:
                         status = item.get('status')
                         symbol = item.get('symbol')
-                        symbol_type = item.get('symbolType')
+                        # Bitget might not have symbolType field, just include all active contracts
                         
-                        if (status == 'normal' and 
-                            symbol and 
-                            symbol_type == 'perpetual'):
+                        if status == 'normal' and symbol:
                             futures.add(symbol)
                     
-                    logger.info(f"Bitget USDT perpetuals: {len([i for i in items if i.get('symbolType') == 'perpetual'])}")
+                    logger.info(f"Bitget USDT active contracts: {len(futures)}")
             
             # COIN Futures
             url2 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=COIN-FUTURES"
@@ -647,22 +651,18 @@ class MEXCTracker:
                     for item in items:
                         status = item.get('status')
                         symbol = item.get('symbol')
-                        symbol_type = item.get('symbolType')
                         
-                        if (status == 'normal' and 
-                            symbol and 
-                            symbol_type == 'perpetual'):
+                        if status == 'normal' and symbol:
                             futures.add(symbol)
                     
-                    logger.info(f"Bitget COIN perpetuals: {len([i for i in items if i.get('symbolType') == 'perpetual'])}")
+                    logger.info(f"Bitget COIN active contracts: {len([i for i in items if i.get('status') == 'normal'])}")
             
-            logger.info(f"✅ BitGet TOTAL: {len(futures)} perpetual futures")
+            logger.info(f"✅ BitGet TOTAL: {len(futures)} active contracts")
             return futures
             
         except Exception as e:
             logger.error(f"BitGet error: {e}")
             return set()
-
 
 
 
