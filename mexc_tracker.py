@@ -405,7 +405,7 @@ class MEXCTracker:
             update.message.reply_html(f"❌ Error finding unique symbols: {str(e)}")
 
     def get_mexc_futures(self):
-        """Get futures from MEXC"""
+        """Get futures from MEXC - ALL symbols"""
         try:
             url = "https://contract.mexc.com/api/v1/contract/detail"
             response = requests.get(url, timeout=10)
@@ -414,21 +414,21 @@ class MEXCTracker:
             futures = set()
             for contract in data.get('data', []):
                 symbol = contract.get('symbol', '')
-                if symbol and symbol.endswith('_USDT'):
+                if symbol:  # Remove hardcoded _USDT filter to get ALL symbols
                     futures.add(symbol)
             
-            logger.info(f"MEXC: {len(futures)} futures")
+            logger.info(f"MEXC: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"MEXC error: {e}")
             return set()
-    
+
     def get_binance_futures(self):
-        """Get futures from Binance with better error handling"""
+        """Get futures from Binance - ALL symbols"""
         try:
             url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
             response = requests.get(url, timeout=15)
-            response.raise_for_status()  # This will raise an exception for bad status codes
+            response.raise_for_status()
             
             data = response.json()
             
@@ -437,14 +437,14 @@ class MEXCTracker:
                 if symbol_data.get('contractType') == 'PERPETUAL' and symbol_data.get('status') == 'TRADING':
                     futures.add(symbol_data['symbol'])
             
-            logger.info(f"Binance: {len(futures)} futures")
+            logger.info(f"Binance: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"Binance error: {e} - Response: {getattr(response, 'text', 'No response')}")
             return set()
 
     def get_bybit_futures(self):
-        """Get futures from Bybit with better error handling"""
+        """Get futures from Bybit - ALL symbols"""
         try:
             url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
             headers = {
@@ -463,14 +463,14 @@ class MEXCTracker:
                         if symbol:
                             futures.add(symbol)
             
-            logger.info(f"Bybit: {len(futures)} futures")
+            logger.info(f"Bybit: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"Bybit error: {e} - Response: {getattr(response, 'text', 'No response')}")
             return set()
 
     def get_bitget_futures(self):
-        """Get futures from BitGet with better error handling"""
+        """Get futures from BitGet - ALL symbols"""
         try:
             url = "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
             response = requests.get(url, timeout=15)
@@ -485,14 +485,14 @@ class MEXCTracker:
                     if symbol and item.get('status') == 'normal':
                         futures.add(symbol)
             
-            logger.info(f"BitGet: {len(futures)} futures")
+            logger.info(f"BitGet: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"BitGet error: {e} - Response: {getattr(response, 'text', 'No response')}")
             return set()
-    
+
     def get_okx_futures(self):
-        """Get futures from OKX"""
+        """Get futures from OKX - ALL symbols"""
         try:
             url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
             response = requests.get(url, timeout=10)
@@ -501,17 +501,18 @@ class MEXCTracker:
             futures = set()
             for item in data.get('data', []):
                 inst_id = item.get('instId', '')
-                if inst_id and '-USDT-' in inst_id and 'SWAP' in inst_id:
+                # Remove hardcoded -USDT- filter to get ALL symbols including USDC, BTC, ETH pairs
+                if inst_id and 'SWAP' in inst_id:  # Keep only SWAP instruments
                     futures.add(inst_id)
             
-            logger.info(f"OKX: {len(futures)} futures")
+            logger.info(f"OKX: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"OKX error: {e}")
             return set()
-    
+
     def get_gate_futures(self):
-        """Get futures from Gate.io"""
+        """Get futures from Gate.io - ALL symbols"""
         try:
             url = "https://api.gateio.ws/api/v4/futures/usdt/contracts"
             response = requests.get(url, timeout=10)
@@ -520,17 +521,18 @@ class MEXCTracker:
             futures = set()
             for item in data:
                 symbol = item.get('name', '')
+                # Remove any hardcoded filters to get ALL symbols
                 if symbol and item.get('in_delisting', False) is False:
                     futures.add(symbol)
             
-            logger.info(f"Gate.io: {len(futures)} futures")
+            logger.info(f"Gate.io: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"Gate.io error: {e}")
             return set()
-    
+
     def get_kucoin_futures(self):
-        """Get futures from KuCoin"""
+        """Get futures from KuCoin - ALL symbols"""
         try:
             url = "https://api-futures.kucoin.com/api/v1/contracts/active"
             response = requests.get(url, timeout=10)
@@ -539,17 +541,17 @@ class MEXCTracker:
             futures = set()
             for item in data.get('data', []):
                 symbol = item.get('symbol', '')
-                if symbol:
+                if symbol:  # Get ALL symbols without filters
                     futures.add(symbol)
             
-            logger.info(f"KuCoin: {len(futures)} futures")
+            logger.info(f"KuCoin: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"KuCoin error: {e}")
             return set()
-    
+
     def get_bingx_futures(self):
-        """Get futures from BingX"""
+        """Get futures from BingX - ALL symbols"""
         try:
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
             response = requests.get(url, timeout=10)
@@ -558,16 +560,17 @@ class MEXCTracker:
             futures = set()
             for item in data.get('data', []):
                 symbol = item.get('symbol', '')
-                if symbol:
+                if symbol:  # Get ALL symbols without filters
                     futures.add(symbol)
             
-            logger.info(f"BingX: {len(futures)} futures")
+            logger.info(f"BingX: {len(futures)} futures (all symbols)")
             return futures
         except Exception as e:
             logger.error(f"BingX error: {e}")
             return set()
-    
-   
+
+
+           
     def get_all_exchanges_futures(self):
         """Get futures from all exchanges and return statistics"""
         exchanges = {
@@ -621,42 +624,46 @@ class MEXCTracker:
 
 
     def normalize_symbol(self, symbol):
-        """Normalize symbol for comparison across exchanges"""
+        """Normalize symbol for comparison across exchanges - REGEX VERSION"""
         if not symbol:
             return ""
         
-        normalized = symbol.upper()
+        import re
         
-        # Remove common contract/position suffixes
-        suffixes_to_remove = [
-            # USDT variations
-            '_USDT', 'USDT', '-USDT', 'USDT-PERP', 'USDT-PERPETUAL', 'USDT-FUTURES',
-            # Perpetual variations
-            '_PERP', 'PERP', '-PERP', '_PERPETUAL', 'PERPETUAL', '-PERPETUAL',
-            # Futures variations
-            '_FUTURES', 'FUTURES', '-FUTURES', '_FUTURE', 'FUTURE', '-FUTURE',
-            # Swap variations
-            '_SWAP', 'SWAP', '-SWAP', 'SWAP:',
-            # Other common suffixes
-            '_CONTRACT', 'CONTRACT', '-CONTRACT'
+        original = symbol.upper()
+        normalized = original
+        
+        # Remove futures/contract specific suffixes using regex
+        futures_patterns = [
+            r'[-_ ](PERP(ETUAL)?)$',
+            r'[-_ ](FUTURES?)$',
+            r'[-_ ](SWAP)$',
+            r'[-_ ](CONTRACT)$',
         ]
         
-        for suffix in suffixes_to_remove:
-            normalized = normalized.replace(suffix, '')
+        for pattern in futures_patterns:
+            normalized = re.sub(pattern, '', normalized)
         
-        # Remove separators and formatting
-        separators = ['-', '_', ' ', ':', '/']
-        for sep in separators:
-            normalized = normalized.replace(sep, '')
+        # Smart separator removal - preserve trading pair structure
+        # Pattern: word_separator_word (like BTC-USDT, ETH_USDC, etc.)
+        separator_pattern = r'^([A-Z0-9]{2,10})[-_ ]([A-Z0-9]{2,10})$'
+        match = re.match(separator_pattern, normalized)
         
-        # Handle specific exchange formats
-        # MEXC: SYMBOL_USDT
-        # Binance: SYMBOLUSDT  
-        # Bybit: SYMBOLUSDT
-        # OKX: SYMBOL-USDT-SWAP
+        if match:
+            # This looks like a trading pair with separator - remove the separator
+            base, quote = match.groups()
+            normalized = base + quote
+        else:
+            # Remove all separators for other cases
+            normalized = re.sub(r'[-_ ]', '', normalized)
         
+        # Clean up any double separators or edge cases
+        normalized = re.sub(r'[-_ ]+', '', normalized)
+        
+        logger.debug(f"Symbol normalized: '{original}' -> '{normalized}'")
         return normalized
-  
+        
+    
     def find_unique_futures(self):
         """Find futures that are only on MEXC and not on other exchanges"""
         try:
