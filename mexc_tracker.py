@@ -55,27 +55,23 @@ class MEXCTracker:
         self.session = self._create_session()
 
     def _create_session(self):
-        """Create requests session with better retry strategy and headers"""
+        """Create requests session with minimal headers"""
         session = requests.Session()
         
-        # Add default headers to avoid blocking
+        # MINIMAL headers - avoid detection
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (compatible; Bot)',
             'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
         })
         
-        # Better retry strategy
+        # Simple retry strategy
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
+            total=2,
+            backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST"]
         )
         
-        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
+        adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         
@@ -752,9 +748,7 @@ class MEXCTracker:
             return set()
         
 
-        
-
-
+    
     def get_bitget_futures(self):
         """Get Bitget futures - FIXED STATUS FIELD"""
         try:
