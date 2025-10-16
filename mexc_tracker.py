@@ -914,10 +914,11 @@ class MEXCTracker:
             "/unwatch SYMBOL - Remove from watchlist\n"
             "/watchlist - Show watched symbols\n"
             "/coverage SYMBOL - Show exchange coverage\n"
-            "/findunique - Find currently unique symbols"
+            "/findunique - Find currently unique symbols\n\n"
+            "Use /help for complete command list"
         )
         update.message.reply_html(welcome_text)
-    
+        
     def status_command(self, update: Update, context: CallbackContext):
         """Send current status"""
         data = self.load_data()
@@ -1365,6 +1366,13 @@ class MEXCTracker:
             "/forceupdate - Force update Google Sheet\n"
             "/status - Current status\n"
             "/exchanges - Exchange information\n\n"
+            "<b>Symbols Management:</b>\n"
+            "/checksymbol SYMBOL - Check if a specific symbol is unique to MEXC\n"
+            "/watch SYMBOL - Add symbol to personal watchlist\n"
+            "/unwatch SYMBOL - Remove symbol from watchlist\n"
+            "/watchlist - View all watched symbols with their status\n"
+            "/coverage SYMBOL - Show detailed exchange coverage\n"
+            "/findunique - Find currently unique symbols\n\n"
             "<b>Auto-features:</b>\n"
             f"• Checks every {self.update_interval} minutes\n"
             "• Alerts for new unique futures\n"
@@ -1372,8 +1380,9 @@ class MEXCTracker:
             "• Data export available\n\n"
             "⚡ <i>Happy trading!</i>"
         )
-        update.message.reply_html(help_text)
-            
+        update.message.reply_html(help_text)  
+
+
     def get_uptime(self):
         """Calculate bot uptime"""
         data = self.load_data()
