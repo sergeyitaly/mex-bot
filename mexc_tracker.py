@@ -54,7 +54,13 @@ class MEXCTracker:
         # Google Sheets setup
         self.setup_google_sheets()
         self.session = self._create_session()
-
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+        })
+        self.proxies = self._get_proxies()
+        
     def _create_session(self):
         """Create requests session with minimal headers"""
         session = requests.Session()
