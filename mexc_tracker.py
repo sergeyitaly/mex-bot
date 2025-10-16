@@ -788,6 +788,58 @@ class MEXCTracker:
         logger.debug(f"Symbol normalized: '{original}' -> '{normalized}'")
         return normalized
 
+    def get_bitget_futures(self):
+        """Get futures from BitGet - WORKING VERSION"""
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ]
+        
+        product_types = ['umcbl', 'dmcbl', 'sumcbl', 'sdmcbl']  # Different product types
+        
+        all_futures = set()
+        
+        for product_type in product_types:
+            try:
+                url = f"https://api.bitget.com/api/mix/v1/market/contracts?productType={product_type}"
+                
+                headers = {
+                    'User-Agent': random.choice(user_agents),
+                    'Accept': 'application/json',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Origin': 'https://www.bitget.com',
+                    'Referer': 'https://www.bitget.com/',
+                    'Sec-Fetch-Dest': 'empty',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Site': 'same-site'
+                }
+                
+                logger.info(f"Trying BitGet product: {product_type}")
+                response = self.session.get(url, timeout=15, headers=headers)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if data.get('code') == '00000' and data.get('data'):
+                        for item in data['data']:
+                            symbol = item.get('symbol')
+                            status = item.get('status')
+                            
+                            if symbol and status == 'normal':  # Only active contracts
+                                all_futures.add(symbol)
+                                
+            except Exception as e:
+                logger.warning(f"BitGet product {product_type} failed: {e}")
+                continue
+                
+            time.sleep(0.5)
+        
+        if all_futures:
+            logger.info(f"✅ BitGet SUCCESS: {len(all_futures)} futures")
+        else:
+            logger.error("❌ BitGet all products failed")
+        
+        return all_futures
 
     def analyze_symbol_coverage(self, symbol):
         """Check which exchanges have a specific symbol"""
