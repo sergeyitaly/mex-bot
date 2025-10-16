@@ -18,3 +18,4 @@ __pycache__/
 venv/
 setup
 bot-mex-50845051bbf4.json
+exchange_test_results*
