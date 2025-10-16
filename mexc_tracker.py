@@ -405,7 +405,7 @@ class MEXCTracker:
             update.message.reply_html(f"❌ Error finding unique symbols: {str(e)}")
 
     def get_mexc_futures(self):
-        """Get futures from MEXC - ALL symbols"""
+        """Get ALL futures from MEXC"""
         try:
             url = "https://contract.mexc.com/api/v1/contract/detail"
             response = requests.get(url, timeout=10)
@@ -414,17 +414,17 @@ class MEXCTracker:
             futures = set()
             for contract in data.get('data', []):
                 symbol = contract.get('symbol', '')
-                if symbol:  # Remove hardcoded _USDT filter to get ALL symbols
+                if symbol:
                     futures.add(symbol)
             
-            logger.info(f"MEXC: {len(futures)} futures (all symbols)")
+            logger.info(f"MEXC: {len(futures)} futures")
             return futures
         except Exception as e:
             logger.error(f"MEXC error: {e}")
             return set()
 
     def get_binance_futures(self):
-        """Get futures from Binance - ALL symbols"""
+        """Get ALL futures from Binance"""
         try:
             url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
             response = requests.get(url, timeout=15)
@@ -437,14 +437,14 @@ class MEXCTracker:
                 if symbol_data.get('contractType') == 'PERPETUAL' and symbol_data.get('status') == 'TRADING':
                     futures.add(symbol_data['symbol'])
             
-            logger.info(f"Binance: {len(futures)} futures (all symbols)")
+            logger.info(f"Binance: {len(futures)} futures")
             return futures
         except Exception as e:
-            logger.error(f"Binance error: {e} - Response: {getattr(response, 'text', 'No response')}")
+            logger.error(f"Binance error: {e}")
             return set()
 
     def get_bybit_futures(self):
-        """Get futures from Bybit - ALL symbols"""
+        """Get ALL futures from Bybit"""
         try:
             url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
             headers = {
@@ -463,14 +463,14 @@ class MEXCTracker:
                         if symbol:
                             futures.add(symbol)
             
-            logger.info(f"Bybit: {len(futures)} futures (all symbols)")
+            logger.info(f"Bybit: {len(futures)} futures")
             return futures
         except Exception as e:
-            logger.error(f"Bybit error: {e} - Response: {getattr(response, 'text', 'No response')}")
+            logger.error(f"Bybit error: {e}")
             return set()
 
     def get_bitget_futures(self):
-        """Get futures from BitGet - ALL symbols"""
+        """Get ALL futures from BitGet"""
         try:
             url = "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
             response = requests.get(url, timeout=15)
@@ -485,14 +485,14 @@ class MEXCTracker:
                     if symbol and item.get('status') == 'normal':
                         futures.add(symbol)
             
-            logger.info(f"BitGet: {len(futures)} futures (all symbols)")
+            logger.info(f"BitGet: {len(futures)} futures")
             return futures
         except Exception as e:
-            logger.error(f"BitGet error: {e} - Response: {getattr(response, 'text', 'No response')}")
+            logger.error(f"BitGet error: {e}")
             return set()
 
     def get_okx_futures(self):
-        """Get futures from OKX - ALL symbols"""
+        """Get ALL futures from OKX"""
         try:
             url = "https://www.okx.com/api/v5/public/instruments?instType=SWAP"
             response = requests.get(url, timeout=10)
@@ -501,18 +501,17 @@ class MEXCTracker:
             futures = set()
             for item in data.get('data', []):
                 inst_id = item.get('instId', '')
-                # Remove hardcoded -USDT- filter to get ALL symbols including USDC, BTC, ETH pairs
-                if inst_id and 'SWAP' in inst_id:  # Keep only SWAP instruments
+                if inst_id and 'SWAP' in inst_id:
                     futures.add(inst_id)
             
-            logger.info(f"OKX: {len(futures)} futures (all symbols)")
+            logger.info(f"OKX: {len(futures)} futures")
             return futures
         except Exception as e:
             logger.error(f"OKX error: {e}")
             return set()
 
     def get_gate_futures(self):
-        """Get futures from Gate.io - ALL symbols"""
+        """Get ALL futures from Gate.io"""
         try:
             url = "https://api.gateio.ws/api/v4/futures/usdt/contracts"
             response = requests.get(url, timeout=10)
@@ -521,18 +520,17 @@ class MEXCTracker:
             futures = set()
             for item in data:
                 symbol = item.get('name', '')
-                # Remove any hardcoded filters to get ALL symbols
                 if symbol and item.get('in_delisting', False) is False:
                     futures.add(symbol)
             
-            logger.info(f"Gate.io: {len(futures)} futures (all symbols)")
+            logger.info(f"Gate.io: {len(futures)} futures")
             return futures
         except Exception as e:
             logger.error(f"Gate.io error: {e}")
             return set()
 
     def get_kucoin_futures(self):
-        """Get futures from KuCoin - ALL symbols"""
+        """Get ALL futures from KuCoin"""
         try:
             url = "https://api-futures.kucoin.com/api/v1/contracts/active"
             response = requests.get(url, timeout=10)
@@ -541,17 +539,17 @@ class MEXCTracker:
             futures = set()
             for item in data.get('data', []):
                 symbol = item.get('symbol', '')
-                if symbol:  # Get ALL symbols without filters
+                if symbol:
                     futures.add(symbol)
             
-            logger.info(f"KuCoin: {len(futures)} futures (all symbols)")
+            logger.info(f"KuCoin: {len(futures)} futures")
             return futures
         except Exception as e:
             logger.error(f"KuCoin error: {e}")
             return set()
 
     def get_bingx_futures(self):
-        """Get futures from BingX - ALL symbols"""
+        """Get ALL futures from BingX"""
         try:
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
             response = requests.get(url, timeout=10)
@@ -560,14 +558,16 @@ class MEXCTracker:
             futures = set()
             for item in data.get('data', []):
                 symbol = item.get('symbol', '')
-                if symbol:  # Get ALL symbols without filters
+                if symbol:
                     futures.add(symbol)
             
-            logger.info(f"BingX: {len(futures)} futures (all symbols)")
+            logger.info(f"BingX: {len(futures)} futures")
             return futures
         except Exception as e:
             logger.error(f"BingX error: {e}")
             return set()
+        
+
 
 
            
