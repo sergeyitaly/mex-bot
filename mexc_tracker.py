@@ -55,16 +55,30 @@ class MEXCTracker:
         self.session = self._create_session()
 
     def _create_session(self):
-        """Create requests session with retry strategy"""
+        """Create requests session with better retry strategy and headers"""
         session = requests.Session()
+        
+        # Add default headers to avoid blocking
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+        })
+        
+        # Better retry strategy
         retry_strategy = Retry(
             total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"]
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
+        
         return session
 
     def setup_google_sheets(self):
@@ -487,74 +501,160 @@ class MEXCTracker:
             return set()
         
     def get_binance_futures(self):
-        """Get Binance futures - CORRECTED"""
+        """Get Binance futures - FIXED VERSION"""
         try:
             logger.info("🔄 Fetching Binance futures...")
             
             futures = set()
             
-            # USDⓈ-M Futures
+            # USDⓈ-M Futures (USDT Perpetuals)
             url1 = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            response1 = self.session.get(url1, timeout=10)
+            logger.info(f"Binance URL1: {url1}")
+            
+            # Add proper headers to avoid blocking
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'application/json',
+            }
+            
+            response1 = self.session.get(url1, timeout=15, headers=headers)
+            logger.info(f"Binance Response1 Status: {response1.status_code}")
             
             if response1.status_code == 200:
                 data = response1.json()
                 symbols = data.get('symbols', [])
+                logger.info(f"Binance USDⓈ-M total symbols: {len(symbols)}")
                 
+                perpetual_count = 0
                 for symbol in symbols:
                     contract_type = symbol.get('contractType')
                     status = symbol.get('status')
                     symbol_name = symbol.get('symbol')
                     
+                    # DEBUG: Log first few symbols
+                    if perpetual_count < 3:
+                        logger.info(f"Binance sample: {symbol_name} - {contract_type} - {status}")
+                    
                     if contract_type == 'PERPETUAL' and status == 'TRADING':
+                        perpetual_count += 1
                         futures.add(symbol_name)
                 
-                logger.info(f"Binance USDⓈ-M perpetuals found: {len(futures)}")
+                logger.info(f"Binance USDⓈ-M perpetuals found: {perpetual_count}")
+                
+                # Log contract types for debugging
+                contract_types = {}
+                for symbol in symbols:
+                    ct = symbol.get('contractType')
+                    contract_types[ct] = contract_types.get(ct, 0) + 1
+                logger.info(f"Binance contract types: {contract_types}")
+            else:
+                logger.error(f"Binance HTTP Error: {response1.status_code} - {response1.text}")
             
             # COIN-M Futures  
             url2 = "https://dapi.binance.com/dapi/v1/exchangeInfo"
-            response2 = self.session.get(url2, timeout=10)
+            logger.info(f"Binance URL2: {url2}")
+            response2 = self.session.get(url2, timeout=15, headers=headers)
+            logger.info(f"Binance Response2 Status: {response2.status_code}")
             
             if response2.status_code == 200:
                 data = response2.json()
                 symbols = data.get('symbols', [])
+                logger.info(f"Binance COIN-M total symbols: {len(symbols)}")
                 
-                coin_futures = set()
+                perpetual_count = 0
                 for symbol in symbols:
                     contract_type = symbol.get('contractType')
                     status = symbol.get('status')
                     symbol_name = symbol.get('symbol')
                     
                     if contract_type == 'PERPETUAL' and status == 'TRADING':
-                        coin_futures.add(symbol_name)
+                        perpetual_count += 1
+                        futures.add(symbol_name)
                 
-                futures.update(coin_futures)
-                logger.info(f"Binance COIN-M perpetuals found: {len(coin_futures)}")
+                logger.info(f"Binance COIN-M perpetuals found: {perpetual_count}")
+            else:
+                logger.error(f"Binance COIN-M HTTP Error: {response2.status_code}")
             
             logger.info(f"✅ Binance TOTAL: {len(futures)} futures")
+            
+            # If still 0, try alternative endpoint
+            if len(futures) == 0:
+                logger.warning("Binance returned 0 futures, trying alternative endpoint...")
+                alt_futures = self.get_binance_futures_alternative()
+                futures.update(alt_futures)
+                logger.info(f"✅ Binance ALTERNATIVE: {len(alt_futures)} futures")
+            
             return futures
             
         except Exception as e:
             logger.error(f"Binance error: {e}")
+            import traceback
+            logger.error(f"Binance traceback: {traceback.format_exc()}")
+            return set()
+
+    def get_binance_futures_alternative(self):
+        """Alternative method for Binance if main endpoint fails"""
+        try:
+            logger.info("🔄 Trying Binance alternative endpoint...")
+            
+            futures = set()
+            url = "https://fapi.binance.com/fapi/v1/ticker/price"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json',
+            }
+            
+            response = self.session.get(url, timeout=15, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # All symbols from price ticker are active perpetuals
+                for item in data:
+                    symbol = item.get('symbol')
+                    if symbol and 'USDT' in symbol:  # Focus on USDT pairs
+                        futures.add(symbol)
+                
+                logger.info(f"Binance alternative found: {len(futures)} symbols")
+            else:
+                logger.error(f"Binance alternative failed: {response.status_code}")
+                
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Binance alternative error: {e}")
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit futures - CORRECTED"""
+        """Get Bybit futures - FIXED VERSION"""
         try:
             logger.info("🔄 Fetching Bybit futures...")
             
             futures = set()
             
-            # Linear Futures (USDT)
+            # Add proper headers to avoid 403 errors
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'application/json',
+                'Referer': 'https://www.bybit.com',
+            }
+            
+            # Linear Futures (USDT) - FIXED: Use correct parameters
             url1 = "https://api.bybit.com/v5/market/instruments-info?category=linear"
-            response1 = self.session.get(url1, timeout=10)
+            logger.info(f"Bybit URL1: {url1}")
+            response1 = self.session.get(url1, timeout=15, headers=headers)
+            logger.info(f"Bybit Response1 Status: {response1.status_code}")
             
             if response1.status_code == 200:
                 data = response1.json()
+                logger.info(f"Bybit Response1 retCode: {data.get('retCode')}")
+                logger.info(f"Bybit Response1 retMsg: {data.get('retMsg')}")
                 
                 if data.get('retCode') == 0:
                     items = data.get('result', {}).get('list', [])
+                    logger.info(f"Bybit Linear total items: {len(items)}")
                     
+                    linear_perpetual_count = 0
                     for item in items:
                         status = item.get('status')
                         symbol = item.get('symbol')
@@ -562,21 +662,35 @@ class MEXCTracker:
                         
                         # Filter for Trading LinearPerpetual contracts
                         if status == 'Trading' and contract_type == 'LinearPerpetual':
+                            linear_perpetual_count += 1
                             futures.add(symbol)
                     
-                    logger.info(f"Bybit Linear perpetuals found: {len(futures)}")
+                    logger.info(f"Bybit Linear perpetuals found: {linear_perpetual_count}")
+                    
+                    # Debug info
+                    if items:
+                        sample = items[0]
+                        logger.info(f"Bybit sample item: {sample.get('symbol')} - {sample.get('contractType')} - {sample.get('status')}")
+                else:
+                    logger.error(f"Bybit API Error: {data.get('retMsg')}")
+            else:
+                logger.error(f"Bybit HTTP Error: {response1.status_code} - {response1.text}")
             
             # Inverse Futures (Coin Margined)
             url2 = "https://api.bybit.com/v5/market/instruments-info?category=inverse"
-            response2 = self.session.get(url2, timeout=10)
+            logger.info(f"Bybit URL2: {url2}")
+            response2 = self.session.get(url2, timeout=15, headers=headers)
+            logger.info(f"Bybit Response2 Status: {response2.status_code}")
             
             if response2.status_code == 200:
                 data = response2.json()
+                logger.info(f"Bybit Response2 retCode: {data.get('retCode')}")
                 
                 if data.get('retCode') == 0:
                     items = data.get('result', {}).get('list', [])
+                    logger.info(f"Bybit Inverse total items: {len(items)}")
                     
-                    inverse_futures = set()
+                    inverse_perpetual_count = 0
                     for item in items:
                         status = item.get('status')
                         symbol = item.get('symbol')
@@ -584,17 +698,62 @@ class MEXCTracker:
                         
                         # Filter for Trading InversePerpetual contracts
                         if status == 'Trading' and contract_type == 'InversePerpetual':
-                            inverse_futures.add(symbol)
+                            inverse_perpetual_count += 1
+                            futures.add(symbol)
                     
-                    futures.update(inverse_futures)
-                    logger.info(f"Bybit Inverse perpetuals found: {len(inverse_futures)}")
+                    logger.info(f"Bybit Inverse perpetuals found: {inverse_perpetual_count}")
+                else:
+                    logger.error(f"Bybit Inverse API Error: {data.get('retMsg')}")
+            else:
+                logger.error(f"Bybit Inverse HTTP Error: {response2.status_code}")
             
             logger.info(f"✅ Bybit TOTAL: {len(futures)} futures")
             return futures
             
         except Exception as e:
             logger.error(f"Bybit error: {e}")
+            import traceback
+            logger.error(f"Bybit traceback: {traceback.format_exc()}")
             return set()
+
+    def get_bybit_futures_alternative(self):
+        """Alternative method for Bybit if main endpoint fails"""
+        try:
+            logger.info("🔄 Trying Bybit alternative endpoint...")
+            
+            futures = set()
+            # Try public tickers endpoint
+            url = "https://api.bybit.com/v5/market/tickers?category=linear"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json',
+            }
+            
+            response = self.session.get(url, timeout=15, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('retCode') == 0:
+                    items = data.get('result', {}).get('list', [])
+                    for item in items:
+                        symbol = item.get('symbol')
+                        if symbol:
+                            futures.add(symbol)
+                    
+                    logger.info(f"Bybit alternative found: {len(futures)} symbols")
+            else:
+                logger.error(f"Bybit alternative failed: {response.status_code}")
+                
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Bybit alternative error: {e}")
+            return set()
+        
+
+        
+
 
     def get_bitget_futures(self):
         """Get Bitget futures - FIXED STATUS FIELD"""
@@ -654,7 +813,7 @@ class MEXCTracker:
         
 
     def get_all_exchanges_futures(self):
-        """Get futures from all exchanges - CLEAN VERSION"""
+        """Get futures from all exchanges - IMPROVED VERSION"""
         exchanges = {
             'Binance': self.get_binance_futures,
             'Bybit': self.get_bybit_futures,
@@ -670,21 +829,32 @@ class MEXCTracker:
         
         for name, method in exchanges.items():
             try:
+                logger.info(f"🔄 Fetching {name} futures...")
                 futures = method()
+                
+                # If main method fails, try alternative
+                if not futures or len(futures) == 0:
+                    logger.warning(f"{name} main method failed, trying alternative...")
+                    alt_method = getattr(self, f'get_{name.lower()}_futures_alternative', None)
+                    if alt_method:
+                        futures = alt_method()
+                
                 if futures:
                     all_futures.update(futures)
                     exchange_stats[name] = len(futures)
+                    logger.info(f"✅ {name}: {len(futures)} futures")
                 else:
                     exchange_stats[name] = 0
+                    logger.error(f"❌ {name}: 0 futures")
+                    
             except Exception as e:
                 exchange_stats[name] = 0
-                logger.error(f"{name} error: {e}")
+                logger.error(f"❌ {name} error: {e}")
             
             time.sleep(1)  # Rate limiting
         
-        logger.info(f"📊 Exchange results: {exchange_stats}")
-        return all_futures, exchange_stats
-    
+        logger.info(f"📊 Final exchange results: {exchange_stats}")
+        return all_futures, exchange_stats   
 
 
     def find_unique_futures(self):
