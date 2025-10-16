@@ -63,9 +63,7 @@ class MEXCTracker:
             'Accept-Language': 'en-US,en;q=0.9',
         })
         self.proxies = self._get_proxies()
-        if not self.bybit_api_key or not self.bybit_api_secret:
-            logger.warning("⚠️ Bybit API credentials not set - public endpoints only")
-            
+
     def _create_session(self):
         """Create requests session with minimal headers"""
         session = requests.Session()
@@ -489,7 +487,7 @@ class MEXCTracker:
             logger.error(f"KuCoin error: {e}")
             return set()
 
-    def ngx_futures(self):
+    def get_bingx_futures(self):
         """Get ALL futures from BingX"""
         try:
             url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
@@ -651,194 +649,6 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"❌ Binance error: {e}")
             return set()
-
-
-
-    def get_bybit_futures(self):
-        """Get Bybit futures using the simple authenticated approach"""
-        try:
-            logger.info("🔄 Fetching Bybit futures...")
-            
-            if not hasattr(self, 'bybit_api_key') or not hasattr(self, 'bybit_api_secret'):
-                logger.error("❌ Bybit API credentials not configured")
-                return self.get_bybit_futures_public_fallback()
-            
-            futures = set()
-            
-            # Get linear perpetuals (USDT margined)
-            linear_futures = self._get_bybit_linear_perpetuals()
-            if linear_futures:
-                futures.update(linear_futures)
-                logger.info(f"✅ Bybit linear perpetuals: {len(linear_futures)}")
-            
-            # Get inverse perpetuals (coin margined)  
-            inverse_futures = self._get_bybit_inverse_perpetuals()
-            if inverse_futures:
-                futures.update(inverse_futures)
-                logger.info(f"✅ Bybit inverse perpetuals: {len(inverse_futures)}")
-            
-            logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
-            
-            # Log sample symbols for verification
-            if futures:
-                sample = list(futures)[:5]
-                logger.info(f"🔍 Bybit sample: {sample}")
-            
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Bybit error: {e}")
-            return self.get_bybit_futures_public_fallback()
-
-    def _get_bybit_linear_perpetuals(self) -> set:
-        """Get Bybit linear perpetual futures (USDT margined)"""
-        try:
-            base_url = "https://api.bybit.com"
-            endpoint = "/v5/market/instruments-info"
-            
-            timestamp = str(int(time.time() * 1000))
-            recv_window = "5000"
-            
-            # Build parameter string for signature
-            param_string = f"category=linear&recv_window={recv_window}&timestamp={timestamp}"
-            
-            # Generate signature
-            signature = hmac.new(
-                self.bybit_api_secret.encode('utf-8'),
-                param_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            # Build full URL
-            full_url = f"{base_url}{endpoint}?{param_string}&sign={signature}"
-            
-            headers = {
-                'X-BAPI-API-KEY': self.bybit_api_key,
-                'X-BAPI-SIGN': signature,
-                'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': recv_window,
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(full_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    futures = set()
-                    
-                    for item in items:
-                        symbol = item.get('symbol', '')
-                        status = item.get('status', '')
-                        contract_type = item.get('contractType', '')
-                        
-                        # Filter for trading linear perpetuals
-                        if (status == 'Trading' and 
-                            contract_type == 'LinearPerpetual' and
-                            symbol.endswith('USDT')):
-                            futures.add(symbol)
-                    
-                    return futures
-                else:
-                    logger.error(f"❌ Bybit linear API error: {data.get('retMsg')}")
-                    return set()
-            else:
-                logger.error(f"❌ Bybit linear HTTP error: {response.status_code}")
-                return set()
-                
-        except Exception as e:
-            logger.error(f"❌ Bybit linear perpetuals error: {e}")
-            return set()
-
-    def _get_bybit_inverse_perpetuals(self) -> set:
-        """Get Bybit inverse perpetual futures (coin margined)"""
-        try:
-            base_url = "https://api.bybit.com"
-            endpoint = "/v5/market/instruments-info"
-            
-            timestamp = str(int(time.time() * 1000))
-            recv_window = "5000"
-            
-            # Build parameter string for signature
-            param_string = f"category=inverse&recv_window={recv_window}&timestamp={timestamp}"
-            
-            # Generate signature
-            signature = hmac.new(
-                self.bybit_api_secret.encode('utf-8'),
-                param_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            # Build full URL
-            full_url = f"{base_url}{endpoint}?{param_string}&sign={signature}"
-            
-            headers = {
-                'X-BAPI-API-KEY': self.bybit_api_key,
-                'X-BAPI-SIGN': signature,
-                'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': recv_window,
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(full_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    futures = set()
-                    
-                    for item in items:
-                        symbol = item.get('symbol', '')
-                        status = item.get('status', '')
-                        contract_type = item.get('contractType', '')
-                        
-                        # Filter for trading inverse perpetuals (BTCUSD, ETHUSD, etc.)
-                        if (status == 'Trading' and 
-                            contract_type == 'InversePerpetual' and
-                            symbol.endswith('USD')):
-                            futures.add(symbol)
-                    
-                    return futures
-                else:
-                    logger.error(f"❌ Bybit inverse API error: {data.get('retMsg')}")
-                    return set()
-            else:
-                logger.error(f"❌ Bybit inverse HTTP error: {response.status_code}")
-                return set()
-                
-        except Exception as e:
-            logger.error(f"❌ Bybit inverse perpetuals error: {e}")
-            return set()
-
-    def get_bybit_futures_public_fallback(self):
-        """Fallback method if authenticated API fails"""
-        try:
-            logger.info("🔄 Trying Bybit public fallback...")
-            futures = set()
-            
-            # Try public tickers endpoint as last resort
-            url = "https://api.bybit.com/v5/market/tickers?category=linear"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    for item in items:
-                        symbol = item.get('symbol', '')
-                        if symbol and symbol.endswith('USDT'):
-                            futures.add(symbol)
-                    logger.info(f"✅ Bybit public fallback: {len(futures)} symbols")
-            
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Bybit public fallback error: {e}")
-            return set()
-
-        
 
     def get_binance_futures_fallback(self):
         """Alternative Binance implementation using different approach"""
@@ -1035,6 +845,194 @@ class MEXCTracker:
             logger.error("💥 CRITICAL: No exchange data available")
         
         return all_futures, exchange_stats, detailed_stats
+
+
+
+    def get_bybit_futures(self):
+        """Get Bybit futures using the simple authenticated approach"""
+        try:
+            logger.info("🔄 Fetching Bybit futures...")
+            
+            if not hasattr(self, 'bybit_api_key') or not hasattr(self, 'bybit_api_secret'):
+                logger.error("❌ Bybit API credentials not configured")
+                return self.get_bybit_futures_public_fallback()
+            
+            futures = set()
+            
+            # Get linear perpetuals (USDT margined)
+            linear_futures = self._get_bybit_linear_perpetuals()
+            if linear_futures:
+                futures.update(linear_futures)
+                logger.info(f"✅ Bybit linear perpetuals: {len(linear_futures)}")
+            
+            # Get inverse perpetuals (coin margined)  
+            inverse_futures = self._get_bybit_inverse_perpetuals()
+            if inverse_futures:
+                futures.update(inverse_futures)
+                logger.info(f"✅ Bybit inverse perpetuals: {len(inverse_futures)}")
+            
+            logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
+            
+            # Log sample symbols for verification
+            if futures:
+                sample = list(futures)[:5]
+                logger.info(f"🔍 Bybit sample: {sample}")
+            
+            return futures
+            
+        except Exception as e:
+            logger.error(f"❌ Bybit error: {e}")
+            return self.get_bybit_futures_public_fallback()
+
+    def _get_bybit_linear_perpetuals(self) -> set:
+        """Get Bybit linear perpetual futures (USDT margined)"""
+        try:
+            base_url = "https://api.bybit.com"
+            endpoint = "/v5/market/instruments-info"
+            
+            timestamp = str(int(time.time() * 1000))
+            recv_window = "5000"
+            
+            # Build parameter string for signature
+            param_string = f"category=linear&recv_window={recv_window}&timestamp={timestamp}"
+            
+            # Generate signature
+            signature = hmac.new(
+                self.bybit_api_secret.encode('utf-8'),
+                param_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            # Build full URL
+            full_url = f"{base_url}{endpoint}?{param_string}&sign={signature}"
+            
+            headers = {
+                'X-BAPI-API-KEY': self.bybit_api_key,
+                'X-BAPI-SIGN': signature,
+                'X-BAPI-TIMESTAMP': timestamp,
+                'X-BAPI-RECV-WINDOW': recv_window,
+                'Content-Type': 'application/json'
+            }
+            
+            response = requests.get(full_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('retCode') == 0:
+                    items = data.get('result', {}).get('list', [])
+                    futures = set()
+                    
+                    for item in items:
+                        symbol = item.get('symbol', '')
+                        status = item.get('status', '')
+                        contract_type = item.get('contractType', '')
+                        
+                        # Filter for trading linear perpetuals
+                        if (status == 'Trading' and 
+                            contract_type == 'LinearPerpetual' and
+                            symbol.endswith('USDT')):
+                            futures.add(symbol)
+                    
+                    return futures
+                else:
+                    logger.error(f"❌ Bybit linear API error: {data.get('retMsg')}")
+                    return set()
+            else:
+                logger.error(f"❌ Bybit linear HTTP error: {response.status_code}")
+                return set()
+                
+        except Exception as e:
+            logger.error(f"❌ Bybit linear perpetuals error: {e}")
+            return set()
+
+    def _get_bybit_inverse_perpetuals(self) -> set:
+        """Get Bybit inverse perpetual futures (coin margined)"""
+        try:
+            base_url = "https://api.bybit.com"
+            endpoint = "/v5/market/instruments-info"
+            
+            timestamp = str(int(time.time() * 1000))
+            recv_window = "5000"
+            
+            # Build parameter string for signature
+            param_string = f"category=inverse&recv_window={recv_window}&timestamp={timestamp}"
+            
+            # Generate signature
+            signature = hmac.new(
+                self.bybit_api_secret.encode('utf-8'),
+                param_string.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
+            
+            # Build full URL
+            full_url = f"{base_url}{endpoint}?{param_string}&sign={signature}"
+            
+            headers = {
+                'X-BAPI-API-KEY': self.bybit_api_key,
+                'X-BAPI-SIGN': signature,
+                'X-BAPI-TIMESTAMP': timestamp,
+                'X-BAPI-RECV-WINDOW': recv_window,
+                'Content-Type': 'application/json'
+            }
+            
+            response = requests.get(full_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('retCode') == 0:
+                    items = data.get('result', {}).get('list', [])
+                    futures = set()
+                    
+                    for item in items:
+                        symbol = item.get('symbol', '')
+                        status = item.get('status', '')
+                        contract_type = item.get('contractType', '')
+                        
+                        # Filter for trading inverse perpetuals (BTCUSD, ETHUSD, etc.)
+                        if (status == 'Trading' and 
+                            contract_type == 'InversePerpetual' and
+                            symbol.endswith('USD')):
+                            futures.add(symbol)
+                    
+                    return futures
+                else:
+                    logger.error(f"❌ Bybit inverse API error: {data.get('retMsg')}")
+                    return set()
+            else:
+                logger.error(f"❌ Bybit inverse HTTP error: {response.status_code}")
+                return set()
+                
+        except Exception as e:
+            logger.error(f"❌ Bybit inverse perpetuals error: {e}")
+            return set()
+
+    def get_bybit_futures_public_fallback(self):
+        """Fallback method if authenticated API fails"""
+        try:
+            logger.info("🔄 Trying Bybit public fallback...")
+            futures = set()
+            
+            # Try public tickers endpoint as last resort
+            url = "https://api.bybit.com/v5/market/tickers?category=linear"
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('retCode') == 0:
+                    items = data.get('result', {}).get('list', [])
+                    for item in items:
+                        symbol = item.get('symbol', '')
+                        if symbol and symbol.endswith('USDT'):
+                            futures.add(symbol)
+                    logger.info(f"✅ Bybit public fallback: {len(futures)} symbols")
+            
+            return futures
+            
+        except Exception as e:
+            logger.error(f"❌ Bybit public fallback error: {e}")
+            return set()
+
+
 
     def find_unique_futures(self):
         """Find unique futures using robust method"""
