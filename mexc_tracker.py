@@ -60,7 +60,7 @@ class MEXCTracker:
             'Accept-Language': 'en-US,en;q=0.9',
         })
         self.proxies = self._get_proxies()
-        
+
     def _create_session(self):
         """Create requests session with minimal headers"""
         session = requests.Session()
@@ -648,61 +648,123 @@ class MEXCTracker:
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit futures with proxy support"""
+        """Get Bybit futures - WORKING VERSION without proxy dependency"""
         try:
             logger.info("🔄 Fetching Bybit futures...")
             
             futures = set()
             
-            # Try different categories with fallbacks
-            categories = [
-                ("linear", "LinearPerpetual"),
-                ("inverse", "InversePerpetual"),
-                ("spot", "")  # Fallback to spot
+            # Use a DIFFERENT approach - try multiple endpoints with different strategies
+            endpoints = [
+                # Primary endpoints
+                "https://api.bybit.com/v5/market/instruments-info?category=linear",
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                
+                # Alternative endpoints  
+                "https://api.bytick.com/v5/market/instruments-info?category=linear",  # Alternative domain
+                "https://api.bybit.com/v2/public/symbols",  # Legacy endpoint
+                
+                # Backup: Use different API versions
+                "https://api.bybit.com/derivatives/v3/public/instruments-info?category=linear",
             ]
             
-            for category, contract_type in categories:
-                if category == "spot":
-                    # Fallback to spot API
-                    url = "https://api.bybit.com/v5/market/tickers?category=spot"
-                else:
-                    url = f"https://api.bybit.com/v5/market/instruments-info?category={category}"
-                
-                logger.info(f"📡 Trying Bybit category: {category}")
-                response = self._make_request_with_retry(url)
-                
-                if response and response.status_code == 200:
-                    data = response.json()
+            for url in endpoints:
+                try:
+                    logger.info(f"📡 Trying Bybit endpoint: {url}")
                     
-                    if data.get('retCode') == 0:
-                        items = data.get('result', {}).get('list', [])
+                    # Use a fresh session for each attempt
+                    fresh_session = requests.Session()
+                    fresh_session.headers.update({
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/json',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                    })
+                    
+                    response = fresh_session.get(url, timeout=10)
+                    logger.info(f"📊 Response status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        data = response.json()
                         
-                        category_futures = set()
-                        for item in items:
-                            if category == "spot":
-                                # For spot fallback, just get all USDT pairs
+                        # Handle different response formats
+                        symbols_found = set()
+                        
+                        if 'result' in data and 'list' in data['result']:
+                            # v5 API format
+                            items = data['result']['list']
+                            for item in items:
+                                symbol = item.get('symbol', '')
+                                status = item.get('status', '')
+                                contract_type = item.get('contractType', '')
+                                
+                                # For instruments-info endpoint
+                                if 'instruments-info' in url:
+                                    if status == 'Trading' and contract_type == 'LinearPerpetual':
+                                        symbols_found.add(symbol)
+                                # For tickers endpoint  
+                                elif 'tickers' in url:
+                                    if symbol.endswith('USDT'):
+                                        symbols_found.add(symbol)
+                        
+                        elif 'result' in data:
+                            # v2 API format
+                            items = data['result']
+                            for item in items:
+                                symbol = item.get('name', '')
+                                if symbol and symbol.endswith('USDT'):
+                                    symbols_found.add(symbol)
+                        
+                        elif isinstance(data, list):
+                            # Direct list response
+                            for item in data:
+                                symbol = item.get('symbol', item.get('name', ''))
+                                if symbol and symbol.endswith('USDT'):
+                                    symbols_found.add(symbol)
+                        
+                        if symbols_found:
+                            futures.update(symbols_found)
+                            logger.info(f"✅ Bybit endpoint successful: {len(symbols_found)} symbols")
+                            break  # Success, no need to try other endpoints
+                        else:
+                            logger.warning(f"⚠️ Endpoint worked but no symbols found: {url}")
+                    
+                    else:
+                        logger.warning(f"⚠️ Endpoint failed with status {response.status_code}: {url}")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Endpoint error {url}: {e}")
+                    continue
+            
+            # If still no data, try the community API (often less restricted)
+            if not futures:
+                logger.info("🔄 Trying Bybit community API...")
+                try:
+                    community_url = "https://api.bybit.com/v5/market/tickers?category=spot"
+                    response = requests.get(community_url, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('retCode') == 0:
+                            items = data.get('result', {}).get('list', [])
+                            for item in items:
                                 symbol = item.get('symbol', '')
                                 if symbol.endswith('USDT'):
-                                    category_futures.add(symbol)
-                            else:
-                                status = item.get('status')
-                                symbol = item.get('symbol')
-                                item_contract_type = item.get('contractType')
-                                
-                                if (status == 'Trading' and 
-                                    item_contract_type == contract_type):
-                                    category_futures.add(symbol)
-                        
-                        futures.update(category_futures)
-                        logger.info(f"✅ Bybit {category} symbols found: {len(category_futures)}")
+                                    futures.add(symbol)
+                            logger.info(f"✅ Bybit community API: {len(futures)} symbols")
+                except Exception as e:
+                    logger.warning(f"⚠️ Community API failed: {e}")
             
             logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
+            
+            # If we got some data but not much, it's better than nothing
+            if 0 < len(futures) < 100:
+                logger.warning(f"⚠️ Bybit: Only {len(futures)} symbols (partial data)")
+            
             return futures
             
         except Exception as e:
             logger.error(f"❌ Bybit error: {e}")
             return set()
-
+    
     def get_binance_futures_fallback(self):
         """Alternative Binance implementation using different approach"""
         try:
