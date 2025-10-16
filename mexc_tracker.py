@@ -25,6 +25,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import Optional, List, Dict, Set, Any, Union
+import hmac
+import hashlib
 # Load environment variables
 load_dotenv()
 
@@ -50,7 +52,8 @@ class MEXCTracker:
         self.setup_handlers()
         self.init_data_file()
         self.last_unique_futures = set()
-        
+        self.bybit_api_key = os.getenv('BYBIT_API_KEY', '')
+        self.bybit_api_secret = os.getenv('BYBIT_API_SECRET', '')
         # Google Sheets setup
         self.setup_google_sheets()
         self.session = self._create_session()
@@ -647,232 +650,123 @@ class MEXCTracker:
             logger.error(f"❌ Binance error: {e}")
             return set()
 
-    def get_bybit_futures(self):
-        """
-        Robust Bybit fetcher:
-        1) Try Bybit V5 with browser-like headers and initial homepage visit to gather cookies.
-        2) If 403 persists, attempt HTML scrape of Bybit public markets page and extract embedded JSON.
-        3) Fallback to CoinGecko parser.
-        Returns set of normalized symbols like 'BTCUSDT'.
-        """
-        import requests, re, json, time
-        logger.info("🔄 Fetching Bybit futures (robust mode)...")
-        out = set()
+    def _generate_bybit_signature(self, params: str) -> str:
+        """Generate Bybit API signature"""
+        return hmac.new(
+            self.bybit_api_secret.encode('utf-8'),
+            params.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
 
-        # Normalizer: remove separators, leading digits, PERP markers
-        def normalize(sym):
-            if not sym:
-                return None
-            s = str(sym).strip().upper()
-            s = re.sub(r'[\s/:._]+', '', s)          # remove separators
-            s = re.sub(r'^[0-9]+', '', s)            # drop numeric multipliers
-            s = re.sub(r'[-_]?PERP(ETUAL)?$', '', s) # remove PERP suffix
-            s = re.sub(r'[^A-Z0-9]', '', s)
-            return s or None
-
-        # Browser-like headers (more complete)
-        browser_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.bybit.com/",
-            "Origin": "https://www.bybit.com",
-            "Sec-Fetch-Site": "same-site",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        }
-
-        session = requests.Session()
-        session.headers.update(browser_headers)
-        session.timeout = 10
-
-        # ---------- 1) Try official V5 with pre-flight homepage request ----------
+    def _make_authenticated_bybit_request(self, endpoint: str, params: dict = None) -> Optional[dict]:
+        """Make authenticated request to Bybit API"""
+        if not self.bybit_api_key or not self.bybit_api_secret:
+            logger.error("❌ Bybit API credentials not configured")
+            return None
+            
         try:
-            # Pre-flight: get homepage to collect cookies and possibly CF tokens
-            try:
-                h = session.get("https://www.bybit.com/", timeout=10)
-                logger.debug(f"Bybit homepage status: {h.status_code}")
-            except Exception as e:
-                logger.debug(f"Bybit homepage fetch failed: {e}")
-
-            v5_urls = [
-                "https://api.bybit.com/v5/market/instruments-info?category=linear",
-                "https://api.bybit.com/v5/market/instruments-info?category=inverse",
-            ]
-            v5_snippets = []
-            for u in v5_urls:
-                try:
-                    r = session.get(u, timeout=10)
-                    logger.debug(f"Bybit V5 {u} -> {r.status_code}")
-                    if r.status_code == 200:
-                        data = r.json()
-                        # Defensive extraction of list
-                        items = []
-                        if isinstance(data, dict):
-                            # common places: data['result']['list'] or data['list']
-                            if "result" in data and isinstance(data["result"], dict):
-                                items = data["result"].get("list") or data["result"].get("rows") or []
-                            items = items or data.get("list") or data.get("data") or []
-                        if not items and isinstance(data, list):
-                            items = data
-                        if items:
-                            for it in items:
-                                sym = it.get("symbol") or it.get("instId") or it.get("name") or it.get("instrument")
-                                status = (it.get("status") or "").lower() if isinstance(it, dict) else ""
-                                ctype = (it.get("contractType") or it.get("contract_type") or "").upper() if isinstance(it, dict) else ""
-                                # accept Trading or unknown statuses but require perpetual-like contractType OR symbol suffix
-                                if (not status or status in ("trading", "open")) and (("PERPETUAL" in ctype) or (isinstance(sym, str) and any(s in sym.upper() for s in ("USDT","USDC","PERP","BTC","ETH")))):
-                                    n = normalize(sym)
-                                    if n:
-                                        out.add(n)
-                            logger.info(f"Bybit V5 parsed {len(out)} symbols so far")
-                            return out  # return early if successful
-                    else:
-                        # record snippet for debugging
-                        try:
-                            v5_snippets.append((u, r.status_code, r.text[:1000]))
-                        except Exception:
-                            v5_snippets.append((u, r.status_code, "<no-text>"))
-                except Exception as e:
-                    logger.warning(f"Bybit V5 request failed for {u}: {e}")
-            # If we reach here, V5 didn't return usable data
-            if v5_snippets:
-                for (u, code, snippet) in v5_snippets:
-                    logger.warning(f"Bybit V5 {u} -> {code}. Snippet: {snippet[:400]}")
-        except Exception as e:
-            logger.error(f"Bybit V5 overall error: {e}")
-
-        # ---------- 2) If V5 blocked -> try marketplace HTML scrape ----------
-        # Many sites embed market lists in page JS or provide a public JSON endpoint on web domain.
-        try:
-            logger.info("⚠️ Bybit V5 blocked (403). Trying public website scrape for markets...")
-            # Candidate pages to scrape: markets, derivatives pages, US site paths
-            candidate_pages = [
-                "https://www.bybit.com/en-US/markets/derivatives",   # derivatives listing (varies by locale)
-                "https://www.bybit.com/en-US/markets",               # general markets
-                "https://www.bybit.com/en-US/futures",               # some sites have futures route
-                "https://www.bybit.com/markets/derivatives",
-                "https://www.bybit.com/markets"
-            ]
-            page_snippets = []
-            for page in candidate_pages:
-                try:
-                    r = session.get(page, timeout=10)
-                    logger.debug(f"Scrape {page} -> {r.status_code}")
-                    if r.status_code != 200:
-                        page_snippets.append((page, r.status_code, r.text[:1000]))
-                        continue
-                    html = r.text
-                    # Heuristics: find JSON blobs in <script> tags or window.__INITIAL_STATE__ etc.
-                    # 1) JSON inside "window.__INITIAL_STATE__ = {...};"
-                    m = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.+?});\s*</script>', html, flags=re.S)
-                    if not m:
-                        # 2) common pattern: "root.App.push({ ... })" or "__DATA__ = {...}"
-                        m = re.search(r'window\.__DATA__\s*=\s*({.+?});', html, flags=re.S)
-                    if not m:
-                        # 3) any large JSON-like object in a <script> tag (fallback)
-                        m = re.search(r'<script[^>]*>\s*({\s*".+?})\s*</script>', html, flags=re.S)
-                    parsed = False
-                    if m:
-                        blob = m.group(1)
-                        # try to locate the biggest JSON-ish blob for markets by searching for '"symbol"' or '"pair"'
-                        # find the substring containing "symbol" nearby
-                        try:
-                            # sanitize by finding balanced braces around the candidate
-                            # attempt to load directly
-                            j = json.loads(blob)
-                            # search recursively for lists of markets
-                            def find_symbols(obj):
-                                res = set()
-                                if isinstance(obj, dict):
-                                    for k, v in obj.items():
-                                        if k.lower() in ("symbols","markets","pairs","instruments","tickers","contracts"):
-                                            if isinstance(v, list):
-                                                for it in v:
-                                                    if isinstance(it, dict):
-                                                        candidate = it.get('symbol') or it.get('pair') or it.get('instId') or it.get('name') or it.get('contract')
-                                                        if candidate:
-                                                            n = normalize(candidate)
-                                                            if n:
-                                                                res.add(n)
-                                            # else continue
-                                        else:
-                                            res.update(find_symbols(v))
-                                elif isinstance(obj, list):
-                                    for item in obj:
-                                        res.update(find_symbols(item))
-                                return res
-                            found = find_symbols(j)
-                            if found:
-                                out.update(found)
-                                parsed = True
-                                logger.info(f"Scrape JSON found {len(found)} symbols from {page}")
-                                return out
-                        except Exception:
-                            # sometimes blob isn't pure JSON (single quotes or JS functions), try loosened extraction
-                            pass
-                    # 4) fallback simple regex: look for tickers like "BTCUSDT" or "ETHUSDT" patterns in HTML
-                    cand = set(re.findall(r'\b([A-Z0-9]{2,20}(?:USDT|USDC|USD|BTC|ETH|BUSD))\b', html))
-                    if cand:
-                        normalized = {normalize(x) for x in cand if normalize(x)}
-                        out.update(normalized)
-                        logger.info(f"Scrape regex found {len(normalized)} symbols on {page}")
-                        return out
-                    page_snippets.append((page, r.status_code, html[:1000]))
-                except Exception as e:
-                    logger.debug(f"Scrape {page} failed: {e}")
-            # log snippets if nothing found
-            for (p, code, s) in page_snippets:
-                logger.debug(f"Scrape candidate {p} -> {code}. Snippet: {s[:400]}")
-        except Exception as e:
-            logger.warning(f"Website scrape attempt failed: {e}")
-
-        # ---------- 3) Final fallback: aggressive CoinGecko parse ----------
-        try:
-            logger.info("⚠️ Falling back to CoinGecko derivatives endpoint (aggressive parser)...")
-            cg_url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
-            r = requests.get(cg_url, timeout=10)
-            if r.status_code == 200:
-                payload = r.json()
-                # try multiple locations for tickers
-                tickers = payload.get('tickers') or payload.get('pairs') or payload.get('data') or []
-                parsed = set()
-                for t in tickers:
-                    candidate = None
-                    if isinstance(t, dict):
-                        candidate = t.get('symbol') or t.get('pair') or t.get('base') or t.get('instrument') or t.get('contract') or t.get('ticker')
-                        if not candidate:
-                            # some entries include nested fields
-                            for k in ('market', 'market_pair', 'marketPair'):
-                                if isinstance(t.get(k), dict):
-                                    candidate = (t[k].get('symbol') or '') or (t[k].get('pair') or '')
-                                    if candidate:
-                                        break
-                    elif isinstance(t, str):
-                        candidate = t
-                    if not candidate:
-                        continue
-                    n = normalize(candidate)
-                    if n and any(n.endswith(q) for q in ("USDT","USDC","USD","BTC","ETH","BUSD")):
-                        parsed.add(n.replace('PERP',''))
-                if parsed:
-                    logger.info(f"CoinGecko aggressive parsed {len(parsed)} symbols")
-                    out.update(parsed)
-                    return out
-                else:
-                    logger.info("CoinGecko parsed 0 symbols with aggressive parser")
-                    logger.debug(f"CoinGecko raw snippet: {r.text[:1000]}")
+            # Base URL
+            base_url = "https://api.bybit.com"
+            url = f"{base_url}{endpoint}"
+            
+            # Prepare parameters
+            timestamp = str(int(time.time() * 1000))
+            recv_window = "5000"
+            
+            query_string = f"timestamp={timestamp}&recv_window={recv_window}"
+            if params:
+                param_str = "&".join([f"{k}={v}" for k, v in params.items()])
+                query_string = f"{param_str}&{query_string}"
+            
+            # Generate signature
+            signature = self._generate_bybit_signature(query_string)
+            
+            # Full query string with signature
+            full_query = f"{query_string}&sign={signature}"
+            
+            # Make request
+            headers = {
+                'X-BAPI-API-KEY': self.bybit_api_key,
+                'X-BAPI-SIGN': signature,
+                'X-BAPI-TIMESTAMP': timestamp,
+                'X-BAPI-RECV-WINDOW': recv_window,
+                'Content-Type': 'application/json'
+            }
+            
+            # Use GET or POST based on endpoint
+            if endpoint.startswith('/v5/market'):
+                # Market data endpoints use GET
+                full_url = f"{url}?{full_query}"
+                response = self.session.get(full_url, headers=headers, timeout=10)
             else:
-                logger.warning(f"CoinGecko responded {r.status_code}")
+                # Other endpoints might use POST
+                response = self.session.get(f"{url}?{full_query}", headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('retCode') == 0:
+                    return data
+                else:
+                    logger.error(f"❌ Bybit API error: {data.get('retMsg')} (Code: {data.get('retCode')})")
+                    return None
+            else:
+                logger.error(f"❌ Bybit HTTP error: {response.status_code}")
+                return None
+                
         except Exception as e:
-            logger.warning(f"CoinGecko fallback failed: {e}")
+            logger.error(f"❌ Bybit authenticated request failed: {e}")
+            return None
 
-        # nothing found: report and return empty set
-        logger.info("🎯 Bybit fetch returned 0 symbols after all fallbacks. See debug logs/snippets above.")
-        return set()
-
-
+    def get_bybit_futures(self):
+        """Get Bybit futures using authenticated API"""
+        try:
+            logger.info("🔄 Fetching Bybit futures with authenticated API...")
+            
+            futures = set()
+            
+            # Try authenticated endpoints
+            endpoints = [
+                # Main linear perpetuals endpoint
+                ("/v5/market/instruments-info", {"category": "linear"}),
+                # Alternative endpoints
+                ("/v5/market/tickers", {"category": "linear"}),
+                # Inverse perpetuals
+                ("/v5/market/instruments-info", {"category": "inverse"}),
+            ]
+            
+            for endpoint, params in endpoints:
+                logger.info(f"📡 Trying authenticated endpoint: {endpoint}")
+                
+                data = self._make_authenticated_bybit_request(endpoint, params)
+                if data:
+                    result = data.get('result', {})
+                    items = result.get('list', [])
+                    
+                    symbols_found = set()
+                    for item in items:
+                        symbol = item.get('symbol', '')
+                        status = item.get('status', '')
+                        contract_type = item.get('contractType', '')
+                        
+                        # Filter for trading perpetual contracts
+                        if (status == 'Trading' and 
+                            contract_type in ['LinearPerpetual', 'InversePerpetual'] and
+                            symbol.endswith('USDT')):
+                            symbols_found.add(symbol)
+                    
+                    if symbols_found:
+                        futures.update(symbols_found)
+                        logger.info(f"✅ Authenticated endpoint {endpoint}: {len(symbols_found)} symbols")
+                        break
+            
+            
+            logger.info(f"🎯 Bybit authenticated: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"❌ Bybit authenticated error: {e}")
+            return self.get_bybit_futures_public_fallback()
+        
     def get_binance_futures_fallback(self):
         """Alternative Binance implementation using different approach"""
         try:
