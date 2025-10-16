@@ -24,6 +24,7 @@ import random
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from typing import Optional, List, Dict, Set, Any, Union
 # Load environment variables
 load_dotenv()
 
