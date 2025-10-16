@@ -185,6 +185,7 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("watchlist", self.watchlist_command))
         self.dispatcher.add_handler(CommandHandler("coverage", self.coverage_command))
         self.dispatcher.add_handler(CommandHandler("findunique", self.find_unique_command))
+        self.dispatcher.add_handler(CommandHandler("clearwatchlist", self.clear_watchlist_command)) 
 
         from telegram.ext import MessageHandler, Filters
         self.dispatcher.add_handler(MessageHandler(
@@ -963,6 +964,7 @@ class MEXCTracker:
             "/checksymbol SYMBOL - Check specific symbol\n"
             "/watch SYMBOL - Add symbol to watchlist\n"
             "/unwatch SYMBOL - Remove from watchlist\n"
+            "/clearwatchlist - Clear entire watchlist\n"
             "/watchlist - Show watched symbols\n"
             "/coverage SYMBOL - Show exchange coverage\n"
             "/findunique - Find currently unique symbols\n\n"
@@ -1362,7 +1364,29 @@ class MEXCTracker:
             update.message.reply_html(
                 "No analysis sheet found. Use /export and choose Google Sheets option to create one."
             )
-            
+
+
+    def clear_watchlist_command(self, update: Update, context: CallbackContext):
+        """Clear the entire watchlist"""
+        data = self.load_data()
+        
+        if 'watchlist' not in data or not data['watchlist']:
+            update.message.reply_html("📝 Your watchlist is already empty")
+            return
+        
+        # Store the count for the message
+        watchlist_count = len(data['watchlist'])
+        
+        # Clear the watchlist
+        data['watchlist'] = []
+        self.save_data(data)
+        
+        update.message.reply_html(
+            f"🗑️ <b>Watchlist Cleared!</b>\n\n"
+            f"Removed {watchlist_count} symbols from your watchlist\n\n"
+            f"Use /watch SYMBOL to add new symbols"
+        )
+        
     def exchanges_command(self, update: Update, context: CallbackContext):
         """Show exchange information"""
         data = self.load_data()
@@ -1421,6 +1445,7 @@ class MEXCTracker:
             "/checksymbol SYMBOL - Check if a specific symbol is unique to MEXC\n"
             "/watch SYMBOL - Add symbol to personal watchlist\n"
             "/unwatch SYMBOL - Remove symbol from watchlist\n"
+             "/clearwatchlist - Remove all symbols from watchlist\n"
             "/watchlist - View all watched symbols with their status\n"
             "/coverage SYMBOL - Show detailed exchange coverage\n"
             "/findunique - Find currently unique symbols\n\n"
