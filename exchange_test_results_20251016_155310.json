@@ -1,0 +1,86 @@
+{
+  "MEXC": {
+    "status": "SUCCESS",
+    "response_time": 0.40099096298217773,
+    "size": 1407321,
+    "error": ""
+  },
+  "Binance_USDT-M": {
+    "status": "SUCCESS",
+    "response_time": 1.2292606830596924,
+    "size": 780443,
+    "error": ""
+  },
+  "Binance_COIN-M": {
+    "status": "SUCCESS",
+    "response_time": 1.0309240818023682,
+    "size": 62655,
+    "error": ""
+  },
+  "Binance_Ticker": {
+    "status": "SUCCESS",
+    "response_time": 0.2781078815460205,
+    "size": 37862,
+    "error": ""
+  },
+  "Bybit_Linear": {
+    "status": "SUCCESS",
+    "response_time": 0.5382301807403564,
+    "size": 403129,
+    "error": ""
+  },
+  "Bybit_Inverse": {
+    "status": "SUCCESS",
+    "response_time": 0.29631495475769043,
+    "size": 22420,
+    "error": ""
+  },
+  "Bybit_V2": {
+    "status": "HTTP_404",
+    "response_time": 0.31412768363952637,
+    "size": 0,
+    "error": "HTTP 404"
+  },
+  "OKX_Swap": {
+    "status": "SUCCESS",
+    "response_time": 0.514244794845581,
+    "size": 192911,
+    "error": ""
+  },
+  "Gate_USDT_Futures": {
+    "status": "HTTP_403",
+    "response_time": 1.4176928997039795,
+    "size": 0,
+    "error": "HTTP 403"
+  },
+  "KuCoin_Active": {
+    "status": "SUCCESS",
+    "response_time": 0.522899866104126,
+    "size": 926580,
+    "error": ""
+  },
+  "BingX_Contracts": {
+    "status": "SUCCESS",
+    "response_time": 0.34093809127807617,
+    "size": 272860,
+    "error": ""
+  },
+  "Bitget_USDT_Futures": {
+    "status": "SUCCESS",
+    "response_time": 0.4003310203552246,
+    "size": 433470,
+    "error": ""
+  },
+  "Bitget_COIN_Futures": {
+    "status": "SUCCESS",
+    "response_time": 0.3554830551147461,
+    "size": 20745,
+    "error": ""
+  },
+  "Bitget_V1": {
+    "status": "SUCCESS",
+    "response_time": 0.39522600173950195,
+    "size": 355756,
+    "error": ""
+  }
+}

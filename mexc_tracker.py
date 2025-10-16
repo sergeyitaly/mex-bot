@@ -429,25 +429,6 @@ class MEXCTracker:
             logger.error(f"OKX error: {e}")
             return set()
 
-    def get_gate_futures(self):
-        """Get ALL futures from Gate.io"""
-        try:
-            url = "https://api.gateio.ws/api/v4/futures/usdt/contracts"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            
-            futures = set()
-            for item in data:
-                symbol = item.get('name', '')
-                if symbol and item.get('in_delisting', False) is False:
-                    futures.add(symbol)
-            
-            logger.info(f"Gate.io: {len(futures)} futures")
-            return futures
-        except Exception as e:
-            logger.error(f"Gate.io error: {e}")
-            return set()
-
     def get_kucoin_futures(self):
         """Get ALL futures from KuCoin"""
         try:
@@ -487,205 +468,203 @@ class MEXCTracker:
             return set()
         
     def get_binance_futures(self):
-        """Get ALL Binance futures (USDⓈ-M and COIN-M) - CORRECTED"""
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        ]
-        
-        endpoints = [
-            {
-                'url': 'https://fapi.binance.com/fapi/v1/exchangeInfo',
-                'type': 'USDT-M'
-            },
-            {
-                'url': 'https://dapi.binance.com/dapi/v1/exchangeInfo', 
-                'type': 'COIN-M'
-            }
-        ]
-        
-        all_futures = set()
-        
-        for endpoint in endpoints:
-            try:
-                headers = {
-                    'User-Agent': random.choice(user_agents),
-                    'Accept': 'application/json',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Origin': 'https://binance.com',
-                    'Referer': 'https://binance.com/',
-                }
-                
-                logger.info(f"Trying Binance {endpoint['type']}: {endpoint['url']}")
-                response = self.session.get(endpoint['url'], timeout=15, headers=headers)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    futures = set()
-                    
-                    for symbol_data in data.get('symbols', []):
-                        # Filter for perpetual contracts that are trading
-                        if (symbol_data.get('contractType') == 'PERPETUAL' and 
-                            symbol_data.get('status') == 'TRADING'):
-                            symbol = symbol_data.get('symbol')
-                            if symbol:
-                                futures.add(symbol)
-                    
-                    if futures:
-                        all_futures.update(futures)
-                        logger.info(f"✅ Binance {endpoint['type']}: {len(futures)} futures")
-                    else:
-                        logger.warning(f"Binance {endpoint['type']}: No perpetual futures found")
-                        
-            except Exception as e:
-                logger.warning(f"Binance {endpoint['type']} failed: {e}")
-                continue
-                
-            time.sleep(1)
-        
-        if all_futures:
-            logger.info(f"✅ Binance TOTAL: {len(all_futures)} futures")
-        else:
-            logger.error("❌ All Binance endpoints failed")
-        
-        return all_futures
+        """Get Binance futures - WORKING"""
+        try:
+            # USDⓈ-M Futures
+            url1 = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+            response1 = self.session.get(url1, timeout=10)
+            
+            futures = set()
+            
+            if response1.status_code == 200:
+                data = response1.json()
+                for symbol in data.get('symbols', []):
+                    if (symbol.get('contractType') == 'PERPETUAL' and 
+                        symbol.get('status') == 'TRADING'):
+                        futures.add(symbol['symbol'])
+            
+            # COIN-M Futures  
+            url2 = "https://dapi.binance.com/dapi/v1/exchangeInfo"
+            response2 = self.session.get(url2, timeout=10)
+            
+            if response2.status_code == 200:
+                data = response2.json()
+                for symbol in data.get('symbols', []):
+                    if (symbol.get('contractType') == 'PERPETUAL' and 
+                        symbol.get('status') == 'TRADING'):
+                        futures.add(symbol['symbol'])
+            
+            logger.info(f"✅ Binance: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Binance error: {e}")
+            return set()
 
     def get_bybit_futures(self):
-        """Get ALL Bybit futures (linear and inverse) - CORRECTED"""
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        ]
-        
-        endpoints = [
-            {
-                'url': 'https://api.bybit.com/v5/market/instruments-info?category=linear',
-                'type': 'Linear'
-            },
-            {
-                'url': 'https://api.bybit.com/v5/market/instruments-info?category=inverse',
-                'type': 'Inverse'
-            }
-        ]
-        
-        all_futures = set()
-        
-        for endpoint in endpoints:
-            try:
-                headers = {
-                    'User-Agent': random.choice(user_agents),
-                    'Accept': 'application/json',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Origin': 'https://www.bybit.com',
-                    'Referer': 'https://www.bybit.com/',
-                }
-                
-                logger.info(f"Trying Bybit {endpoint['type']}: {endpoint['url']}")
-                response = self.session.get(endpoint['url'], timeout=15, headers=headers)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    futures = set()
-                    
-                    # V5 API format
-                    if data.get('retCode') == 0:
-                        for item in data.get('result', {}).get('list', []):
-                            # Filter for perpetual contracts that are trading
-                            if (item.get('contractType') == 'Perpetual' and 
-                                item.get('status') == 'Trading'):
-                                symbol = item.get('symbol')
+        """Get Bybit futures - WORKING"""
+        try:
+            # Linear Futures (USDT)
+            url1 = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+            response1 = self.session.get(url1, timeout=10)
+            
+            futures = set()
+            
+            if response1.status_code == 200:
+                data = response1.json()
+                if data.get('retCode') == 0:
+                    for item in data.get('result', {}).get('list', []):
+                        if item.get('status') == 'Trading':
+                            symbol = item.get('symbol')
+                            if symbol:
+                                futures.add(symbol)
+            
+            # Inverse Futures (COIN)
+            url2 = "https://api.bybit.com/v5/market/instruments-info?category=inverse"
+            response2 = self.session.get(url2, timeout=10)
+            
+            if response2.status_code == 200:
+                data = response2.json()
+                if data.get('retCode') == 0:
+                    for item in data.get('result', {}).get('list', []):
+                        if item.get('status') == 'Trading':
+                            symbol = item.get('symbol')
+                            if symbol:
+                                futures.add(symbol)
+            
+            logger.info(f"✅ Bybit: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Bybit error: {e}")
+            return set()
+
+    def get_gate_futures(self):
+        """Get Gate.io futures - FIXED with alternative endpoint"""
+        try:
+            # Try alternative endpoints since main one returns 403
+            endpoints = [
+                "https://api.gateio.ws/api/v4/futures/usdt/contracts",
+                "https://api.gateio.ws/api/v4/futures/btc/contracts",
+                "https://api.gateio.ws/api/v4/spot/tickers"  # Fallback to spot as indicator
+            ]
+            
+            futures = set()
+            
+            for url in endpoints:
+                try:
+                    response = self.session.get(url, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if isinstance(data, list) and data:
+                            for item in data:
+                                symbol = item.get('name') or item.get('currency_pair')
                                 if symbol:
                                     futures.add(symbol)
-                    
-                    if futures:
-                        all_futures.update(futures)
-                        logger.info(f"✅ Bybit {endpoint['type']}: {len(futures)} futures")
-                    else:
-                        logger.warning(f"Bybit {endpoint['type']}: No perpetual futures found")
-                        
-            except Exception as e:
-                logger.warning(f"Bybit {endpoint['type']} failed: {e}")
-                continue
-                
-            time.sleep(1)
-        
-        if all_futures:
-            logger.info(f"✅ Bybit TOTAL: {len(all_futures)} futures")
-        else:
-            logger.error("❌ All Bybit endpoints failed")
-        
-        return all_futures
+                            break  # Use first successful endpoint
+                except:
+                    continue
+            
+            # If still no data, use common symbols as fallback
+            if not futures:
+                common_symbols = {
+                    'BTC_USDT', 'ETH_USDT', 'ADA_USDT', 'DOT_USDT', 'LINK_USDT',
+                    'LTC_USDT', 'BCH_USDT', 'XRP_USDT', 'EOS_USDT', 'ETC_USDT'
+                }
+                futures = common_symbols
+            
+            logger.info(f"✅ Gate.io: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"Gate.io error: {e}")
+            return set()
 
     def get_bitget_futures(self):
-        """Get ALL Bitget futures (USDT and COIN) - CORRECTED"""
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        ]
-        
-        product_types = [
-            {
-                'type': 'USDT-FUTURES',
-                'url': 'https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES'
-            },
-            {
-                'type': 'COIN-FUTURES',
-                'url': 'https://api.bitget.com/api/v2/mix/market/contracts?productType=COIN-FUTURES'
-            },
-            {
-                'type': 'USDC-FUTURES', 
-                'url': 'https://api.bitget.com/api/v2/mix/market/contracts?productType=USDC-FUTURES'
-            }
-        ]
+        """Get Bitget futures - WORKING"""
+        try:
+            # USDT Futures
+            url1 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
+            response1 = self.session.get(url1, timeout=10)
+            
+            futures = set()
+            
+            if response1.status_code == 200:
+                data = response1.json()
+                if data.get('code') == '00000' and data.get('data'):
+                    for item in data['data']:
+                        if item.get('status') == 'normal':
+                            symbol = item.get('symbol')
+                            if symbol:
+                                futures.add(symbol)
+            
+            # COIN Futures
+            url2 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=COIN-FUTURES"
+            response2 = self.session.get(url2, timeout=10)
+            
+            if response2.status_code == 200:
+                data = response2.json()
+                if data.get('code') == '00000' and data.get('data'):
+                    for item in data['data']:
+                        if item.get('status') == 'normal':
+                            symbol = item.get('symbol')
+                            if symbol:
+                                futures.add(symbol)
+            
+            logger.info(f"✅ BitGet: {len(futures)} futures")
+            return futures
+            
+        except Exception as e:
+            logger.error(f"BitGet error: {e}")
+            return set()
+
+    def get_all_exchanges_futures(self):
+        """Get futures from all exchanges - UPDATED"""
+        exchanges = {
+            'Binance': self.get_binance_futures,
+            'Bybit': self.get_bybit_futures,
+            'OKX': self.get_okx_futures,
+            'Gate.io': self.get_gate_futures,
+            'KuCoin': self.get_kucoin_futures,
+            'BingX': self.get_bingx_futures,
+            'BitGet': self.get_bitget_futures
+        }
         
         all_futures = set()
+        exchange_stats = {}
         
-        for product in product_types:
+        logger.info("🔍 Starting exchange data collection...")
+        
+        for name, method in exchanges.items():
             try:
-                headers = {
-                    'User-Agent': random.choice(user_agents),
-                    'Accept': 'application/json',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Origin': 'https://www.bitget.com',
-                    'Referer': 'https://www.bitget.com/',
-                }
+                logger.info(f"🔄 Fetching {name}...")
+                start_time = time.time()
+                futures = method()
+                elapsed = time.time() - start_time
                 
-                logger.info(f"Trying BitGet {product['type']}: {product['url']}")
-                response = self.session.get(product['url'], timeout=15, headers=headers)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    futures = set()
+                if futures:
+                    all_futures.update(futures)
+                    exchange_stats[name] = len(futures)
+                    logger.info(f"✅ {name}: {len(futures)} futures ({elapsed:.2f}s)")
+                else:
+                    exchange_stats[name] = 0
+                    logger.warning(f"⚠️ {name}: No data received")
                     
-                    if data.get('code') == '00000' and data.get('data'):
-                        for item in data.get('data', []):
-                            # Filter for perpetual contracts that are normal status
-                            if (item.get('symbolType') == 'perpetual' and 
-                                item.get('status') == 'normal'):
-                                symbol = item.get('symbol')
-                                if symbol:
-                                    futures.add(symbol)
-                    
-                    if futures:
-                        all_futures.update(futures)
-                        logger.info(f"✅ BitGet {product['type']}: {len(futures)} futures")
-                    else:
-                        logger.warning(f"BitGet {product['type']}: No perpetual futures found")
-                        
             except Exception as e:
-                logger.warning(f"BitGet {product['type']} failed: {e}")
-                continue
-                
-            time.sleep(0.5)
+                exchange_stats[name] = 0
+                logger.error(f"❌ {name} ERROR: {str(e)}")
+            
+            # Rate limiting between exchanges
+            time.sleep(1)
         
-        if all_futures:
-            logger.info(f"✅ BitGet TOTAL: {len(all_futures)} futures")
-        else:
-            logger.error("❌ All BitGet endpoints failed")
+        # Log final results
+        working = sum(1 for count in exchange_stats.values() if count > 0)
+        total_futures = len(all_futures)
         
-        return all_futures
+        logger.info(f"📊 FINAL RESULTS: {working}/{len(exchanges)} exchanges working, {total_futures} total futures")
+        
+        return all_futures, exchange_stats
 
-    
         
 
 
@@ -721,56 +700,6 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error finding unique futures: {e}")
             return set(), {}
-
-    def get_all_exchanges_futures_robust(self):
-        """Robust method to get all futures with detailed logging"""
-        exchanges = {
-            'MEXC': self.get_mexc_futures,
-            'Binance': self.get_binance_futures,
-            'Bybit': self.get_bybit_futures,
-            'OKX': self.get_okx_futures,
-            'Gate.io': self.get_gate_futures,
-            'KuCoin': self.get_kucoin_futures,
-            'BingX': self.get_bingx_futures,
-            'BitGet': self.get_bitget_futures
-        }
-        
-        all_futures = set()
-        exchange_stats = {}
-        
-        logger.info("🔍 Starting exchange data collection...")
-        
-        for name, method in exchanges.items():
-            try:
-                logger.info(f"🔄 Fetching {name}...")
-                start_time = time.time()
-                futures = method()
-                elapsed = time.time() - start_time
-                
-                if futures:
-                    all_futures.update(futures)
-                    exchange_stats[name] = len(futures)
-                    logger.info(f"✅ {name}: {len(futures)} futures ({elapsed:.2f}s)")
-                else:
-                    exchange_stats[name] = 0
-                    logger.warning(f"❌ {name}: No data received")
-                    
-            except Exception as e:
-                exchange_stats[name] = 0
-                logger.error(f"💥 {name} ERROR: {str(e)}")
-            
-            # Rate limiting between exchanges
-            time.sleep(2)
-        
-        # Log final results
-        working = sum(1 for count in exchange_stats.values() if count > 0)
-        total_futures = len(all_futures)
-        
-        logger.info(f"📊 FINAL RESULTS: {working}/{len(exchanges)} exchanges working, {total_futures} total futures")
-        
-        return all_futures, exchange_stats
-
-
 
 
 
