@@ -202,9 +202,21 @@ class MEXCTracker:
     def load_data(self):
         """Load data from memory"""
         return self.data
-
+    
     def save_data(self, data):
-        """Save data to memory"""
+        """Save data to memory with proper timezone"""
+        # Always use local time when updating timestamps
+        if 'last_check' in data and data['last_check']:
+            try:
+                # Ensure it's stored with timezone info
+                if 'last_check' in data and data['last_check'] != 'Never':
+                    # If it's already a datetime, ensure it has timezone
+                    if isinstance(data['last_check'], str):
+                        dt = datetime.fromisoformat(data['last_check'].replace('Z', '+00:00'))
+                        data['last_check'] = dt.astimezone().isoformat()
+            except:
+                pass
+        
         self.data = data
         logger.info("Data saved to memory")
 
@@ -669,7 +681,7 @@ class MEXCTracker:
 
 
     def normalize_symbol(self, symbol):
-        """Normalize symbol for comparison across exchanges - REGEX VERSION"""
+        """Normalize symbol for comparison across exchanges - IMPROVED VERSION"""
         if not symbol:
             return ""
         
@@ -705,52 +717,15 @@ class MEXCTracker:
         # Clean up any double separators or edge cases
         normalized = re.sub(r'[-_ ]+', '', normalized)
         
+        futures_modifiers = ['M', 'T', 'Z', 'H', 'U', 'P']  # Common futures suffixes
+        if len(normalized) > 4 and normalized[-1] in futures_modifiers:
+            # Only remove if it looks like a modifier (preceded by letters/numbers)
+            normalized = normalized[:-1]
+        
         logger.debug(f"Symbol normalized: '{original}' -> '{normalized}'")
         return normalized
-        
-    
-    def find_unique_futures(self):
-        """Find futures that are only on MEXC and not on other exchanges"""
-        try:
-            mexc_futures = self.get_mexc_futures()
-            if not mexc_futures:
-                logger.error("No MEXC futures retrieved")
-                return set(), {}
-            
-            other_futures, exchange_stats = self.get_all_exchanges_futures()
-            
-            # Normalize all symbols and track their origin
-            mexc_normalized = {}
-            for symbol in mexc_futures:
-                if self.is_valid_coin_symbol(symbol):
-                    normalized = self.normalize_symbol(symbol)
-                    mexc_normalized[normalized] = symbol
-            
-            other_normalized = set()
-            for symbol in other_futures:
-                if self.is_valid_coin_symbol(symbol):
-                    normalized = self.normalize_symbol(symbol)
-                    other_normalized.add(normalized)
-            
-            # Find symbols that exist only in MEXC
-            unique_futures = set()
-            for normalized, original in mexc_normalized.items():
-                if normalized not in other_normalized:
-                    unique_futures.add(original)
-            
-            logger.info(f"Found {len(unique_futures)} unique futures on MEXC")
-            
-            # Log some examples for verification
-            if unique_futures:
-                sample = list(unique_futures)[:3]
-                logger.info(f"Sample unique futures: {sample}")
-                
-            return unique_futures, exchange_stats
-            
-        except Exception as e:
-            logger.error(f"Error finding unique futures: {e}")
-            return set(), {}
-    
+
+
     def analyze_symbol_coverage(self, symbol):
         """Check which exchanges have a specific symbol"""
         normalized = self.normalize_symbol(symbol)
@@ -986,11 +961,14 @@ class MEXCTracker:
                 pass
         
         status_text = (
-            "📊 <b>Current Status</b>\n\n"
-            f"🔄 Unique futures: <b>{unique_count}</b>\n"
-            f"⏰ Last check: {last_check}\n"
-            f"🔍 Check interval: {self.update_interval}min\n"
-            f"🤖 Uptime: {self.get_uptime()}"
+            "📈 <b>Bot Statistics</b>\n\n"
+            f"🔄 Checks performed: <b>{stats.get('checks_performed', 0)}</b>\n"
+            f"🎯 Max unique found: <b>{stats.get('unique_found_total', 0)}</b>\n"
+            f"⏰ Current unique: <b>{len(data.get('unique_futures', []))}</b>\n"
+            f"🏢 Exchanges: <b>{len(exchange_stats) + 1}</b>\n"
+            f"📅 Running since: {self.format_start_time(stats.get('start_time'))}\n"
+            f"🤖 Uptime: {self.get_uptime()}\n"
+            f"⚡ Auto-check: {self.update_interval}min"
         )
         
         if unique_count > 0:
@@ -1015,7 +993,7 @@ class MEXCTracker:
             stats['unique_found_total'] = max(stats.get('unique_found_total', 0), len(unique_futures))
             
             data['unique_futures'] = list(unique_futures)
-            data['last_check'] = datetime.now().isoformat()
+            data['last_check'] = datetime.now().astimezone().isoformat()
             data['statistics'] = stats
             data['exchange_stats'] = exchange_stats
             self.save_data(data)
@@ -1476,11 +1454,12 @@ class MEXCTracker:
         return "Unknown"
     
     def format_start_time(self, start_time):
-        """Format start time for display"""
+        """Format start time for display in local time"""
         if start_time:
             try:
                 dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                return dt.strftime("%Y-%m-%d %H:%M")
+                # Convert to local time
+                return dt.astimezone().strftime("%Y-%m-%d %H:%M")
             except:
                 pass
         return "Unknown"
@@ -1688,7 +1667,7 @@ class MEXCTracker:
             ws['A1'].alignment = Alignment(horizontal='center')
             
             ws['A2'] = 'Generated'
-            ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ws['B2'] = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')
             ws['A2'].font = title_font
             ws['B2'].font = normal_font
             
@@ -2117,7 +2096,7 @@ class MEXCTracker:
             
             exchange_stats = {}
             symbol_coverage = {}
-            current_time = datetime.now().isoformat()
+            current_time = datetime.now().astimezone().isoformat()
             
             # Get data from all exchanges
             for name, method in exchanges.items():
