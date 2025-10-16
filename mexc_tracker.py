@@ -559,116 +559,187 @@ class MEXCTracker:
             return set()        
 
     def get_binance_futures(self):
-        """Get Binance futures using proxy"""
+        """Get Binance futures with comprehensive debugging"""
         try:
-            logger.info("🔄 Fetching Binance futures with proxy...")
+            logger.info("🔄 Fetching Binance futures...")
             
             futures = set()
+            session = self.session or requests.Session()
             
-            # Try direct first (in case it works sometimes)
-            url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            response = self.session.get(url, timeout=10)
+            # USDⓈ-M Futures
+            url1 = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+            logger.info(f"📡 Calling Binance USDⓈ-M URL: {url1}")
             
-            if response.status_code == 200:
-                data = response.json()
+            response1 = session.get(url1, timeout=15)
+            logger.info(f"📊 USDⓈ-M Response status: {response1.status_code}")
+            
+            if response1.status_code == 200:
+                data = response1.json()
                 symbols = data.get('symbols', [])
+                logger.info(f"📈 USDⓈ-M Total symbols: {len(symbols)}")
+                
+                usdt_futures = set()
+                perpetual_count = 0
+                trading_count = 0
                 
                 for symbol in symbols:
-                    if symbol.get('contractType') == 'PERPETUAL' and symbol.get('status') == 'TRADING':
-                        futures.add(symbol.get('symbol'))
+                    contract_type = symbol.get('contractType')
+                    status = symbol.get('status')
+                    symbol_name = symbol.get('symbol')
+                    
+                    if contract_type == 'PERPETUAL':
+                        perpetual_count += 1
+                        if status == 'TRADING':
+                            trading_count += 1
+                            usdt_futures.add(symbol_name)
                 
-                logger.info(f"✅ Binance direct: {len(futures)} futures")
-                return futures
+                logger.info(f"📊 USDⓈ-M Stats: {perpetual_count} perpetuals, {trading_count} trading")
+                futures.update(usdt_futures)
+                logger.info(f"✅ USDⓈ-M perpetuals found: {len(usdt_futures)}")
+            else:
+                logger.error(f"❌ USDⓈ-M HTTP error: {response1.status_code} - {response1.text}")
             
-            # If direct fails, use proxy approach
-            logger.info("Binance direct failed, using alternative data source...")
-            return self.get_binance_futures_via_alternative()
+            # COIN-M Futures  
+            url2 = "https://dapi.binance.com/dapi/v1/exchangeInfo"
+            logger.info(f"📡 Calling Binance COIN-M URL: {url2}")
+            
+            response2 = session.get(url2, timeout=15)
+            logger.info(f"📊 COIN-M Response status: {response2.status_code}")
+            
+            if response2.status_code == 200:
+                data = response2.json()
+                symbols = data.get('symbols', [])
+                logger.info(f"📈 COIN-M Total symbols: {len(symbols)}")
+                
+                coin_futures = set()
+                perpetual_count = 0
+                trading_count = 0
+                
+                for symbol in symbols:
+                    contract_type = symbol.get('contractType')
+                    status = symbol.get('status')
+                    symbol_name = symbol.get('symbol')
+                    
+                    if contract_type == 'PERPETUAL':
+                        perpetual_count += 1
+                        if status == 'TRADING':
+                            trading_count += 1
+                            coin_futures.add(symbol_name)
+                
+                logger.info(f"📊 COIN-M Stats: {perpetual_count} perpetuals, {trading_count} trading")
+                futures.update(coin_futures)
+                logger.info(f"✅ COIN-M perpetuals found: {len(coin_futures)}")
+            else:
+                logger.error(f"❌ COIN-M HTTP error: {response2.status_code} - {response2.text}")
+            
+            logger.info(f"🎯 Binance TOTAL: {len(futures)} futures")
+            
+            # Log first few symbols for verification
+            sample = list(futures)[:5] if futures else []
+            logger.info(f"🔍 Sample symbols: {sample}")
+            
+            return futures
             
         except Exception as e:
-            logger.error(f"Binance error: {e}")
-            return set()
-
-    def get_binance_futures_via_alternative(self):
-        """Get Binance data via third-party API or cached data"""
-        try:
-            # Option 1: Use CoinGecko API as alternative
-            url = "https://api.coingecko.com/api/v3/derivatives/exchanges/binance_futures"
-            response = self.session.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                futures = set()
-                
-                # Extract symbols from CoinGecko response
-                tickers = data.get('tickers', [])
-                for ticker in tickers:
-                    symbol = ticker.get('symbol', '').upper()
-                    if symbol and 'USDT' in symbol:
-                        futures.add(symbol)
-                
-                logger.info(f"✅ Binance via CoinGecko: {len(futures)} futures")
-                return futures
-            
-            # Option 2: Use static list as fallback (common Binance futures)
-            common_binance_futures = {
-                'BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'LTCUSDT', 'BCHUSDT',
-                'XRPUSDT', 'EOSUSDT', 'TRXUSDT', 'ETCUSDT', 'XLMUSDT', 'ATOMUSDT', 'XTZUSDT',
-                'ALGOUSDT', 'ZECUSDT', 'COMPUSDT', 'MKRUSDT', 'SUSHIUSDT', 'YFIUSDT', 'SNXUSDT',
-                'CRVUSDT', 'UNIUSDT', 'AVAXUSDT', 'FTMUSDT', 'MATICUSDT', 'SANDUSDT', 'MANAUSDT',
-                'GALAUSDT', 'ENJUSDT', 'CHZUSDT', 'AXSUSDT', 'SLPUSDT', 'ICPUSDT', 'FILUSDT',
-                'AAVEUSDT', 'GRTUSDT', 'SOLUSDT', 'LUNAUSDT', 'NEARUSDT', 'FTTUSDT', 'DYDXUSDT',
-                'ENSUSDT', 'LDOUSDT', 'OPUSDT', 'ARBUSDT', 'APTUSDT', 'MAGICUSDT', 'STGUSDT'
-            }
-            
-            logger.info(f"✅ Binance static list: {len(common_binance_futures)} futures")
-            return common_binance_futures
-            
-        except Exception as e:
-            logger.error(f"Binance alternative error: {e}")
+            logger.error(f"❌ Binance error: {str(e)}", exc_info=True)
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit futures using alternative approach"""
+        """Get Bybit futures with comprehensive debugging"""
         try:
-            logger.info("🔄 Fetching Bybit futures with alternative...")
+            logger.info("🔄 Fetching Bybit futures...")
             
-            # Option 1: Try CoinGecko for Bybit data
-            url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
-            response = self.session.get(url, timeout=10)
+            futures = set()
+            session = self.session or requests.Session()
             
-            if response.status_code == 200:
-                data = response.json()
-                futures = set()
+            # Linear Futures (USDT)
+            url1 = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+            logger.info(f"📡 Calling Bybit Linear URL: {url1}")
+            
+            response1 = session.get(url1, timeout=15)
+            logger.info(f"📊 Linear Response status: {response1.status_code}")
+            
+            if response1.status_code == 200:
+                data = response1.json()
+                logger.info(f"📊 Linear API response: {data.get('retCode')} - {data.get('retMsg')}")
                 
-                tickers = data.get('tickers', [])
-                for ticker in tickers:
-                    symbol = ticker.get('symbol', '').upper()
-                    if symbol and ('USDT' in symbol or 'USD' in symbol):
-                        # Convert to standard format
-                        symbol = symbol.replace('/', '').replace('-', '')
-                        futures.add(symbol)
+                if data.get('retCode') == 0:
+                    items = data.get('result', {}).get('list', [])
+                    logger.info(f"📈 Linear Total items: {len(items)}")
+                    
+                    linear_futures = set()
+                    trading_count = 0
+                    perpetual_count = 0
+                    
+                    for item in items:
+                        status = item.get('status')
+                        symbol = item.get('symbol')
+                        contract_type = item.get('contractType')
+                        
+                        if contract_type == 'LinearPerpetual':
+                            perpetual_count += 1
+                            if status == 'Trading':
+                                trading_count += 1
+                                linear_futures.add(symbol)
+                    
+                    logger.info(f"📊 Linear Stats: {perpetual_count} perpetuals, {trading_count} trading")
+                    futures.update(linear_futures)
+                    logger.info(f"✅ Linear perpetuals found: {len(linear_futures)}")
+                else:
+                    logger.error(f"❌ Linear API error: {data.get('retMsg')}")
+            else:
+                logger.error(f"❌ Linear HTTP error: {response1.status_code} - {response1.text}")
+            
+            # Inverse Futures (Coin Margined)
+            url2 = "https://api.bybit.com/v5/market/instruments-info?category=inverse"
+            logger.info(f"📡 Calling Bybit Inverse URL: {url2}")
+            
+            response2 = session.get(url2, timeout=15)
+            logger.info(f"📊 Inverse Response status: {response2.status_code}")
+            
+            if response2.status_code == 200:
+                data = response2.json()
+                logger.info(f"📊 Inverse API response: {data.get('retCode')} - {data.get('retMsg')}")
                 
-                logger.info(f"✅ Bybit via CoinGecko: {len(futures)} futures")
-                return futures
+                if data.get('retCode') == 0:
+                    items = data.get('result', {}).get('list', [])
+                    logger.info(f"📈 Inverse Total items: {len(items)}")
+                    
+                    inverse_futures = set()
+                    trading_count = 0
+                    perpetual_count = 0
+                    
+                    for item in items:
+                        status = item.get('status')
+                        symbol = item.get('symbol')
+                        contract_type = item.get('contractType')
+                        
+                        if contract_type == 'InversePerpetual':
+                            perpetual_count += 1
+                            if status == 'Trading':
+                                trading_count += 1
+                                inverse_futures.add(symbol)
+                    
+                    logger.info(f"📊 Inverse Stats: {perpetual_count} perpetuals, {trading_count} trading")
+                    futures.update(inverse_futures)
+                    logger.info(f"✅ Inverse perpetuals found: {len(inverse_futures)}")
+                else:
+                    logger.error(f"❌ Inverse API error: {data.get('retMsg')}")
+            else:
+                logger.error(f"❌ Inverse HTTP error: {response2.status_code} - {response2.text}")
             
-            # Option 2: Use static list of common Bybit futures
-            common_bybit_futures = {
-                'BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'ADAUSDT', 'DOTUSDT', 'LINKUSDT', 'LTCUSDT',
-                'BCHUSDT', 'EOSUSDT', 'TRXUSDT', 'ETCUSDT', 'XLMUSDT', 'ATOMUSDT', 'XTZUSDT',
-                'ALGOUSDT', 'ZECUSDT', 'COMPUSDT', 'MKRUSDT', 'SUSHIUSDT', 'YFIUSDT', 'SNXUSDT',
-                'CRVUSDT', 'UNIUSDT', 'AVAXUSDT', 'FTMUSDT', 'MATICUSDT', 'SANDUSDT', 'MANAUSDT',
-                'GALAUSDT', 'ENJUSDT', 'CHZUSDT', 'AXSUSDT', 'SLPUSDT', 'ICPUSDT', 'FILUSDT',
-                'AAVEUSDT', 'GRTUSDT', 'SOLUSDT', 'NEARUSDT', 'FTTUSDT', 'DYDXUSDT', 'ENSUSDT',
-                'LDOUSDT', 'OPUSDT', 'ARBUSDT', 'APTUSDT'
-            }
+            logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
             
-            logger.info(f"✅ Bybit static list: {len(common_bybit_futures)} futures")
-            return common_bybit_futures
+            # Log first few symbols for verification
+            sample = list(futures)[:5] if futures else []
+            logger.info(f"🔍 Sample symbols: {sample}")
+            
+            return futures
             
         except Exception as e:
-            logger.error(f"Bybit error: {e}")
+            logger.error(f"❌ Bybit error: {str(e)}", exc_info=True)
             return set()
-        
+    
     def get_all_exchanges_futures(self):
         """Get futures from all exchanges - HANDLES BLOCKED APIS"""
         exchanges = {
