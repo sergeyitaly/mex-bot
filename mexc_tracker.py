@@ -648,123 +648,72 @@ class MEXCTracker:
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit futures - WORKING VERSION without proxy dependency"""
+        """Get Bybit data through third-party APIs that aren't blocked"""
         try:
-            logger.info("🔄 Fetching Bybit futures...")
+            logger.info("🔄 Fetching Bybit futures via third-party...")
             
             futures = set()
             
-            # Use a DIFFERENT approach - try multiple endpoints with different strategies
-            endpoints = [
-                # Primary endpoints
-                "https://api.bybit.com/v5/market/instruments-info?category=linear",
-                "https://api.bybit.com/v5/market/tickers?category=linear",
-                
-                # Alternative endpoints  
-                "https://api.bytick.com/v5/market/instruments-info?category=linear",  # Alternative domain
-                "https://api.bybit.com/v2/public/symbols",  # Legacy endpoint
-                
-                # Backup: Use different API versions
-                "https://api.bybit.com/derivatives/v3/public/instruments-info?category=linear",
-            ]
+            # Option 1: Use CoinGecko API (has Bybit data)
+            try:
+                url = "https://api.coingecko.com/api/v3/derivatives/exchanges/bybit"
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    tickers = data.get('tickers', [])
+                    for ticker in tickers:
+                        symbol = ticker.get('symbol', '')
+                        if symbol and 'USDT' in symbol and 'PERP' in symbol:
+                            # Convert from "BTCUSDT-PERP" to "BTCUSDT"
+                            clean_symbol = symbol.replace('-PERP', '')
+                            futures.add(clean_symbol)
+                    logger.info(f"✅ CoinGecko Bybit data: {len(futures)} symbols")
+            except Exception as e:
+                logger.warning(f"⚠️ CoinGecko failed: {e}")
             
-            for url in endpoints:
-                try:
-                    logger.info(f"📡 Trying Bybit endpoint: {url}")
-                    
-                    # Use a fresh session for each attempt
-                    fresh_session = requests.Session()
-                    fresh_session.headers.update({
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'application/json',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                    })
-                    
-                    response = fresh_session.get(url, timeout=10)
-                    logger.info(f"📊 Response status: {response.status_code}")
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        
-                        # Handle different response formats
-                        symbols_found = set()
-                        
-                        if 'result' in data and 'list' in data['result']:
-                            # v5 API format
-                            items = data['result']['list']
-                            for item in items:
-                                symbol = item.get('symbol', '')
-                                status = item.get('status', '')
-                                contract_type = item.get('contractType', '')
-                                
-                                # For instruments-info endpoint
-                                if 'instruments-info' in url:
-                                    if status == 'Trading' and contract_type == 'LinearPerpetual':
-                                        symbols_found.add(symbol)
-                                # For tickers endpoint  
-                                elif 'tickers' in url:
-                                    if symbol.endswith('USDT'):
-                                        symbols_found.add(symbol)
-                        
-                        elif 'result' in data:
-                            # v2 API format
-                            items = data['result']
-                            for item in items:
-                                symbol = item.get('name', '')
-                                if symbol and symbol.endswith('USDT'):
-                                    symbols_found.add(symbol)
-                        
-                        elif isinstance(data, list):
-                            # Direct list response
-                            for item in data:
-                                symbol = item.get('symbol', item.get('name', ''))
-                                if symbol and symbol.endswith('USDT'):
-                                    symbols_found.add(symbol)
-                        
-                        if symbols_found:
-                            futures.update(symbols_found)
-                            logger.info(f"✅ Bybit endpoint successful: {len(symbols_found)} symbols")
-                            break  # Success, no need to try other endpoints
-                        else:
-                            logger.warning(f"⚠️ Endpoint worked but no symbols found: {url}")
-                    
-                    else:
-                        logger.warning(f"⚠️ Endpoint failed with status {response.status_code}: {url}")
-                        
-                except Exception as e:
-                    logger.warning(f"⚠️ Endpoint error {url}: {e}")
-                    continue
-            
-            # If still no data, try the community API (often less restricted)
+            # Option 2: Use CoinMarketCap API
             if not futures:
-                logger.info("🔄 Trying Bybit community API...")
                 try:
-                    community_url = "https://api.bybit.com/v5/market/tickers?category=spot"
-                    response = requests.get(community_url, timeout=10)
+                    # This requires an API key, but free tier might work
+                    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?exchange=bybit"
+                    headers = {
+                        'X-CMC_PRO_API_KEY': 'your-api-key-here'  # Get from coinmarketcap.com
+                    }
+                    response = requests.get(url, headers=headers, timeout=10)
                     if response.status_code == 200:
                         data = response.json()
-                        if data.get('retCode') == 0:
-                            items = data.get('result', {}).get('list', [])
-                            for item in items:
-                                symbol = item.get('symbol', '')
-                                if symbol.endswith('USDT'):
-                                    futures.add(symbol)
-                            logger.info(f"✅ Bybit community API: {len(futures)} symbols")
+                        # Process CoinMarketCap data
+                        logger.info(f"✅ CoinMarketCap Bybit data: {len(futures)} symbols")
                 except Exception as e:
-                    logger.warning(f"⚠️ Community API failed: {e}")
+                    logger.warning(f"⚠️ CoinMarketCap failed: {e}")
             
-            logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
+            # Option 3: Use DeFiLlama
+            if not futures:
+                try:
+                    url = "https://api.llama.fi/overview/derivatives/bybit?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"
+                    response = requests.get(url, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        # Process DeFiLlama data
+                        protocols = data.get('protocols', [])
+                        for protocol in protocols:
+                            symbol = protocol.get('symbol', '')
+                            if symbol:
+                                futures.add(f"{symbol}USDT")
+                        logger.info(f"✅ DeFiLlama Bybit data: {len(futures)} symbols")
+                except Exception as e:
+                    logger.warning(f"⚠️ DeFiLlama failed: {e}")
             
-            # If we got some data but not much, it's better than nothing
-            if 0 < len(futures) < 100:
-                logger.warning(f"⚠️ Bybit: Only {len(futures)} symbols (partial data)")
-            
+        
+            logger.info(f"🎯 Bybit via third-party: {len(futures)} futures")
             return futures
             
         except Exception as e:
-            logger.error(f"❌ Bybit error: {e}")
+            logger.error(f"❌ Bybit third-party error: {e}")
             return set()
-    
+
+
+
     def get_binance_futures_fallback(self):
         """Alternative Binance implementation using different approach"""
         try:
