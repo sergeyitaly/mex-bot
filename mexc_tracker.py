@@ -495,79 +495,68 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"BingX error: {e}")
             return set()
-        
-    def get_bybit_futures(self):
-        """Get Bybit futures - WORKING VERSION"""
+
+    def get_bitget_futures(self):
+        """Get Bitget futures - ROBUST VERSION"""
         try:
-            logger.info("🔄 Fetching Bybit futures...")
+            logger.info("🔄 Fetching Bitget futures...")
             
             futures = set()
             
-            # Use DIFFERENT endpoints that don't require authentication
-            # Option 1: Use the public tickers endpoint
-            url1 = "https://api.bybit.com/v5/market/tickers?category=linear"
-            logger.info(f"Bybit URL1: {url1}")
+            # USDT-FUTURES
+            url1 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=usdt-futures"
+            logger.info(f"BitGet URL1: {url1}")
             
             response1 = self.session.get(url1, timeout=10)
-            logger.info(f"Bybit Response1 Status: {response1.status_code}")
+            logger.info(f"BitGet Response1 Status: {response1.status_code}")
             
             if response1.status_code == 200:
                 data = response1.json()
-                logger.info(f"Bybit Response1 retCode: {data.get('retCode')}")
+                logger.info(f"BitGet Response1 code: {data.get('code')}")
                 
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    logger.info(f"Bybit Linear tickers: {len(items)}")
+                if data.get('code') == '00000':
+                    items = data.get('data', [])
+                    logger.info(f"BitGet USDT-FUTURES items: {len(items)}")
                     
                     for item in items:
-                        symbol = item.get('symbol')
-                        if symbol and 'USDT' in symbol:  # Only USDT pairs
-                            futures.add(symbol)
+                        symbol_type = item.get('symbolType')
+                        symbol_name = item.get('symbol')
+                        
+                        if symbol_type == 'perpetual':
+                            futures.add(symbol_name)
                     
-                    logger.info(f"Bybit Linear found: {len(futures)}")
+                    logger.info(f"BitGet USDT perpetuals: {len(futures)}")
             
-            # Option 2: Try inverse as well
-            url2 = "https://api.bybit.com/v5/market/tickers?category=inverse"
-            logger.info(f"Bybit URL2: {url2}")
+            # COIN-FUTURES
+            url2 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=coin-futures"
+            logger.info(f"BitGet URL2: {url2}")
             
             response2 = self.session.get(url2, timeout=10)
-            logger.info(f"Bybit Response2 Status: {response2.status_code}")
+            logger.info(f"BitGet Response2 Status: {response2.status_code}")
             
             if response2.status_code == 200:
                 data = response2.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    logger.info(f"Bybit Inverse tickers: {len(items)}")
+                if data.get('code') == '00000':
+                    items = data.get('data', [])
+                    logger.info(f"BitGet COIN-FUTURES items: {len(items)}")
                     
-                    inverse_count = 0
+                    coin_count = 0
                     for item in items:
-                        symbol = item.get('symbol')
-                        if symbol:
-                            futures.add(symbol)
-                            inverse_count += 1
+                        symbol_type = item.get('symbolType')
+                        symbol_name = item.get('symbol')
+                        
+                        if symbol_type == 'perpetual':
+                            futures.add(symbol_name)
+                            coin_count += 1
                     
-                    logger.info(f"Bybit Inverse found: {inverse_count}")
+                    logger.info(f"BitGet COIN perpetuals: {coin_count}")
             
-            # If still empty, try the KLINE endpoint as last resort
-            if len(futures) == 0:
-                logger.info("Trying Bybit kline endpoint...")
-                url3 = "https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=1"
-                response3 = self.session.get(url3, timeout=10)
-                if response3.status_code == 200:
-                    data = response3.json()
-                    if data.get('retCode') == 0:
-                        # If this works, we know the API is accessible
-                        futures.add('BTCUSDT')  # At least add one symbol
-                        logger.info("Bybit API is accessible via kline endpoint")
-            
-            logger.info(f"✅ Bybit TOTAL: {len(futures)} futures")
+            logger.info(f"✅ BitGet TOTAL: {len(futures)} futures")
             return futures
             
         except Exception as e:
-            logger.error(f"Bybit error: {e}")
-            return set()   
-
-
+            logger.error(f"BitGet error: {e}")
+            return set()        
 
     def get_binance_futures(self):
         """Get Binance futures using proxy"""
