@@ -35,7 +35,6 @@ class MEXCTracker:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.update_interval = int(os.getenv('UPDATE_INTERVAL', 60))
-        self.data_file = 'data.json'
         
         if not self.bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
@@ -196,59 +195,17 @@ class MEXCTracker:
         ))
             
     def init_data_file(self):
-        """Initialize data file"""
-        if not os.path.exists(self.data_file):
-            data = {
-                "unique_futures": [],
-                "last_check": None,
-                "statistics": {
-                    "checks_performed": 0,
-                    "unique_found_total": 0,
-                    "start_time": datetime.now().isoformat()
-                },
-                "exchange_stats": {},
-                "google_sheet_url": None,
-                "watchlist": []  
-            }
-            self.save_data(data)
-    
+        """Initialize data in memory for Fly.io"""
+        self.data = self.get_default_data()
+
     def load_data(self):
-        """Load data from JSON file with error handling"""
-        try:
-            # Проверяем существует ли файл
-            if not os.path.exists(self.data_file):
-                return self.get_default_data()
-            
-            with open(self.data_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading data from {self.data_file}: {e}")
-            return self.get_default_data()
+        """Load data from memory"""
+        return self.data
 
     def save_data(self, data):
-        """Save data to JSON file with error handling"""
-        try:
-            # Создаем backup на случай ошибки
-            backup_file = f"{self.data_file}.backup"
-            if os.path.exists(self.data_file):
-                import shutil
-                shutil.copy2(self.data_file, backup_file)
-            
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Data saved to {self.data_file}")
-            
-        except Exception as e:
-            logger.error(f"Error saving data to {self.data_file}: {e}")
-            # Пробуем сохранить в временный файл
-            try:
-                temp_file = f"{self.data_file}.temp"
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                logger.info(f"Data saved to temporary file: {temp_file}")
-            except Exception as e2:
-                logger.error(f"Failed to save even to temporary file: {e2}")
+        """Save data to memory"""
+        self.data = data
+        logger.info("Data saved to memory")
 
     def get_default_data(self):
         """Return default data structure"""
@@ -264,7 +221,6 @@ class MEXCTracker:
             "google_sheet_url": None,
             "watchlist": []  
         }
-
     # ==================== EXCHANGE API METHODS ====================
     def watch_symbol_command(self, update: Update, context: CallbackContext):
         """Add symbol to watchlist"""
