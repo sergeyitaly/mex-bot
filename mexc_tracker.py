@@ -135,6 +135,32 @@ class MEXCTracker:
         except Exception as e:
             update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
             
+    def check_symbol_command(self, update: Update, context: CallbackContext):
+        """Check if a symbol is unique to MEXC"""
+        if not context.args:
+            update.message.reply_html("Usage: /checksymbol SYMBOL\nExample: /checksymbol BTCUSDT")
+            return
+        
+        symbol = context.args[0].upper()
+        update.message.reply_html(f"🔍 Checking symbol: {symbol}")
+        
+        try:
+            exchanges = self.analyze_symbol_coverage(symbol)
+            
+            if not exchanges:
+                response = f"❌ Symbol not found on any exchange: {symbol}"
+            elif len(exchanges) == 1 and 'MEXC' in exchanges:
+                response = f"🎯 UNIQUE TO MEXC! {symbol}\nOnly available on: MEXC"
+            elif 'MEXC' in exchanges:
+                other_exchanges = [e for e in exchanges if e != 'MEXC']
+                response = f"📊 {symbol} available on:\n• MEXC\n• " + "\n• ".join(other_exchanges)
+            else:
+                response = f"📊 {symbol} available on:\n• " + "\n• ".join(exchanges)
+            
+            update.message.reply_html(response)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error checking symbol: {str(e)}")
 
     def setup_handlers(self):
         """Setup command handlers"""
@@ -149,6 +175,7 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("export", self.export_command))
         self.dispatcher.add_handler(CommandHandler("autosheet", self.auto_sheet_command))
         self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
+        self.dispatcher.add_handler(CommandHandler("checksymbol", self.check_symbol_command))
 
         from telegram.ext import MessageHandler, Filters
         self.dispatcher.add_handler(MessageHandler(
@@ -425,24 +452,62 @@ class MEXCTracker:
         logger.info(f"Total futures from all exchanges: {len(all_futures)}")
         return all_futures, exchange_stats
     
+    def is_valid_coin_symbol(self, symbol):
+        """Check if this looks like a valid coin symbol"""
+        if not symbol or len(symbol) < 2:
+            return False
+        
+        normalized = self.normalize_symbol(symbol)
+        
+        # Should contain only letters and numbers after normalization
+        if not normalized.isalnum():
+            return False
+        
+        # Should not be too short or too long
+        if len(normalized) < 2 or len(normalized) > 20:
+            return False
+        
+        return True
+
+
+
     def normalize_symbol(self, symbol):
         """Normalize symbol for comparison across exchanges"""
+        if not symbol:
+            return ""
+        
         normalized = symbol.upper()
         
-        suffixes = ['_USDT', 'USDT', 'USDT-PERP', 'PERP', '-PERPETUAL', 'PERPETUAL']
-        for suffix in suffixes:
+        # Remove common contract/position suffixes
+        suffixes_to_remove = [
+            # USDT variations
+            '_USDT', 'USDT', '-USDT', 'USDT-PERP', 'USDT-PERPETUAL', 'USDT-FUTURES',
+            # Perpetual variations
+            '_PERP', 'PERP', '-PERP', '_PERPETUAL', 'PERPETUAL', '-PERPETUAL',
+            # Futures variations
+            '_FUTURES', 'FUTURES', '-FUTURES', '_FUTURE', 'FUTURE', '-FUTURE',
+            # Swap variations
+            '_SWAP', 'SWAP', '-SWAP', 'SWAP:',
+            # Other common suffixes
+            '_CONTRACT', 'CONTRACT', '-CONTRACT'
+        ]
+        
+        for suffix in suffixes_to_remove:
             normalized = normalized.replace(suffix, '')
         
-        separators = ['-', '_', ' ']
+        # Remove separators and formatting
+        separators = ['-', '_', ' ', ':', '/']
         for sep in separators:
             normalized = normalized.replace(sep, '')
         
-        patterns = ['SWAP:', 'FUTURES:', 'FUTURE:']
-        for pattern in patterns:
-            normalized = normalized.replace(pattern, '')
+        # Handle specific exchange formats
+        # MEXC: SYMBOL_USDT
+        # Binance: SYMBOLUSDT  
+        # Bybit: SYMBOLUSDT
+        # OKX: SYMBOL-USDT-SWAP
         
         return normalized
-    
+  
     def find_unique_futures(self):
         """Find futures that are only on MEXC and not on other exchanges"""
         try:
@@ -453,20 +518,64 @@ class MEXCTracker:
             
             other_futures, exchange_stats = self.get_all_exchanges_futures()
             
-            mexc_normalized = {self.normalize_symbol(s): s for s in mexc_futures}
-            other_normalized = {self.normalize_symbol(s) for s in other_futures}
+            # Normalize all symbols and track their origin
+            mexc_normalized = {}
+            for symbol in mexc_futures:
+                if self.is_valid_coin_symbol(symbol):
+                    normalized = self.normalize_symbol(symbol)
+                    mexc_normalized[normalized] = symbol
             
+            other_normalized = set()
+            for symbol in other_futures:
+                if self.is_valid_coin_symbol(symbol):
+                    normalized = self.normalize_symbol(symbol)
+                    other_normalized.add(normalized)
+            
+            # Find symbols that exist only in MEXC
             unique_futures = set()
             for normalized, original in mexc_normalized.items():
                 if normalized not in other_normalized:
                     unique_futures.add(original)
             
             logger.info(f"Found {len(unique_futures)} unique futures on MEXC")
+            
+            # Log some examples for verification
+            if unique_futures:
+                sample = list(unique_futures)[:3]
+                logger.info(f"Sample unique futures: {sample}")
+                
             return unique_futures, exchange_stats
             
         except Exception as e:
             logger.error(f"Error finding unique futures: {e}")
             return set(), {}
+    
+    def analyze_symbol_coverage(self, symbol):
+        """Check which exchanges have a specific symbol"""
+        normalized = self.normalize_symbol(symbol)
+        exchanges_with_symbol = []
+        
+        exchange_methods = {
+            'MEXC': self.get_mexc_futures,
+            'Binance': self.get_binance_futures,
+            'Bybit': self.get_bybit_futures,
+            'OKX': self.get_okx_futures,
+            'Gate.io': self.get_gate_futures,
+            'KuCoin': self.get_kucoin_futures,
+            'BingX': self.get_bingx_futures,
+            'BitGet': self.get_bitget_futures
+        }
+        
+        for exchange_name, method in exchange_methods.items():
+            try:
+                futures = method()
+                normalized_futures = {self.normalize_symbol(s) for s in futures}
+                if normalized in normalized_futures:
+                    exchanges_with_symbol.append(exchange_name)
+            except Exception as e:
+                logger.error(f"Error checking {exchange_name}: {e}")
+        
+        return exchanges_with_symbol
 
     # ==================== GOOGLE SHEETS ANALYSIS ====================
     
