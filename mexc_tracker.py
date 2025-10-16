@@ -487,10 +487,8 @@ class MEXCTracker:
             return set()
         
     def get_binance_futures(self):
-        """Get Binance futures - FIXED PARSING"""
+        """Get Binance futures - WORKING VERSION"""
         try:
-            logger.info("🔄 Fetching Binance futures...")
-            
             # USDⓈ-M Futures
             url1 = "https://fapi.binance.com/fapi/v1/exchangeInfo"
             response1 = self.session.get(url1, timeout=10)
@@ -499,20 +497,10 @@ class MEXCTracker:
             
             if response1.status_code == 200:
                 data = response1.json()
-                symbols = data.get('symbols', [])
-                logger.info(f"Binance USDⓈ-M: {len(symbols)} total symbols")
-                
-                for symbol in symbols:
-                    contract_type = symbol.get('contractType')
-                    status = symbol.get('status')
-                    symbol_name = symbol.get('symbol')
-                    
-                    if (contract_type == 'PERPETUAL' and 
-                        status == 'TRADING' and 
-                        symbol_name):
-                        futures.add(symbol_name)
-                
-                logger.info(f"Binance USDⓈ-M perpetuals: {len([s for s in symbols if s.get('contractType') == 'PERPETUAL'])}")
+                for symbol in data.get('symbols', []):
+                    if (symbol.get('contractType') == 'PERPETUAL' and 
+                        symbol.get('status') == 'TRADING'):
+                        futures.add(symbol['symbol'])
             
             # COIN-M Futures  
             url2 = "https://dapi.binance.com/dapi/v1/exchangeInfo"
@@ -520,22 +508,12 @@ class MEXCTracker:
             
             if response2.status_code == 200:
                 data = response2.json()
-                symbols = data.get('symbols', [])
-                logger.info(f"Binance COIN-M: {len(symbols)} total symbols")
-                
-                for symbol in symbols:
-                    contract_type = symbol.get('contractType')
-                    status = symbol.get('status')
-                    symbol_name = symbol.get('symbol')
-                    
-                    if (contract_type == 'PERPETUAL' and 
-                        status == 'TRADING' and 
-                        symbol_name):
-                        futures.add(symbol_name)
-                
-                logger.info(f"Binance COIN-M perpetuals: {len([s for s in symbols if s.get('contractType') == 'PERPETUAL'])}")
+                for symbol in data.get('symbols', []):
+                    if (symbol.get('contractType') == 'PERPETUAL' and 
+                        symbol.get('status') == 'TRADING'):
+                        futures.add(symbol['symbol'])
             
-            logger.info(f"✅ Binance TOTAL: {len(futures)} perpetual futures")
+            logger.info(f"✅ Binance: {len(futures)} futures")
             return futures
             
         except Exception as e:
@@ -543,10 +521,8 @@ class MEXCTracker:
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit futures - FIXED PARSING"""
+        """Get Bybit futures - WORKING VERSION"""
         try:
-            logger.info("🔄 Fetching Bybit futures...")
-            
             # Linear Futures (USDT)
             url1 = "https://api.bybit.com/v5/market/instruments-info?category=linear"
             response1 = self.session.get(url1, timeout=10)
@@ -555,23 +531,11 @@ class MEXCTracker:
             
             if response1.status_code == 200:
                 data = response1.json()
-                logger.info(f"Bybit response: {data.get('retMsg', 'Unknown')}")
-                
                 if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    logger.info(f"Bybit Linear: {len(items)} total items")
-                    
-                    for item in items:
-                        status = item.get('status')
-                        symbol = item.get('symbol')
-                        contract_type = item.get('contractType')
-                        
-                        if (status == 'Trading' and 
-                            symbol and 
-                            contract_type == 'LinearPerpetual'):
-                            futures.add(symbol)
-                    
-                    logger.info(f"Bybit Linear perpetuals: {len([i for i in items if i.get('contractType') == 'LinearPerpetual'])}")
+                    for item in data.get('result', {}).get('list', []):
+                        if (item.get('status') == 'Trading' and 
+                            item.get('contractType') == 'LinearPerpetual'):
+                            futures.add(item['symbol'])
             
             # Inverse Futures (COIN)
             url2 = "https://api.bybit.com/v5/market/instruments-info?category=inverse"
@@ -580,22 +544,12 @@ class MEXCTracker:
             if response2.status_code == 200:
                 data = response2.json()
                 if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    logger.info(f"Bybit Inverse: {len(items)} total items")
-                    
-                    for item in items:
-                        status = item.get('status')
-                        symbol = item.get('symbol')
-                        contract_type = item.get('contractType')
-                        
-                        if (status == 'Trading' and 
-                            symbol and 
-                            contract_type == 'InversePerpetual'):
-                            futures.add(symbol)
-                    
-                    logger.info(f"Bybit Inverse perpetuals: {len([i for i in items if i.get('contractType') == 'InversePerpetual'])}")
+                    for item in data.get('result', {}).get('list', []):
+                        if (item.get('status') == 'Trading' and 
+                            item.get('contractType') == 'InversePerpetual'):
+                            futures.add(item['symbol'])
             
-            logger.info(f"✅ Bybit TOTAL: {len(futures)} perpetual futures")
+            logger.info(f"✅ Bybit: {len(futures)} futures")
             return futures
             
         except Exception as e:
@@ -603,10 +557,8 @@ class MEXCTracker:
             return set()
 
     def get_bitget_futures(self):
-        """Get Bitget futures - FIXED PARSING"""
+        """Get Bitget futures - WORKING VERSION"""
         try:
-            logger.info("🔄 Fetching Bitget futures...")
-            
             # USDT Futures
             url1 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
             response1 = self.session.get(url1, timeout=10)
@@ -615,28 +567,11 @@ class MEXCTracker:
             
             if response1.status_code == 200:
                 data = response1.json()
-                logger.info(f"Bitget response code: {data.get('code', 'Unknown')}")
-                logger.info(f"Bitget response msg: {data.get('msg', 'Unknown')}")
-                
                 if data.get('code') == '00000':
-                    items = data.get('data', [])
-                    logger.info(f"Bitget USDT-FUTURES: {len(items)} total items")
-                    
-                    # DEBUG: Show first item structure
-                    if items:
-                        first_item = items[0]
-                        logger.info(f"Bitget first item keys: {list(first_item.keys())}")
-                        logger.info(f"Bitget first item: {first_item}")
-                    
-                    for item in items:
-                        status = item.get('status')
-                        symbol = item.get('symbol')
-                        # Bitget might not have symbolType field, just include all active contracts
-                        
-                        if status == 'normal' and symbol:
-                            futures.add(symbol)
-                    
-                    logger.info(f"Bitget USDT active contracts: {len(futures)}")
+                    for item in data.get('data', []):
+                        if (item.get('symbolStatus') == 'normal' and 
+                            item.get('symbolType') == 'perpetual'):
+                            futures.add(item['symbol'])
             
             # COIN Futures
             url2 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=COIN-FUTURES"
@@ -645,29 +580,23 @@ class MEXCTracker:
             if response2.status_code == 200:
                 data = response2.json()
                 if data.get('code') == '00000':
-                    items = data.get('data', [])
-                    logger.info(f"Bitget COIN-FUTURES: {len(items)} total items")
-                    
-                    for item in items:
-                        status = item.get('status')
-                        symbol = item.get('symbol')
-                        
-                        if status == 'normal' and symbol:
-                            futures.add(symbol)
-                    
-                    logger.info(f"Bitget COIN active contracts: {len([i for i in items if i.get('status') == 'normal'])}")
+                    for item in data.get('data', []):
+                        if (item.get('symbolStatus') == 'normal' and 
+                            item.get('symbolType') == 'perpetual'):
+                            futures.add(item['symbol'])
             
-            logger.info(f"✅ BitGet TOTAL: {len(futures)} active contracts")
+            logger.info(f"✅ BitGet: {len(futures)} futures")
             return futures
             
         except Exception as e:
             logger.error(f"BitGet error: {e}")
             return set()
-
+        
+    
 
 
     def get_all_exchanges_futures(self):
-        """Get futures from all exchanges - WITH DEBUG LOGGING"""
+        """Get futures from all exchanges - CLEAN VERSION"""
         exchanges = {
             'Binance': self.get_binance_futures,
             'Bybit': self.get_bybit_futures,
@@ -681,43 +610,23 @@ class MEXCTracker:
         all_futures = set()
         exchange_stats = {}
         
-        logger.info("🔍 Starting exchange data collection...")
-        
         for name, method in exchanges.items():
             try:
-                logger.info(f"🔄 Fetching {name}...")
-                start_time = time.time()
                 futures = method()
-                elapsed = time.time() - start_time
-                
                 if futures:
                     all_futures.update(futures)
                     exchange_stats[name] = len(futures)
-                    logger.info(f"✅ {name}: {len(futures)} futures ({elapsed:.2f}s)")
-                    
-                    # Log sample symbols for debugging
-                    sample = list(futures)[:3] if futures else []
-                    logger.info(f"   Sample symbols: {sample}")
                 else:
                     exchange_stats[name] = 0
-                    logger.warning(f"⚠️ {name}: No data received")
-                    
             except Exception as e:
                 exchange_stats[name] = 0
-                logger.error(f"❌ {name} ERROR: {str(e)}")
+                logger.error(f"{name} error: {e}")
             
-            # Rate limiting between exchanges
-            time.sleep(1)
+            time.sleep(1)  # Rate limiting
         
-        # Log final results
-        working = sum(1 for count in exchange_stats.values() if count > 0)
-        total_futures = len(all_futures)
-        
-        logger.info(f"📊 FINAL RESULTS: {working}/{len(exchanges)} exchanges working, {total_futures} total futures")
-        
+        logger.info(f"📊 Exchange results: {exchange_stats}")
         return all_futures, exchange_stats
-
-        
+    
 
 
     def find_unique_futures(self):
