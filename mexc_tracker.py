@@ -1800,9 +1800,36 @@ class MEXCTracker:
                 f"• 🔄 Auto-updates every {self.update_interval}min",
                 reply_markup=ReplyKeyboardRemove()
             )
-            
         except Exception as e:
             update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
+
+    def _make_request_with_retry(self, url: str, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
+        """Make request with retry logic and proxy rotation"""
+        for attempt in range(max_retries):
+            try:
+                proxy = random.choice(self.proxies) if self.proxies else {}
+                response = self.session.get(url, timeout=timeout, proxies=proxy if proxy else None)
+                
+                if response.status_code == 200:
+                    return response
+                elif response.status_code in [403, 429]:
+                    logger.warning(f"⚠️  Blocked on attempt {attempt + 1} for {url}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
+                        continue
+                else:
+                    logger.error(f"❌ HTTP {response.status_code} for {url}")
+                    break
+                    
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"⚠️  Request failed on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+        
+        return None
+
+
 
     def format_start_time(self, start_time):
         """Format start time for display"""
