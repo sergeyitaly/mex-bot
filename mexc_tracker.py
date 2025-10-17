@@ -89,11 +89,19 @@ class MEXCTracker:
         return [{}]  # Empty dict means no proxy
 
     def setup_google_sheets(self):
-        """Setup Google Sheets connection with proper error handling"""
+        """Setup Google Sheets connection using email instead of sheet ID"""
         try:
             creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
+            sheet_email = os.getenv('GOOGLE_SHEET_EMAIL')
+            
             if not creds_json:
                 logger.warning("❌ Google Sheets not configured - no credentials found")
+                self.gs_client = None
+                self.spreadsheet = None
+                return False
+
+            if not sheet_email:
+                logger.warning("❌ GOOGLE_SHEET_EMAIL not configured")
                 self.gs_client = None
                 self.spreadsheet = None
                 return False
@@ -125,33 +133,63 @@ class MEXCTracker:
                 self.gs_client = gspread.authorize(self.creds)
                 logger.info("✅ Google Sheets client authorized successfully")
                 
-                # Connect to spreadsheet
-                spreadsheet_id = os.getenv('GOOGLE_SHEET_ID')
-                if not spreadsheet_id:
-                    logger.warning("⚠️ No Google Sheet ID configured")
+                # Find spreadsheet by title using the email as the spreadsheet name/title
+                try:
+                    # Method 1: Try to open by title (using the email as the spreadsheet title)
+                    logger.info(f"🔍 Looking for spreadsheet with title containing: {sheet_email}")
+                    self.spreadsheet = self.gs_client.open(sheet_email)
+                    logger.info(f"✅ Found spreadsheet by title: {self.spreadsheet.title}")
+                    
+                except gspread.SpreadsheetNotFound:
+                    # Method 2: Try to list all spreadsheets and find by title
+                    logger.info("📋 Listing all available spreadsheets...")
+                    try:
+                        all_spreadsheets = self.gs_client.list_spreadsheet_files()
+                        logger.info(f"🔍 Found {len(all_spreadsheets)} spreadsheets")
+                        
+                        # Look for spreadsheet with email in title
+                        matching_spreadsheets = [s for s in all_spreadsheets if sheet_email.lower() in s['name'].lower()]
+                        
+                        if matching_spreadsheets:
+                            spreadsheet_id = matching_spreadsheets[0]['id']
+                            self.spreadsheet = self.gs_client.open_by_key(spreadsheet_id)
+                            logger.info(f"✅ Found spreadsheet by search: {self.spreadsheet.title}")
+                        else:
+                            # Method 3: Create a new spreadsheet
+                            logger.info("🆕 Creating new spreadsheet...")
+                            self.spreadsheet = self.gs_client.create(sheet_email)
+                            logger.info(f"✅ Created new spreadsheet: {self.spreadsheet.title}")
+                            
+                            # Share with the service account email if needed
+                            try:
+                                self.spreadsheet.share(creds_dict['client_email'], perm_type='user', role='writer')
+                                logger.info(f"✅ Shared spreadsheet with {creds_dict['client_email']}")
+                            except Exception as share_error:
+                                logger.warning(f"⚠️ Could not share spreadsheet: {share_error}")
+                            
+                    except Exception as list_error:
+                        logger.error(f"❌ Error listing spreadsheets: {list_error}")
+                        # Method 4: Try using the email as spreadsheet ID (in case it actually is an ID)
+                        try:
+                            self.spreadsheet = self.gs_client.open_by_key(sheet_email)
+                            logger.info(f"✅ Opened spreadsheet using email as ID: {self.spreadsheet.title}")
+                        except:
+                            logger.error("❌ Could not find or create spreadsheet")
+                            self.spreadsheet = None
+                            return False
+                
+                except Exception as e:
+                    logger.error(f"❌ Error finding spreadsheet: {e}")
                     self.spreadsheet = None
                     return False
                 
+                # Test the connection
                 try:
-                    self.spreadsheet = self.gs_client.open_by_key(spreadsheet_id)
-                    logger.info(f"✅ Connected to existing spreadsheet: {self.spreadsheet.title}")
-                    
-                    # Test the connection by accessing a sheet
-                    try:
-                        worksheet = self.spreadsheet.sheet1
-                        logger.info("✅ Sheet connection test successful")
-                        return True
-                    except Exception as test_error:
-                        logger.error(f"❌ Failed to access worksheet: {test_error}")
-                        return False
-                        
-                except gspread.SpreadsheetNotFound:
-                    logger.error(f"❌ Spreadsheet not found with ID: {spreadsheet_id}")
-                    self.spreadsheet = None
-                    return False
-                except Exception as e:
-                    logger.error(f"❌ Failed to open spreadsheet: {e}")
-                    self.spreadsheet = None
+                    worksheet = self.spreadsheet.sheet1
+                    logger.info("✅ Sheet connection test successful")
+                    return True
+                except Exception as test_error:
+                    logger.error(f"❌ Failed to access worksheet: {test_error}")
                     return False
                     
             except Exception as e:
@@ -165,7 +203,6 @@ class MEXCTracker:
             self.gs_client = None
             self.spreadsheet = None
             return False
-
 
     # ==================== PRICE MONITORING ====================
 
