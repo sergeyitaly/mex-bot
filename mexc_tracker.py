@@ -796,7 +796,7 @@ class MEXCTracker:
             logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
             
             # FIX: Use the SAME price collection method as check command
-            price_data = self.get_all_mexc_prices()
+            price_data = self.get_mexc_prices_batch_working()
             
             # DEBUG: Check specific symbols
             debug_symbols = ['TRY_USDT', 'QKC_USDT', 'WIN_USDT']
@@ -947,7 +947,7 @@ class MEXCTracker:
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             
             # FIX: Use the SAME price collection method as check command
-            price_data = self.get_all_mexc_prices()
+            price_data = self.get_mexc_prices_batch_working()
             analyzed_prices = self.analyze_price_movements(price_data)
             
             # DEBUG: Log what we're sending to Excel
