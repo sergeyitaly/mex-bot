@@ -970,7 +970,57 @@ class MEXCTracker:
         if change is None:
             return 'N/A'
         return f"{change:+.2f}%"
+
+
+
+    def create_dashboard_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
+        """Create Dashboard sheet"""
+        ws = wb.create_sheet("Dashboard")
         
+        # Title
+        ws['A1'] = 'MEXC FUTURES AUTO-UPDATE DASHBOARD'
+        ws['A1'].font = Font(bold=True, size=14)
+        
+        # Get statistics
+        unique_futures, exchange_stats = self.find_unique_futures_robust()
+        working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+        total_exchanges = len(exchange_stats)
+        
+        # Statistics data
+        stats_data = [
+            ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            ["Update Interval", f"{self.update_interval} minutes"],
+            ["", ""],
+            ["EXCHANGE STATISTICS", ""],
+            ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+            ["Total Unique Symbols", len(symbol_coverage)],
+            ["Unique MEXC Futures", len(unique_futures)],
+            ["", ""],
+            ["PRICE ANALYSIS", ""],
+            ["Symbols with Price Data", f"{len(analyzed_prices) if analyzed_prices else 0}"],
+            ["MEXC Futures Count", len([f for f in all_futures_data if f['exchange'] == 'MEXC'])],
+            ["", ""],
+            ["PERFORMANCE", ""],
+            ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
+            ["Status", "RUNNING"],
+        ]
+        
+        # Add data to sheet
+        for i, (label, value) in enumerate(stats_data, 2):
+            ws[f'A{i}'] = label
+            ws[f'B{i}'] = value
+            
+            # Format headers
+            if label and any(keyword in label for keyword in ["STATISTICS", "ANALYSIS", "PERFORMANCE"]):
+                ws[f'A{i}'].font = Font(bold=True)
+                ws[f'A{i}'].fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+                ws[f'B{i}'].fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 25
+        ws.column_dimensions['B'].width = 25
+
+
     def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage, analyzed_prices=None):
         """Create comprehensive Excel file matching Google Sheets content"""
         try:
