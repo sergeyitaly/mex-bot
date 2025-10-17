@@ -214,7 +214,7 @@ class MEXCTracker:
     # ==================== PRICE MONITORING ====================
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - OPTIMIZED VERSION"""
+        """Get price data for MEXC futures - CORRECTED VERSION"""
         try:
             # Always use batch first (most efficient)
             batch_data = self.get_mexc_prices_batch_working()
@@ -248,7 +248,8 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
-        
+
+
     def get_mexc_prices_batch_working(self):
         """Get prices using working MEXC API endpoint"""
         try:
@@ -610,32 +611,44 @@ class MEXCTracker:
     # ==================== ENHANCED GOOGLE SHEETS ====================
 
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with price data - simplified"""
+        """Update Google Sheet with price data - ENHANCED COVERAGE"""
         if not self.gs_client or not self.spreadsheet:
-            logger.warning("Google Sheets not available")
             return
         
         try:
-            logger.info("🔄 Starting Google Sheet update...")
+            logger.info("🔄 Starting enhanced Google Sheet update...")
             
             # Get unique futures
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
             
-            # Get limited price data to avoid timeout
+            # Get price data with enhanced coverage for unique symbols
             price_data = self.get_all_mexc_prices()
             analyzed_prices = self.analyze_price_movements(price_data)
-            logger.info(f"💰 Prices analyzed: {len(analyzed_prices)}")
             
-            # Update only the essential sheets
+            # Calculate coverage statistics
+            unique_with_prices = len([s for s in unique_futures if s in price_data])
+            coverage_percent = (unique_with_prices / len(unique_futures)) * 100
+            
+            logger.info(f"💰 Price coverage: {unique_with_prices}/{len(unique_futures)} ({coverage_percent:.1f}%)")
+            
+            # Update sheets
             self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             self.update_price_analysis_sheet(analyzed_prices)
             
-            logger.info("✅ Google Sheet updated successfully")
+            # Update dashboard with enhanced stats
+            self.update_dashboard_with_comprehensive_stats(
+                exchange_stats, 
+                len(set(self.normalize_symbol_for_comparison(s) for s in price_data.keys())),
+                len(unique_futures), 
+                analyzed_prices
+            )
+            
+            logger.info("✅ Google Sheet updated with enhanced price coverage")
             
         except Exception as e:
             logger.error(f"Error updating Google Sheet with prices: {e}")
-            
+                
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
         """Update Unique Futures sheet with price information - ENHANCED"""
         try:
@@ -1663,6 +1676,62 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("excel", self.excel_command))
         self.dispatcher.add_handler(CommandHandler("download", self.excel_command))
         self.dispatcher.add_handler(CommandHandler("pricedebug", self.price_debug_command))
+        self.dispatcher.add_handler(CommandHandler("symboldebug", self.symbol_debug_command))
+
+    def symbol_debug_command(self, update: Update, context: CallbackContext):
+        """Debug why specific symbols don't have price data"""
+        try:
+            if not context.args:
+                update.message.reply_html("Usage: /symboldebug SYMBOL\nExample: /symboldebug DEVVE_USDT")
+                return
+            
+            symbol = context.args[0].upper()
+            update.message.reply_html(f"🔧 <b>Debugging symbol:</b> {symbol}")
+            
+            # Get unique symbols
+            unique_futures, _ = self.find_unique_futures_robust()
+            
+            # Check if symbol is unique
+            is_unique = symbol in unique_futures
+            batch_data = self.get_mexc_prices_batch_working()
+            in_batch = symbol in batch_data
+            
+            # Try individual price fetch
+            individual_price = self.get_mexc_price_data_working(symbol)
+            
+            # Try alternative formats
+            alt_formats = self.get_alternative_symbol_formats(symbol)
+            alt_matches = []
+            for alt in alt_formats:
+                if alt in batch_data:
+                    alt_matches.append(f"{alt} (price: ${batch_data[alt].get('price', 'N/A')})")
+            
+            message = (
+                f"🔧 <b>Symbol Debug: {symbol}</b>\n\n"
+                f"📊 <b>Status:</b>\n"
+                f"• In unique list: {'✅ YES' if is_unique else '❌ NO'}\n"
+                f"• In batch API: {'✅ YES' if in_batch else '❌ NO'}\n"
+                f"• Individual API: {'✅ WORKING' if individual_price else '❌ FAILED'}\n\n"
+            )
+            
+            if individual_price:
+                message += f"💰 <b>Price Data:</b>\n"
+                message += f"• Price: ${individual_price['price']}\n"
+                message += f"• 5m Change: {individual_price['changes'].get('5m', 0):.2f}%\n"
+                message += f"• Source: {individual_price.get('source', 'unknown')}\n\n"
+            
+            if alt_matches:
+                message += f"🔄 <b>Alternative format matches:</b>\n"
+                message += "\n".join([f"• {match}" for match in alt_matches[:3]])
+            else:
+                message += f"🔄 <b>Alternative formats:</b> No matches found\n"
+                message += f"   Tried: {', '.join(alt_formats[:3])}\n"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Debug error: {str(e)}")
+            
 
     def price_debug_command(self, update: Update, context: CallbackContext):
         """Debug price fetching issues"""
@@ -2096,6 +2165,92 @@ class MEXCTracker:
             
         except Exception as e:
             logger.error(f"Error updating Price Analysis sheet: {e}")
+
+    def get_prices_for_unique_symbols(self):
+        """Get price data specifically for all unique symbols"""
+        try:
+            # Get unique symbols
+            unique_futures, _ = self.find_unique_futures_robust()
+            logger.info(f"🎯 Getting prices for {len(unique_futures)} unique symbols")
+            
+            # Start with batch data
+            batch_data = self.get_mexc_prices_batch_working()
+            price_data = batch_data.copy()
+            
+            # Check which unique symbols are missing from batch
+            missing_symbols = [s for s in unique_futures if s not in batch_data]
+            logger.info(f"🔍 {len(missing_symbols)} unique symbols missing from batch API")
+            
+            # Try alternative symbol formats for missing symbols
+            found_with_alt_format = 0
+            for symbol in missing_symbols[:]:
+                # Try different symbol formats that might be in batch data
+                alt_formats = self.get_alternative_symbol_formats(symbol)
+                for alt_format in alt_formats:
+                    if alt_format in batch_data:
+                        price_data[symbol] = batch_data[alt_format]
+                        missing_symbols.remove(symbol)
+                        found_with_alt_format += 1
+                        logger.debug(f"✅ Found {symbol} as {alt_format} in batch")
+                        break
+            
+            if found_with_alt_format > 0:
+                logger.info(f"🔄 Found {found_with_alt_format} symbols with alternative formats")
+            
+            # Get individual prices for remaining missing symbols
+            successful_individual = 0
+            logger.info(f"🔍 Getting individual prices for {len(missing_symbols)} remaining symbols")
+            
+            for symbol in missing_symbols[:80]:  # Limit to avoid timeout
+                try:
+                    price_info = self.get_mexc_price_data_working(symbol)
+                    if price_info and price_info.get('price'):
+                        price_data[symbol] = price_info
+                        successful_individual += 1
+                    
+                    time.sleep(0.2)  # Conservative rate limiting
+                    
+                except Exception as e:
+                    logger.debug(f"Individual price failed for {symbol}: {e}")
+                    continue
+            
+            logger.info(f"✅ Unique symbols price coverage: {len([s for s in unique_futures if s in price_data])}/{len(unique_futures)}")
+            return price_data
+            
+        except Exception as e:
+            logger.error(f"Error getting prices for unique symbols: {e}")
+            return {}
+
+    def get_alternative_symbol_formats(self, symbol):
+        """Generate alternative symbol formats that might match batch data"""
+        alternatives = []
+        
+        # Common format variations
+        if '_' in symbol:
+            # Try without underscore
+            alternatives.append(symbol.replace('_', ''))
+            # Try with different case
+            alternatives.append(symbol.lower())
+            alternatives.append(symbol.upper())
+        
+        # Try common suffix variations
+        if symbol.endswith('_USDT'):
+            base = symbol[:-5]  # Remove _USDT
+            alternatives.append(f"{base}USDT")
+            alternatives.append(f"{base}-USDT")
+            alternatives.append(f"{base}/USDT")
+        
+        elif symbol.endswith('_USDC'):
+            base = symbol[:-5]  # Remove _USDC
+            alternatives.append(f"{base}USDC")
+            alternatives.append(f"{base}-USDC")
+            alternatives.append(f"{base}/USDC")
+        
+        return alternatives
+
+
+
+
 
     def update_dashboard_with_comprehensive_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
         """Update the dashboard with comprehensive statistics including price coverage"""
@@ -2579,6 +2734,7 @@ class MEXCTracker:
             "/status - Current status\n"
             "/check - Immediate check\n"
             "/pricedebug - Price debug\n"
+            "/symboldebug - Symbol debug\n"
             "/excel - Download excel\n"
             "/analysis - Full analysis\n"
             "/exchanges - Exchange info\n"
@@ -3150,6 +3306,7 @@ class MEXCTracker:
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
             "/pricedebug - Price debug\n"
+            "/symboldebug - Symbol debug\n"
             "/excel - Download excel\n"
             "/analysis - Full analysis report\n"
             "/status - Current status\n"
