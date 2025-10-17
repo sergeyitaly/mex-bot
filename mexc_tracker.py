@@ -681,6 +681,115 @@ class MEXCTracker:
             return 'N/A'
         return f"{change:+.2f}%"
 
+    def create_and_send_excel(self, update: Update, context: CallbackContext):
+        """Create and send Excel file via Telegram"""
+        try:
+            update.message.reply_html("📊 <b>Creating comprehensive Excel report...</b>")
+            
+            # Get all the data needed
+            all_futures_data = []
+            exchanges = {
+                'MEXC': self.get_mexc_futures,
+                'Binance': self.get_binance_futures,
+                'Bybit': self.get_bybit_futures,
+                'OKX': self.get_okx_futures,
+                'Gate.io': self.get_gate_futures,
+                'KuCoin': self.get_kucoin_futures,
+                'BingX': self.get_bingx_futures,
+                'BitGet': self.get_bitget_futures
+            }
+            
+            symbol_coverage = {}
+            current_time = datetime.now().isoformat()
+            
+            # Collect data from all exchanges
+            for name, method in exchanges.items():
+                try:
+                    futures = method()
+                    for symbol in futures:
+                        all_futures_data.append({
+                            'symbol': symbol,
+                            'exchange': name,
+                            'timestamp': current_time
+                        })
+                        
+                        # Track symbol coverage
+                        normalized = self.normalize_symbol_for_comparison(symbol)
+                        if normalized not in symbol_coverage:
+                            symbol_coverage[normalized] = set()
+                        symbol_coverage[normalized].add(name)
+                        
+                except Exception as e:
+                    logger.error(f"Error getting {name} data: {e}")
+            
+            # Get unique futures
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            
+            # Get price data
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # Create Excel file
+            excel_content = self.create_mexc_analysis_excel(all_futures_data, symbol_coverage, analyzed_prices)
+            
+            if not excel_content:
+                update.message.reply_html("❌ <b>Failed to create Excel file</b>")
+                return
+            
+            # Send file via Telegram
+            filename = f"mexc_analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+            
+            update.message.reply_document(
+                document=io.BytesIO(excel_content),
+                filename=filename,
+                caption=(
+                    f"📊 <b>MEXC Futures Analysis Report</b>\n\n"
+                    f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                    f"🎯 Unique Futures: {len(unique_futures)}\n"
+                    f"🏢 Exchanges: 8\n"
+                    f"💰 Price Data: {len(analyzed_prices)} symbols\n\n"
+                    f"<i>Sheets included: Dashboard, Unique Futures, All Futures, MEXC Analysis, Price Analysis, Exchange Stats</i>"
+                ),
+                parse_mode='HTML'
+            )
+            
+            logger.info("✅ Excel file sent successfully")
+            
+        except Exception as e:
+            error_msg = f"❌ <b>Error creating Excel file:</b>\n<code>{str(e)}</code>"
+            update.message.reply_html(error_msg)
+            logger.error(f"Excel creation error: {e}")
+
+    def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage, analyzed_prices=None):
+        """Create comprehensive Excel file matching Google Sheets content"""
+        try:
+            wb = Workbook()
+            
+            # Remove default sheet
+            wb.remove(wb.active)
+            
+            # Create all sheets matching Google Sheets structure
+            self.create_dashboard_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices)
+            self.create_unique_futures_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices)
+            self.create_all_futures_sheet(wb, all_futures_data, symbol_coverage)
+            self.create_mexc_analysis_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices)
+            self.create_price_analysis_sheet(wb, analyzed_prices)
+            self.create_exchange_stats_sheet(wb, all_futures_data)
+            
+            # Save to bytes
+            output = io.BytesIO()
+            wb.save(output)
+            excel_content = output.getvalue()
+            output.close()
+            
+            logger.info("✅ Excel file created successfully")
+            return excel_content
+            
+        except Exception as e:
+            logger.error(f"Error creating Excel file: {e}")
+            return None
+
+
     # ==================== CORE UNIQUE FUTURES LOGIC ====================
 
 
@@ -2462,6 +2571,7 @@ class MEXCTracker:
                        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 parse_mode='HTML'
             )
+            self.create_and_send_excel()
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
