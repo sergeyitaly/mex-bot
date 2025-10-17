@@ -54,6 +54,12 @@ class MEXCTracker:
         self.bybit_api_key = os.getenv('BYBIT_API_KEY', '')
         self.bybit_api_secret = os.getenv('BYBIT_API_SECRET', '')
         
+
+        # Initialize Google Sheets attributes to None
+        self.gs_client = None
+        self.spreadsheet = None
+        self.creds = None
+
         # Price tracking
         self.price_history = {}  # symbol: {timestamp: price}
         self.last_price_check = None
