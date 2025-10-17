@@ -214,42 +214,143 @@ class MEXCTracker:
     # ==================== PRICE MONITORING ====================
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - simplified and reliable"""
+        """Get price data for MEXC futures - FIXED VERSION"""
         try:
+            # First, try the batch endpoint (most efficient)
+            batch_data = self.get_mexc_prices_batch_working()
+            
             symbols = self.get_mexc_futures()
             if not symbols:
-                logger.warning("❌ No MEXC symbols found for price data")
-                return {}
+                return batch_data
             
-            price_data = {}
-            successful = 0
+            price_data = batch_data
             
-            logger.info(f"💰 Getting price data for {len(symbols)} MEXC futures...")
+            # For symbols missing from batch, try individual requests
+            missing_symbols = [s for s in symbols if s not in batch_data]
+            logger.info(f"🔍 Getting individual prices for {len(missing_symbols)} missing symbols")
             
-            # Limit to first 100 symbols to avoid timeout
-            symbols_to_check = list(symbols)[:100]
-            
-            for symbol in symbols_to_check:
+            # Limit to avoid timeout
+            for symbol in missing_symbols[:30]:
                 try:
-                    price_info = self.get_mexc_price_data(symbol)
+                    price_info = self.get_mexc_price_data_working(symbol)
                     if price_info and price_info.get('price'):
                         price_data[symbol] = price_info
-                        successful += 1
-                    
-                    # Small delay to avoid rate limiting
-                    time.sleep(0.05)
-                    
+                    time.sleep(0.2)  # Increased delay to avoid rate limits
                 except Exception as e:
-                    logger.debug(f"Error getting price for {symbol}: {e}")
+                    logger.debug(f"Price error for {symbol}: {e}")
                     continue
             
-            logger.info(f"✅ Price data: {successful} successful out of {len(symbols_to_check)}")
+            logger.info(f"✅ Final price data: {len(price_data)} symbols")
             return price_data
             
         except Exception as e:
-            logger.error(f"Error getting all MEXC prices: {e}")
+            logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
 
+    def get_mexc_prices_batch_working(self):
+        """Get prices using working MEXC API endpoint"""
+        try:
+            # Use the main futures API endpoint
+            url = "https://contract.mexc.com/api/v1/contract/ticker"
+            logger.info("📡 Calling MEXC batch price API...")
+            
+            response = requests.get(url, timeout=15)
+            logger.info(f"📊 Batch API response: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"📋 Batch API success: {data.get('success')}")
+                logger.info(f"📋 Batch API data count: {len(data.get('data', []))}")
+                
+                if data.get('success'):
+                    tickers = data.get('data', [])
+                    price_data = {}
+                    
+                    for ticker in tickers:
+                        try:
+                            symbol = ticker.get('symbol')
+                            price_str = ticker.get('lastPrice')
+                            
+                            if symbol and price_str:
+                                price = float(price_str)
+                                change_rate = float(ticker.get('riseFallRate', 0)) * 100
+                                
+                                price_data[symbol] = {
+                                    'symbol': symbol,
+                                    'price': price,
+                                    'changes': {
+                                        '5m': change_rate,
+                                        '60m': change_rate,
+                                        '240m': change_rate
+                                    },
+                                    'timestamp': datetime.now(),
+                                    'source': 'batch_ticker'
+                                }
+                        except (ValueError, TypeError) as e:
+                            continue
+                    
+                    logger.info(f"✅ Batch prices found: {len(price_data)} symbols")
+                    return price_data
+            else:
+                logger.error(f"❌ Batch API HTTP {response.status_code}")
+                
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Batch price error: {e}")
+            return {}
+
+    def get_mexc_price_data_working(self, symbol):
+        """Get individual price data using working endpoint"""
+        try:
+            # Try multiple endpoints
+            endpoints = [
+                f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
+                f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
+                f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
+            ]
+            
+            for url in endpoints:
+                try:
+                    logger.debug(f"🔍 Trying endpoint: {url}")
+                    response = requests.get(url, timeout=10)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('success', False):
+                            ticker_data = data.get('data', {})
+                            
+                            # Handle different response formats
+                            if isinstance(ticker_data, list) and ticker_data:
+                                ticker_data = ticker_data[0]  # Take first item if list
+                            
+                            price_str = ticker_data.get('lastPrice') or ticker_data.get('price')
+                            if price_str:
+                                price = float(price_str)
+                                change_rate = float(ticker_data.get('riseFallRate', 0)) * 100
+                                
+                                return {
+                                    'symbol': symbol,
+                                    'price': price,
+                                    'changes': {
+                                        '5m': change_rate,
+                                        '60m': change_rate,
+                                        '240m': change_rate
+                                    },
+                                    'timestamp': datetime.now(),
+                                    'source': 'individual'
+                                }
+                except Exception as endpoint_error:
+                    logger.debug(f"Endpoint {url} failed: {endpoint_error}")
+                    continue
+            
+            logger.debug(f"❌ No price data found for {symbol}")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Individual price error for {symbol}: {e}")
+            return None
+    
     def get_mexc_price_data(self, symbol):
         """Get price data for a single MEXC symbol"""
         try:
@@ -1550,6 +1651,55 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
         self.dispatcher.add_handler(CommandHandler("excel", self.excel_command))
         self.dispatcher.add_handler(CommandHandler("download", self.excel_command))
+        self.dispatcher.add_handler(CommandHandler("pricedebug", self.price_debug_command))
+
+    def price_debug_command(self, update: Update, context: CallbackContext):
+        """Debug price fetching issues"""
+        update.message.reply_html("🔧 <b>Debugging price data...</b>")
+        
+        try:
+            # Test with a few known symbols
+            test_symbols = [
+                'BTC_USDT', 'ETH_USDT', 'ADA_USDT',  # Common symbols that should work
+                'WIN_USDT', 'LAZIO_USDT', 'BOOST_USDT',  # Your unique symbols
+                'FARM_USDT', 'ZKSYNC_USDT'  # Symbols that showed prices before
+            ]
+            
+            results = []
+            successful = 0
+            
+            for symbol in test_symbols:
+                try:
+                    price_info = self.get_mexc_price_data(symbol)
+                    if price_info and price_info.get('price'):
+                        results.append(f"✅ {symbol}: ${price_info['price']}")
+                        successful += 1
+                    else:
+                        results.append(f"❌ {symbol}: No price data")
+                    
+                    time.sleep(0.1)  # Rate limiting
+                    
+                except Exception as e:
+                    results.append(f"❌ {symbol}: Error - {str(e)}")
+            
+            # Test batch method
+            batch_data = self.get_mexc_prices_batch()
+            batch_count = len(batch_data)
+            
+            message = (
+                f"🔧 <b>Price Debug Results</b>\n\n"
+                f"Individual API: {successful}/{len(test_symbols)} successful\n"
+                f"Batch API: {batch_count} symbols found\n\n"
+                f"<b>Detailed Results:</b>\n" + "\n".join(results) +
+                f"\n\n<b>Batch API Status:</b> {'✅ WORKING' if batch_count > 0 else '❌ FAILED'}"
+            )
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Debug error: {str(e)}")
+
+
 
     def update_google_sheet(self):
         """Update the Google Sheet with fresh data including price analysis"""
@@ -2420,6 +2570,7 @@ class MEXCTracker:
             "/start - Welcome message\n"
             "/status - Current status\n"
             "/check - Immediate check\n"
+            "/pricedebug - Price debug\n"
             "/excel - Download excel\n"
             "/analysis - Full analysis\n"
             "/exchanges - Exchange info\n"
@@ -2990,6 +3141,7 @@ class MEXCTracker:
             "Gate.io, KuCoin, BingX, BitGet\n\n"
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
+            "/pricedebug - Price debug\n"
             "/excel - Download excel\n"
             "/analysis - Full analysis report\n"
             "/status - Current status\n"
