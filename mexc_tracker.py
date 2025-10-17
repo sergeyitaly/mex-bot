@@ -388,7 +388,7 @@ class MEXCTracker:
             logger.error(f"Error finding closest price: {e}")
             return None
         
-        
+
     # ==================== ENHANCED UNIQUE FUTURES MONITORING ====================
 
     def monitor_unique_futures_changes(self):
@@ -1510,6 +1510,230 @@ class MEXCTracker:
             return f"{change:+.2f}%"
 
     # Also update the forceupdate command to use the new method
+    def ensure_sheets_initialized(self):
+        """Ensure all required sheets exist and have proper headers with enough rows"""
+        if not self.spreadsheet:
+            return False
+        
+        try:
+            # Get existing sheets
+            existing_sheets = self.spreadsheet.worksheets()
+            existing_sheet_names = [sheet.title for sheet in existing_sheets]
+            
+            logger.info(f"Existing sheets: {existing_sheet_names}")
+            
+            # Keep Dashboard if it exists, otherwise use first sheet
+            main_sheet = None
+            if 'Dashboard' in existing_sheet_names:
+                main_sheet = self.spreadsheet.worksheet('Dashboard')
+            elif existing_sheets:
+                main_sheet = existing_sheets[0]
+                main_sheet.update_title("Dashboard")
+            else:
+                # Create Dashboard if no sheets exist
+                main_sheet = self.spreadsheet.add_worksheet(title="Dashboard", rows=50, cols=10)
+            
+            # Define sheets with enhanced headers for price data
+            sheets_config = {
+                'Unique Futures': {
+                    'rows': 1000,
+                    'cols': 11,  # Increased for price data
+                    'headers': [
+                        'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                        '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+                    ]
+                },
+                'All Futures': {
+                    'rows': 3000,
+                    'cols': 8,  # Increased columns
+                    'headers': [
+                        'Symbol', 'Exchange', 'Normalized', 'Available On', 
+                        'Coverage', 'Timestamp', 'Unique', 'Current Price'
+                    ]
+                },
+                'MEXC Analysis': {
+                    'rows': 1000,
+                    'cols': 12,  # Increased for price analysis
+                    'headers': [
+                        'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
+                        'Current Price', '5m Change %', '1h Change %', '4h Change %', 
+                        'Status', 'Unique', 'Timestamp', 'Price Source'
+                    ]
+                },
+                'Price Analysis': {
+                    'rows': 1000,
+                    'cols': 12,
+                    'headers': [
+                        'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+                        '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
+                    ]
+                },
+                'Exchange Stats': {
+                    'rows': 20,
+                    'cols': 6,  # Added price data column
+                    'headers': [
+                        'Exchange', 'Futures Count', 'Status', 'Last Updated', 
+                        'Success Rate', 'Price Data Available'
+                    ]
+                }
+            }
+            
+            # Create or update sheets
+            for sheet_name, config in sheets_config.items():
+                try:
+                    if sheet_name in existing_sheet_names:
+                        # Sheet exists, just clear and update headers
+                        worksheet = self.spreadsheet.worksheet(sheet_name)
+                        # Clear existing data but keep formatting
+                        worksheet.clear()
+                        # Update headers
+                        worksheet.update('A1', [config['headers']])
+                        logger.info(f"✅ Updated existing sheet: {sheet_name}")
+                    else:
+                        # Create new sheet
+                        worksheet = self.spreadsheet.add_worksheet(
+                            title=sheet_name, 
+                            rows=config['rows'],
+                            cols=config['cols']
+                        )
+                        worksheet.update('A1', [config['headers']])
+                        logger.info(f"✅ Created new sheet: {sheet_name} with {config['rows']} rows")
+                    
+                    # Apply basic formatting
+                    try:
+                        worksheet.format('A1:Z1', {
+                            'textFormat': {'bold': True},
+                            'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
+                        })
+                        
+                        # Auto-resize columns for better readability
+                        if hasattr(worksheet, 'columns_auto_resize'):
+                            worksheet.columns_auto_resize(0, min(config['cols'], 10))
+                        
+                        # Freeze header row
+                        worksheet.freeze(rows=1)
+                        
+                    except Exception as format_error:
+                        logger.warning(f"Could not format sheet {sheet_name}: {format_error}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing sheet {sheet_name}: {e}")
+                    # Continue with other sheets even if one fails
+            
+            # Delete any unexpected sheets (optional - be careful with this)
+            self.cleanup_unexpected_sheets(existing_sheet_names, list(sheets_config.keys()) + ['Dashboard'])
+            
+            # Setup Dashboard with comprehensive data
+            self.setup_dashboard_sheet(main_sheet)
+            
+            logger.info("✅ All sheets initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error ensuring sheets initialized: {e}")
+            return False
+
+    def cleanup_unexpected_sheets(self, existing_sheet_names, expected_sheets):
+        """Remove sheets that are not in the expected list"""
+        try:
+            for sheet_name in existing_sheet_names:
+                if sheet_name not in expected_sheets:
+                    try:
+                        worksheet = self.spreadsheet.worksheet(sheet_name)
+                        self.spreadsheet.del_worksheet(worksheet)
+                        logger.info(f"🗑️ Removed unexpected sheet: {sheet_name}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove sheet {sheet_name}: {e}")
+        except Exception as e:
+            logger.error(f"Error cleaning up sheets: {e}")
+
+    def setup_dashboard_sheet(self, worksheet):
+        """Setup the dashboard sheet with comprehensive information"""
+        try:
+            # Clear existing data
+            worksheet.clear()
+            
+            # Comprehensive dashboard data
+            dashboard_data = [
+                ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
+                ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["Update Interval", f"{self.update_interval} minutes"],
+                ["Price Check Interval", f"{self.price_check_interval} minutes"],
+                ["", ""],
+                ["📊 EXCHANGE MONITORING", ""],
+                ["Total Exchanges Tracked", "8"],
+                ["Primary Exchange", "MEXC"],
+                ["Comparison Exchanges", "Binance, Bybit, OKX, Gate.io, KuCoin, BingX, BitGet"],
+                ["", ""],
+                ["🎯 UNIQUE FUTURES TRACKING", ""],
+                ["Auto Unique Detection", "✅ ENABLED"],
+                ["Price Monitoring", "✅ ENABLED"],
+                ["Telegram Alerts", "✅ ENABLED"],
+                ["Google Sheets Sync", "✅ ENABLED"],
+                ["", ""],
+                ["💰 PRICE ANALYSIS FEATURES", ""],
+                ["Timeframes Tracked", "5m, 15m, 30m, 1h, 4h"],
+                ["Top Performers", "Top 50 ranked by score"],
+                ["Trend Analysis", "🚀🟢📈🔴📉 emoji indicators"],
+                ["Volume Tracking", "⚡ Coming soon"],
+                ["", ""],
+                ["⚡ REAL-TIME STATS", ""],
+                ["Next Data Update", "Will update automatically"],
+                ["Next Price Update", "Will update automatically"],
+                ["Unique Futures Count", "Will update automatically"],
+                ["Top Performer", "Will update automatically"],
+                ["", ""],
+                ["🔧 SHEETS OVERVIEW", ""],
+                ["Dashboard", "This overview and real-time stats"],
+                ["Unique Futures", "Futures only on MEXC with prices"],
+                ["All Futures", "All futures from all exchanges"],
+                ["MEXC Analysis", "Detailed MEXC coverage with prices"],
+                ["Price Analysis", "Top 50 performers with trends"],
+                ["Exchange Stats", "Exchange performance metrics"],
+                ["", ""],
+                ["💡 QUICK START", ""],
+                ["1. Check /status", "Current bot status"],
+                ["2. Use /findunique", "Find unique MEXC futures"],
+                ["3. Check /toppers", "Top performing futures"],
+                ["4. Use /verifyunique", "Verify symbol uniqueness"],
+                ["", ""],
+                ["🆘 SUPPORT", ""],
+                ["Use /help", "Complete command list"],
+                ["Use /check", "Force immediate data update"],
+                ["Check logs", "For detailed debugging info"]
+            ]
+            
+            # Update the dashboard
+            worksheet.update('A1', dashboard_data)
+            
+            # Apply formatting to dashboard
+            try:
+                # Format title row
+                worksheet.format('A1:B1', {
+                    'textFormat': {'bold': True, 'fontSize': 14},
+                    'backgroundColor': {'red': 0.8, 'green': 0.9, 'blue': 1.0},
+                    'horizontalAlignment': 'CENTER'
+                })
+                
+                # Format section headers
+                section_rows = [5, 11, 17, 23, 29, 35, 41]
+                for row in section_rows:
+                    worksheet.format(f'A{row}:B{row}', {
+                        'textFormat': {'bold': True},
+                        'backgroundColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95}
+                    })
+                
+                # Auto-resize columns
+                worksheet.columns_auto_resize(0, 2)
+                
+            except Exception as format_error:
+                logger.warning(f"Could not format dashboard: {format_error}")
+            
+            logger.info("✅ Dashboard setup completed successfully")
+            
+        except Exception as e:
+            logger.error(f"❌ Error setting up dashboard: {e}")
+
     def force_update_command(self, update: Update, context: CallbackContext):
         """Force immediate Google Sheet update with comprehensive data"""
         if not self.gs_client:
@@ -1519,7 +1743,7 @@ class MEXCTracker:
         try:
             update.message.reply_html("🔄 <b>Force updating Google Sheet with comprehensive data...</b>")
             
-            # Ensure sheets are properly initialized
+            # Ensure sheets are properly initialized with new structure
             if not self.ensure_sheets_initialized():
                 update.message.reply_html("❌ Failed to initialize sheets.")
                 return
@@ -1534,17 +1758,25 @@ class MEXCTracker:
             update.message.reply_html(
                 f"✅ <b>Google Sheet updated successfully!</b>\n\n"
                 f"📊 <a href='{sheet_url}'>Open Your Sheet</a>\n\n"
-                f"• Updated all exchange data\n"
-                f"• Added price analysis\n"
-                f"• Tracked top performers\n"
-                f"• Unique futures with price changes\n"
-                f"• Comprehensive dashboard stats",
+                f"<b>Updated Sheets:</b>\n"
+                f"• 📈 <b>Dashboard</b> - Overview and stats\n"
+                f"• 🎯 <b>Unique Futures</b> - MEXC-only with price changes\n"
+                f"• 📋 <b>All Futures</b> - All symbols from all exchanges\n"
+                f"• 🔍 <b>MEXC Analysis</b> - Detailed coverage with prices\n"
+                f"• 💰 <b>Price Analysis</b> - Top 50 performers\n"
+                f"• 📊 <b>Exchange Stats</b> - Performance metrics\n\n"
+                f"<b>Price Features:</b>\n"
+                f"• 5m, 15m, 30m, 1h, 4h changes\n"
+                f"• 🚀 Trend indicators\n"
+                f"• 📈 Performance scoring\n"
+                f"• 🔄 Auto-updates every {self.update_interval}min",
                 reply_markup=ReplyKeyboardRemove()
             )
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
 
+            
 
     def start_command(self, update: Update, context: CallbackContext):
         """Send welcome message"""
