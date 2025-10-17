@@ -698,7 +698,34 @@ class MEXCTracker:
             logger.error(f"Error sending new unique notification: {e}")
 
     def send_lost_unique_notification(self, lost_futures, remaining_unique):
-
+        """Send notification about lost unique futures - OPTIMIZED"""
+        try:
+            # Limit the number of symbols to process
+            display_futures = list(lost_futures)[:10]  # Show max 10 symbols
+            
+            message = "📉 <b>FUTURES NO LONGER UNIQUE:</b>\n\n"
+            
+            for symbol in display_futures:
+                # Use fast verification with cached data
+                try:
+                    # For lost futures, we know they were previously unique
+                    # Just show they're no longer unique without detailed coverage check
+                    message += f"❌ <b>{symbol}</b>\n"
+                    message += f"   No longer exclusive to MEXC\n\n"
+                except Exception as e:
+                    logger.error(f"Error checking coverage for {symbol}: {e}")
+                    message += f"❌ <b>{symbol}</b> (verification failed)\n\n"
+            
+            if len(lost_futures) > len(display_futures):
+                message += f"... and {len(lost_futures) - len(display_futures)} more symbols\n\n"
+            
+            message += f"📊 Remaining unique: <b>{len(remaining_unique)}</b>"
+            
+            self.send_broadcast_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending lost unique notification: {e}")
+            
     def get_all_exchanges_futures(self):
         """Get futures from all exchanges except MEXC"""
         exchanges = {
