@@ -432,54 +432,6 @@ class MEXCTracker:
             # Return empty sets on error
             return set(), set()
     
-    def send_new_unique_notification(self, new_futures, all_unique):
-        """Send notification about new unique futures"""
-        try:
-            message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
-            
-            # Get price data for new futures
-            price_data = self.get_all_mexc_prices()
-            
-            for symbol in sorted(new_futures):
-                price_info = price_data.get(symbol)
-                if price_info:
-                    changes = price_info.get('changes', {})
-                    change_5m = changes.get('5m', 0)
-                    change_1h = changes.get('60m', 0)
-                    
-                    message += f"✅ <b>{symbol}</b>\n"
-                    message += f"   5m: {self.format_change(change_5m)}\n"
-                    message += f"   1h: {self.format_change(change_1h)}\n\n"
-                else:
-                    message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
-            
-            message += f"📊 Total unique: <b>{len(all_unique)}</b>"
-            
-            self.send_broadcast_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending new unique notification: {e}")
-
-    def send_lost_unique_notification(self, lost_futures, remaining_unique):
-        """Send notification about lost unique futures"""
-        try:
-            message = "📉 <b>FUTURES NO LONGER UNIQUE:</b>\n\n"
-            
-            for symbol in sorted(lost_futures):
-                # Find which exchanges now have this symbol
-                coverage = self.verify_symbol_coverage(symbol)
-                other_exchanges = [e for e in coverage if e != 'MEXC']
-                
-                message += f"❌ <b>{symbol}</b>\n"
-                message += f"   Now also on: {', '.join(other_exchanges)}\n\n"
-            
-            message += f"📊 Remaining unique: <b>{len(remaining_unique)}</b>"
-            
-            self.send_broadcast_message(message)
-            
-        except Exception as e:
-            logger.error(f"Error sending lost unique notification: {e}")
-
     def format_change(self, change):
         """Format price change with color emoji"""
         if change > 0:
@@ -634,16 +586,18 @@ class MEXCTracker:
 
     # ==================== CORE UNIQUE FUTURES LOGIC ====================
 
+
+
     def normalize_symbol_for_comparison(self, symbol):
-        """Simple and reliable symbol normalization for cross-exchange comparison"""
+        """FAST and reliable symbol normalization"""
         if not symbol:
             return ""
         
-        original = symbol.upper()
-        normalized = original
+        # Convert to uppercase first
+        symbol = symbol.upper()
         
-        # Remove common futures suffixes
-        patterns_to_remove = [
+        # Remove common suffixes in one pass
+        patterns = [
             r'[-_/]?PERP(ETUAL)?$',
             r'[-_/]?USDT$', 
             r'[-_/]?USD$',
@@ -652,16 +606,98 @@ class MEXCTracker:
             r'[-_/]?CONTRACT$',
         ]
         
-        for pattern in patterns_to_remove:
-            normalized = re.sub(pattern, '', normalized)
+        normalized = symbol
+        for pattern in patterns:
+            normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
         
-        # Remove separators but keep the main symbol
+        # Remove separators and trailing numbers
         normalized = re.sub(r'[-_/]', '', normalized)
-        
-        # Remove numbers at the end (like BTC230930 for quarterly futures)
         normalized = re.sub(r'\d+$', '', normalized)
         
         return normalized.strip()
+
+    def find_unique_futures_robust(self, timeout=120):
+        """Find unique futures with timeout protection"""
+        import threading
+        import queue
+        
+        result_queue = queue.Queue()
+        
+        def worker():
+            try:
+                result = self.find_unique_futures_robust()
+                result_queue.put(('success', result))
+            except Exception as e:
+                result_queue.put(('error', e))
+        
+        # Start the worker thread
+        worker_thread = threading.Thread(target=worker)
+        worker_thread.daemon = True
+        worker_thread.start()
+        
+        # Wait for result with timeout
+        worker_thread.join(timeout=timeout)
+        
+        if worker_thread.is_alive():
+            logger.error(f"❌ Unique futures search timed out after {timeout} seconds")
+            return set(), {}
+        
+        if result_queue.empty():
+            logger.error("❌ Unique futures search failed - no result")
+            return set(), {}
+        
+        result_type, result_data = result_queue.get()
+        
+        if result_type == 'error':
+            logger.error(f"❌ Unique futures search error: {result_data}")
+            return set(), {}
+        else:
+            return result_data
+
+    def send_new_unique_notification(self, new_futures, all_unique):
+        """Send notification about new unique futures - OPTIMIZED"""
+        try:
+            # Limit the number of symbols to process for performance
+            display_futures = list(new_futures)[:10]  # Show max 10 symbols
+            
+            message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
+            
+            # Get price data for new futures - LIMITED to avoid timeouts
+            price_data = {}
+            for symbol in display_futures[:5]:  # Only get prices for first 5
+                try:
+                    price_info = self.get_mexc_price_data(symbol)
+                    if price_info:
+                        price_data[symbol] = price_info
+                    time.sleep(0.1)  # Rate limiting
+                except Exception as e:
+                    logger.error(f"Error getting price for {symbol}: {e}")
+            
+            for symbol in display_futures:
+                price_info = price_data.get(symbol)
+                if price_info:
+                    changes = price_info.get('changes', {})
+                    change_5m = changes.get('5m', 0)
+                    change_1h = changes.get('60m', 0)
+                    
+                    message += f"✅ <b>{symbol}</b>\n"
+                    message += f"   Price: ${price_info.get('price', 'N/A')}\n"
+                    message += f"   5m: {self.format_change(change_5m)}\n"
+                    message += f"   1h: {self.format_change(change_1h)}\n\n"
+                else:
+                    message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
+            
+            if len(new_futures) > len(display_futures):
+                message += f"... and {len(new_futures) - len(display_futures)} more symbols\n\n"
+            
+            message += f"📊 Total unique: <b>{len(all_unique)}</b>"
+            
+            self.send_broadcast_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending new unique notification: {e}")
+
+    def send_lost_unique_notification(self, lost_futures, remaining_unique):
 
     def get_all_exchanges_futures(self):
         """Get futures from all exchanges except MEXC"""
@@ -696,93 +732,43 @@ class MEXCTracker:
         logger.info(f"📊 Total futures from other exchanges: {len(all_futures)}")
         return all_futures, exchange_stats
 
-    def find_unique_futures_robust(self):
-        """Find truly unique MEXC futures with improved comparison"""
-        try:
-            # Get all futures from other exchanges
-            all_futures, exchange_stats = self.get_all_exchanges_futures()
-            
-            # Get MEXC futures
-            mexc_futures = self.get_mexc_futures()
-            
-            logger.info(f"📊 MEXC futures: {len(mexc_futures)}")
-            logger.info(f"📊 Other exchanges total futures: {len(all_futures)}")
-            
-            # Create normalized mappings
-            all_normalized = set()  # Just track normalized symbols from other exchanges
-            mexc_normalized_map = {} # normalized -> original_mexc_symbol
-            
-            # Process other exchanges - just store normalized symbols
-            for symbol in all_futures:
-                normalized = self.normalize_symbol_for_comparison(symbol)
-                all_normalized.add(normalized)
-            
-            # Process MEXC futures
-            for symbol in mexc_futures:
-                normalized = self.normalize_symbol_for_comparison(symbol)
-                mexc_normalized_map[normalized] = symbol
-            
-            # Find unique futures (only on MEXC)
-            unique_futures = set()
-            
-            for normalized, mexc_original in mexc_normalized_map.items():
-                if normalized not in all_normalized:
-                    unique_futures.add(mexc_original)
-            
-            # Additional verification step
-            verified_unique = set()
-            for symbol in unique_futures:
-                coverage = self.verify_symbol_coverage(symbol)
-                if coverage == ['MEXC']:
-                    verified_unique.add(symbol)
-                else:
-                    logger.warning(f"False positive detected: {symbol} found on {coverage}")
-            
-            logger.info(f"🎯 Initial unique candidates: {len(unique_futures)}")
-            logger.info(f"🎯 Verified unique: {len(verified_unique)}")
-            
-            return verified_unique, exchange_stats
-            
-        except Exception as e:
-            logger.error(f"Error finding unique futures: {e}")
-            return set(), {}
-
-    def verify_symbol_coverage(self, symbol):
-        """Check which exchanges have this specific symbol"""
+    def verify_symbol_coverage(self, symbol, all_futures_cache=None, mexc_futures_cache=None):
+        """FAST symbol coverage check using cached data"""
         coverage = []
         
-        exchange_methods = {
-            'MEXC': self.get_mexc_futures,
-            'Binance': self.get_binance_futures,
-            'Bybit': self.get_bybit_futures,
-            'OKX': self.get_okx_futures,
-            'Gate.io': self.get_gate_futures,
-            'KuCoin': self.get_kucoin_futures,
-            'BingX': self.get_bingx_futures,
-            'BitGet': self.get_bitget_futures
+        # Use cached data if provided
+        if mexc_futures_cache is not None and symbol in mexc_futures_cache:
+            coverage.append('MEXC')
+        
+        # Check other exchanges using cached data
+        normalized_target = self.normalize_symbol_for_comparison(symbol)
+        
+        exchange_checks = {
+            'Binance': all_futures_cache,
+            'Bybit': all_futures_cache, 
+            'OKX': all_futures_cache,
+            'Gate.io': all_futures_cache,
+            'KuCoin': all_futures_cache,
+            'BingX': all_futures_cache,
+            'BitGet': all_futures_cache
         }
         
-        for exchange_name, method in exchange_methods.items():
-            try:
-                futures = method()
-                found = False
+        for exchange_name, futures_cache in exchange_checks.items():
+            if futures_cache is None:
+                continue
                 
-                # Check normalized match
-                normalized_target = self.normalize_symbol_for_comparison(symbol)
-                
-                for fut in futures:
-                    normalized_fut = self.normalize_symbol_for_comparison(fut)
-                    if normalized_target == normalized_fut:
-                        found = True
-                        break
-                
-                if found:
-                    coverage.append(exchange_name)
-                    
-            except Exception as e:
-                logger.error(f"Error checking {exchange_name} for {symbol}: {e}")
+            found = False
+            for fut in futures_cache:
+                normalized_fut = self.normalize_symbol_for_comparison(fut)
+                if normalized_target == normalized_fut:
+                    found = True
+                    break
+            
+            if found:
+                coverage.append(exchange_name)
         
         return coverage
+
 
     # ==================== EXCHANGE API METHODS ====================
 
@@ -2172,7 +2158,7 @@ class MEXCTracker:
             
             logger.error(f"Check command failed: {e}")
 
-            
+
     def find_unique_command(self, update: Update, context: CallbackContext):
         """Find and display currently unique symbols with prices"""
         update.message.reply_html("🔍 Scanning for unique MEXC symbols with prices...")
