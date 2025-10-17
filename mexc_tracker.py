@@ -2225,6 +2225,60 @@ class MEXCTracker:
             logger.error(f"❌ Error setting up dashboard: {e}")
             raise
 
+
+    def update_google_sheet_dashboard(self):
+        """Update Google Sheet dashboard with current statistics"""
+        if not self.gs_client or not self.spreadsheet:
+            logger.warning("Google Sheets not available for dashboard update")
+            return
+        
+        try:
+            # Get current data
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            
+            # Get all futures data for statistics
+            all_futures_data = []
+            exchanges = {
+                'MEXC': self.get_mexc_futures,
+                'Binance': self.get_binance_futures,
+                'Bybit': self.get_bybit_futures,
+                'OKX': self.get_okx_futures,
+                'Gate.io': self.get_gate_futures,
+                'KuCoin': self.get_kucoin_futures,
+                'BingX': self.get_bingx_futures,
+                'BitGet': self.get_bitget_futures
+            }
+            
+            symbol_coverage = {}
+            for name, method in exchanges.items():
+                try:
+                    futures = method()
+                    for symbol in futures:
+                        all_futures_data.append({
+                            'symbol': symbol,
+                            'exchange': name,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                        
+                        # Track symbol coverage
+                        normalized = self.normalize_symbol_for_comparison(symbol)
+                        if normalized not in symbol_coverage:
+                            symbol_coverage[normalized] = set()
+                        symbol_coverage[normalized].add(name)
+                except Exception as e:
+                    logger.error(f"Error getting {name} data: {e}")
+            
+            # Get price data
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # Update dashboard
+            self.update_dashboard_with_comprehensive_stats(exchange_stats, len(symbol_coverage), len(unique_futures), analyzed_prices)
+            
+            logger.info("✅ Google Sheet dashboard updated")
+            
+        except Exception as e:
+            logger.error(f"Error updating Google Sheet dashboard: {e}")
             
 
     def force_update_command(self, update: Update, context: CallbackContext):
@@ -2816,29 +2870,35 @@ class MEXCTracker:
         update.message.reply_html(status_text)
 
     def analysis_command(self, update: Update, context: CallbackContext):
-        """Create comprehensive analysis"""
+        """Create comprehensive analysis with both Google Sheet and Excel updates"""
         update.message.reply_html("📈 <b>Creating comprehensive analysis...</b>")
         
         try:
-            # Get fresh data
+            # Step 1: Update Google Sheet dashboard first
+            update.message.reply_html("🔄 <b>Step 1:</b> Updating Google Sheet dashboard...")
+            self.update_google_sheet_dashboard()
+            
+            # Step 2: Get fresh data for reports
+            update.message.reply_html("📊 <b>Step 2:</b> Gathering latest data...")
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             
-            # Create analysis report
+            # Step 3: Create and send text report
+            update.message.reply_html("📄 <b>Step 3:</b> Creating text report...")
             report = self.create_analysis_report(unique_futures, exchange_stats)
-            
-            # Send as document
             file_obj = io.BytesIO(report.encode('utf-8'))
             file_obj.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.txt'
             
             update.message.reply_document(
                 document=file_obj,
                 caption=f"📊 <b>MEXC Analysis Complete</b>\n\n"
-                       f"🎯 Unique futures: {len(unique_futures)}\n"
-                       f"🏢 Exchanges: {len(exchange_stats) + 1}\n"
-                       f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    f"🎯 Unique futures: {len(unique_futures)}\n"
+                    f"🏢 Exchanges: {len(exchange_stats) + 1}\n"
+                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 parse_mode='HTML'
             )
-
+            
+            # Step 4: Create and send Excel file
+            update.message.reply_html("📁 <b>Step 4:</b> Creating Excel report...")
             self.create_and_send_excel(update, context)
             
         except Exception as e:
