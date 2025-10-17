@@ -214,61 +214,74 @@ class MEXCTracker:
     # ==================== PRICE MONITORING ====================
 
     def get_all_mexc_prices(self):
-        """Robust method to get price data for all MEXC futures"""
+        """Get price data for MEXC futures - simplified and reliable"""
         try:
             symbols = self.get_mexc_futures()
+            if not symbols:
+                logger.warning("❌ No MEXC symbols found for price data")
+                return {}
+            
             price_data = {}
             successful = 0
-            failed = 0
             
             logger.info(f"💰 Getting price data for {len(symbols)} MEXC futures...")
             
-            for symbol in list(symbols):
+            # Limit to first 100 symbols to avoid timeout
+            symbols_to_check = list(symbols)[:100]
+            
+            for symbol in symbols_to_check:
                 try:
                     price_info = self.get_mexc_price_data(symbol)
                     if price_info and price_info.get('price'):
                         price_data[symbol] = price_info
                         successful += 1
-                    else:
-                        logger.debug(f"❌ No price data for {symbol}")
-                        failed += 1
                     
-                    # Rate limiting
-                    time.sleep(0.05)  # 50ms between requests
+                    # Small delay to avoid rate limiting
+                    time.sleep(0.05)
                     
                 except Exception as e:
-                    logger.error(f"Error getting price for {symbol}: {e}")
-                    failed += 1
+                    logger.debug(f"Error getting price for {symbol}: {e}")
                     continue
             
-            # Store price history for tracking
-            current_time = datetime.now()
-            for symbol, data in price_data.items():
-                if symbol not in self.price_history:
-                    self.price_history[symbol] = {}
-                self.price_history[symbol][current_time] = data['price']
-            
-            # Keep only last 24 hours of history
-            cutoff_time = current_time - timedelta(hours=24)
-            for symbol in self.price_history:
-                self.price_history[symbol] = {
-                    ts: price for ts, price in self.price_history[symbol].items() 
-                    if ts > cutoff_time
-                }
-            
-            logger.info(f"✅ Price data: {successful} successful, {failed} failed")
-            
-            # If we have some data but many failures, try batch method
-            if successful > 0 and failed > len(symbols) * 0.5:  # If more than 50% failed
-                logger.info("🔄 High failure rate, trying batch method...")
-                batch_data = self.get_mexc_prices_batch()
-                price_data.update(batch_data)
-            
+            logger.info(f"✅ Price data: {successful} successful out of {len(symbols_to_check)}")
             return price_data
             
         except Exception as e:
             logger.error(f"Error getting all MEXC prices: {e}")
             return {}
+
+    def get_mexc_price_data(self, symbol):
+        """Get price data for a single MEXC symbol"""
+        try:
+            # Use the contract ticker endpoint
+            url = f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}"
+            response = self.session.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success', False):
+                    ticker_data = data.get('data', {})
+                    if ticker_data:
+                        price = float(ticker_data.get('lastPrice', 0))
+                        
+                        # Create basic price info
+                        price_info = {
+                            'symbol': symbol,
+                            'price': price,
+                            'changes': {
+                                '5m': float(ticker_data.get('riseFallRate', 0)) * 100,  # Convert to percentage
+                            },
+                            'timestamp': datetime.now(),
+                            'source': 'ticker'
+                        }
+                        return price_info
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Price data error for {symbol}: {e}")
+            return None
+        
 
     def get_mexc_prices_batch(self):
         """Get prices in batch using ticker endpoint"""
@@ -472,7 +485,7 @@ class MEXCTracker:
     # ==================== ENHANCED UNIQUE FUTURES MONITORING ====================
 
     def monitor_unique_futures_changes(self):
-        """Monitor changes in unique futures and send notifications"""
+        """Monitor changes in unique futures without threading"""
         try:
             logger.info("🔍 Monitoring unique futures changes...")
             
@@ -503,14 +516,14 @@ class MEXCTracker:
             
             self.last_unique_futures = current_unique_set
             
-            # ALWAYS return both values, even if empty
+            logger.info(f"🔄 Changes: +{len(new_futures)}, -{len(lost_futures)}, Total: {len(current_unique_set)}")
+            
             return new_futures, lost_futures
             
         except Exception as e:
             logger.error(f"Error monitoring unique futures: {e}")
-            # Return empty sets on error
             return set(), set()
-    
+            
     def format_change(self, change):
         """Format price change with color emoji"""
         if change > 0:
@@ -523,27 +536,32 @@ class MEXCTracker:
     # ==================== ENHANCED GOOGLE SHEETS ====================
 
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with price data"""
+        """Update Google Sheet with price data - simplified"""
         if not self.gs_client or not self.spreadsheet:
+            logger.warning("Google Sheets not available")
             return
         
         try:
-            # Get unique futures and price data
+            logger.info("🔄 Starting Google Sheet update...")
+            
+            # Get unique futures
             unique_futures, exchange_stats = self.find_unique_futures_robust()
+            logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
+            
+            # Get limited price data to avoid timeout
             price_data = self.get_all_mexc_prices()
             analyzed_prices = self.analyze_price_movements(price_data)
+            logger.info(f"💰 Prices analyzed: {len(analyzed_prices)}")
             
-            # Update Unique Futures sheet with price data
+            # Update only the essential sheets
             self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
-            
-            # Update Price Analysis sheet
             self.update_price_analysis_sheet(analyzed_prices)
             
-            logger.info("✅ Google Sheet updated with price data")
+            logger.info("✅ Google Sheet updated successfully")
             
         except Exception as e:
             logger.error(f"Error updating Google Sheet with prices: {e}")
-
+            
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
         """Update Unique Futures sheet with price information"""
         try:
@@ -666,16 +684,15 @@ class MEXCTracker:
     # ==================== CORE UNIQUE FUTURES LOGIC ====================
 
 
-
     def normalize_symbol_for_comparison(self, symbol):
-        """FAST and reliable symbol normalization"""
+        """Robust symbol normalization"""
         if not symbol:
             return ""
         
-        # Convert to uppercase first
+        # Convert to uppercase
         symbol = symbol.upper()
         
-        # Remove common suffixes in one pass
+        # Remove common suffixes
         patterns = [
             r'[-_/]?PERP(ETUAL)?$',
             r'[-_/]?USDT$', 
@@ -689,50 +706,69 @@ class MEXCTracker:
         for pattern in patterns:
             normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
         
-        # Remove separators and trailing numbers
+        # Remove separators and clean up
         normalized = re.sub(r'[-_/]', '', normalized)
-        normalized = re.sub(r'\d+$', '', normalized)
+        normalized = re.sub(r'\d+$', '', normalized)  # Remove trailing numbers
         
         return normalized.strip()
 
-    def find_unique_futures_robust(self, timeout=120):
-        """Find unique futures with timeout protection"""
-        import threading
-        import queue
-        
-        result_queue = queue.Queue()
-        
-        def worker():
-            try:
-                result = self.find_unique_futures_robust()
-                result_queue.put(('success', result))
-            except Exception as e:
-                result_queue.put(('error', e))
-        
-        # Start the worker thread
-        worker_thread = threading.Thread(target=worker)
-        worker_thread.daemon = True
-        worker_thread.start()
-        
-        # Wait for result with timeout
-        worker_thread.join(timeout=timeout)
-        
-        if worker_thread.is_alive():
-            logger.error(f"❌ Unique futures search timed out after {timeout} seconds")
+    def find_unique_futures_robust(self, timeout=60):
+        """Find unique futures without threading to avoid thread errors"""
+        try:
+            logger.info("🔍 Starting unique futures search...")
+            
+            # Get MEXC futures
+            mexc_futures = self.get_mexc_futures()
+            if not mexc_futures:
+                logger.error("❌ No MEXC futures found")
+                return set(), {}
+            
+            logger.info(f"📊 MEXC futures to check: {len(mexc_futures)}")
+            
+            # Get futures from other exchanges
+            all_other_futures, exchange_stats = self.get_all_exchanges_futures()
+            logger.info(f"📊 Other exchanges futures: {len(all_other_futures)}")
+            
+            # Find unique futures (futures that are ONLY on MEXC)
+            unique_futures = set()
+            
+            # Normalize all other futures for comparison
+            logger.info("🔄 Normalizing symbols for comparison...")
+            normalized_other_futures = set()
+            for symbol in all_other_futures:
+                try:
+                    normalized = self.normalize_symbol_for_comparison(symbol)
+                    if normalized:
+                        normalized_other_futures.add(normalized)
+                except Exception as e:
+                    logger.debug(f"Could not normalize {symbol}: {e}")
+            
+            logger.info(f"📊 Normalized other futures: {len(normalized_other_futures)}")
+            
+            # Check each MEXC future against normalized other futures
+            checked_count = 0
+            for mexc_symbol in mexc_futures:
+                try:
+                    if checked_count % 100 == 0:
+                        logger.info(f"🔍 Checked {checked_count}/{len(mexc_futures)} symbols...")
+                    
+                    normalized_mexc = self.normalize_symbol_for_comparison(mexc_symbol)
+                    if normalized_mexc and normalized_mexc not in normalized_other_futures:
+                        unique_futures.add(mexc_symbol)
+                    
+                    checked_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error checking {mexc_symbol}: {e}")
+                    continue
+            
+            logger.info(f"🎯 Found {len(unique_futures)} unique futures")
+            return unique_futures, exchange_stats
+            
+        except Exception as e:
+            logger.error(f"❌ Unique futures search error: {e}")
             return set(), {}
         
-        if result_queue.empty():
-            logger.error("❌ Unique futures search failed - no result")
-            return set(), {}
-        
-        result_type, result_data = result_queue.get()
-        
-        if result_type == 'error':
-            logger.error(f"❌ Unique futures search error: {result_data}")
-            return set(), {}
-        else:
-            return result_data
-
     def send_new_unique_notification(self, new_futures, all_unique):
         """Send notification about new unique futures - OPTIMIZED"""
         try:
@@ -2202,6 +2238,16 @@ class MEXCTracker:
             
             new_futures = unique_after - unique_before
             lost_futures = unique_before - unique_after
+
+            # In the check command, after getting unique futures:
+            if step_name == "Analyzing results":
+                # Get price data for analysis
+                logger.info("💰 Getting price data for analysis...")
+                price_data = self.get_all_mexc_prices()
+                analyzed_prices = self.analyze_price_movements(price_data)
+                
+                data_after = self.load_data()
+                unique_after = set(data_after.get('unique_futures', []))
 
             # Create final report
             final_message = "🎯 <b>COMPREHENSIVE CHECK COMPLETE</b>\n\n"
