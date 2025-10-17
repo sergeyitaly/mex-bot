@@ -1154,7 +1154,7 @@ class MEXCTracker:
             exchanges = {
                 'MEXC': self.get_mexc_futures,
                 'Binance': self.get_binance_futures,
-                'Bybit': self.get_bybit_futures_robust,
+                'Bybit': self.get_bybit_futures,
                 'OKX': self.get_okx_futures,
                 'Gate.io': self.get_gate_futures,
                 'KuCoin': self.get_kucoin_futures,
