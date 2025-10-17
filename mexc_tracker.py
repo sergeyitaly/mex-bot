@@ -310,42 +310,92 @@ class MEXCTracker:
 
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - CORRECTED VERSION"""
+        """Get price data for MEXC futures - FOCUSED DEBUG"""
         try:
             # Always use batch first (most efficient)
             batch_data = self.get_mexc_prices_batch_working()
+            logger.info(f"📊 Batch data: {len(batch_data)} symbols")
+            
+            # CRITICAL DEBUG: Check QKC_USDT in batch
+            if 'QKC_USDT' in batch_data:
+                logger.info(f"🎯 QKC_USDT IN BATCH: ${batch_data['QKC_USDT'].get('price')}")
+            else:
+                logger.info("❌ QKC_USDT NOT in batch - checking similar symbols")
+                qkc_variants = [s for s in batch_data.keys() if 'QKC' in s]
+                logger.info(f"🔍 QKC variants in batch: {qkc_variants}")
             
             symbols = self.get_mexc_futures()
-            if not symbols:
-                return batch_data
+            price_data = batch_data.copy()  # Start with batch data
             
-            price_data = batch_data
-            
-            # For unique symbols specifically, ensure we have prices
+            # Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
+            logger.info(f"🎯 Unique futures: {len(unique_futures)} symbols")
             
+            # CRITICAL DEBUG: Confirm QKC_USDT in unique
+            if 'QKC_USDT' in unique_futures:
+                logger.info("✅ QKC_USDT CONFIRMED in unique futures")
+            else:
+                logger.info("❌ QKC_USDT NOT in unique futures - THIS IS WRONG!")
+                return price_data
+            
+            # Find missing unique symbols from batch
             missing_unique = [s for s in unique_futures if s not in batch_data]
-            logger.info(f"🔍 Ensuring prices for {len(missing_unique)} unique symbols")
+            logger.info(f"🔍 Missing from batch: {len(missing_unique)} symbols")
             
-            # Get prices for missing unique symbols
-            for symbol in missing_unique[:50]:  # Limit to avoid timeout
+            # CRITICAL DEBUG: Check if QKC_USDT is in missing_unique
+            if 'QKC_USDT' in missing_unique:
+                logger.info("✅ QKC_USDT IS in missing_unique - will fetch individually")
+            else:
+                logger.info("❌ QKC_USDT NOT in missing_unique - ALREADY IN BATCH?")
+                # If it's not missing, it should already be in price_data!
+                if 'QKC_USDT' in price_data:
+                    logger.info("🎉 QKC_USDT ALREADY IN price_data - SUCCESS!")
+                else:
+                    logger.info("💥 QKC_USDT NOT in missing_unique AND NOT in price_data - BUG!")
+            
+            # Get individual prices for missing symbols
+            successful_individual = 0
+            for symbol in missing_unique[:50]:
                 try:
                     if symbol not in price_data:
+                        # SPECIAL DEBUG for QKC_USDT
+                        if symbol == 'QKC_USDT':
+                            logger.info("🚨 FETCHING QKC_USDT INDIVIDUALLY...")
+                        
                         price_info = self.get_mexc_price_data_working(symbol)
                         if price_info:
                             price_data[symbol] = price_info
-                        time.sleep(0.15)  # Conservative rate limiting
+                            successful_individual += 1
+                            
+                            # SPECIAL DEBUG for QKC_USDT
+                            if symbol == 'QKC_USDT':
+                                logger.info(f"🎉 QKC_USDT ADDED: ${price_info.get('price')}")
+                        
+                        time.sleep(0.15)
                 except Exception as e:
-                    logger.debug(f"Price fetch for unique {symbol} failed: {e}")
+                    logger.debug(f"Price fetch failed for {symbol}: {e}")
             
-            logger.info(f"✅ Price data complete: {len(price_data)} total, {len([s for s in unique_futures if s in price_data])}/{len(unique_futures)} unique covered")
+            # FINAL VERIFICATION
+            logger.info(f"✅ Individual fetches: {successful_individual} successful")
+            
+            if 'QKC_USDT' in price_data:
+                logger.info(f"🎉 FINAL SUCCESS: QKC_USDT in price_data: ${price_data['QKC_USDT'].get('price')}")
+            else:
+                logger.info("💥 FINAL FAILURE: QKC_USDT NOT in price_data")
+                # Let's check what happened
+                logger.info(f"🔍 QKC_USDT in batch_data: {'QKC_USDT' in batch_data}")
+                logger.info(f"🔍 QKC_USDT in missing_unique: {'QKC_USDT' in missing_unique}")
+                logger.info(f"🔍 QKC_USDT in unique_futures: {'QKC_USDT' in unique_futures}")
+            
+            final_coverage = len([s for s in unique_futures if s in price_data])
+            logger.info(f"📈 Final coverage: {final_coverage}/{len(unique_futures)} unique symbols")
+            
             return price_data
             
         except Exception as e:
             logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
-
-
+        
     def get_mexc_prices_batch_working(self):
         """Get prices using working MEXC API endpoint"""
         try:
@@ -1701,7 +1751,36 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("pricedebug", self.price_debug_command))
         self.dispatcher.add_handler(CommandHandler("symboldebug", self.symbol_debug_command))
         self.dispatcher.add_handler(CommandHandler("dataflow", self.data_flow_debug_command))
+        self.dispatcher.add_handler(CommandHandler("qkctest", self.qkc_test_command))
 
+
+def qkc_test_command(self, update: Update, context: CallbackContext):
+    """Test QKC_USDT specifically"""
+    try:
+        update.message.reply_html("🔍 <b>Testing QKC_USDT data flow...</b>")
+        
+        # Test each step
+        batch_data = self.get_mexc_prices_batch_working()
+        unique_futures, _ = self.find_unique_futures_robust()
+        all_prices = self.get_all_mexc_prices()
+        
+        message = (
+            f"🔍 <b>QKC_USDT Test Results</b>\n\n"
+            f"📊 <b>Batch API:</b> {'✅ PRESENT' if 'QKC_USDT' in batch_data else '❌ MISSING'}\n"
+            f"🎯 <b>Unique Futures:</b> {'✅ PRESENT' if 'QKC_USDT' in unique_futures else '❌ MISSING'}\n"
+            f"💰 <b>Final Prices:</b> {'✅ PRESENT' if 'QKC_USDT' in all_prices else '❌ MISSING'}\n\n"
+        )
+        
+        if 'QKC_USDT' in batch_data:
+            message += f"• Batch Price: ${batch_data['QKC_USDT'].get('price')}\n"
+        if 'QKC_USDT' in all_prices:
+            message += f"• Final Price: ${all_prices['QKC_USDT'].get('price')}\n"
+        
+        update.message.reply_html(message)
+        
+    except Exception as e:
+        update.message.reply_html(f"❌ Test error: {str(e)}")
+        
 
     def data_flow_debug_command(self, update: Update, context: CallbackContext):
         """Debug the complete data flow for a symbol"""
