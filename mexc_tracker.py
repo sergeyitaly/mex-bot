@@ -310,90 +310,98 @@ class MEXCTracker:
 
 
     def get_all_mexc_prices(self):
-        """ULTRA ROBUST price collection - ensures maximum coverage"""
+        """Get price data for MEXC futures - SMART FETCHER that always gets prices"""
         try:
-            logger.info("🚀 Starting ULTRA ROBUST price collection...")
-            
-            # Step 1: Get batch data (fastest)
+            # Step 1: Get ALL data from batch API (most reliable)
             batch_data = self.get_mexc_prices_batch_working()
-            logger.info(f"📊 Batch API: {len(batch_data)} symbols")
+            logger.info(f"📊 Batch API returned: {len(batch_data)} symbols")
             
             # Step 2: Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures: {len(unique_futures)} symbols")
             
             # Step 3: Start with ALL batch data
-            price_data = batch_data.copy()
+            price_data = {}
             
-            # Step 4: For each unique symbol, ensure we have price data
-            symbols_processed = 0
-            symbols_with_prices = 0
+            # Step 4: For EACH unique symbol, use WHATEVER METHOD WORKS
+            successful_symbols = 0
             
             for symbol in unique_futures:
-                symbols_processed += 1
+                price_info = None
+                source = "unknown"
                 
-                # If already in batch data, we're good
-                if symbol in price_data and price_data[symbol].get('price') is not None:
-                    symbols_with_prices += 1
-                    continue
+                # METHOD 1: Try exact match in batch first (fastest)
+                if symbol in batch_data:
+                    price_info = batch_data[symbol]
+                    source = "batch_exact"
+                    successful_symbols += 1
+                    logger.debug(f"✅ {symbol}: ${price_info.get('price')} (batch exact)")
                 
-                # Try alternative formats in batch data
-                alt_formats = self.get_alternative_symbol_formats(symbol)
-                price_found = False
+                # METHOD 2: Try alternative formats in batch
+                elif not price_info:
+                    alt_formats = self.get_alternative_symbol_formats(symbol)
+                    for alt_format in alt_formats:
+                        if alt_format in batch_data:
+                            price_info = batch_data[alt_format].copy()
+                            price_info['symbol'] = symbol  # Update to correct symbol name
+                            source = f"batch_alt_{alt_format}"
+                            successful_symbols += 1
+                            logger.debug(f"✅ {symbol}: ${price_info.get('price')} (batch alt: {alt_format})")
+                            break
                 
-                for alt_format in alt_formats:
-                    if alt_format in batch_data and batch_data[alt_format].get('price') is not None:
-                        # Copy the price data with correct symbol name
-                        price_data[symbol] = batch_data[alt_format].copy()
-                        price_data[symbol]['symbol'] = symbol
-                        price_data[symbol]['source'] = f'batch_alt_{alt_format}'
-                        symbols_with_prices += 1
-                        price_found = True
-                        logger.debug(f"✅ Found {symbol} as {alt_format} in batch")
-                        break
+                # METHOD 3: Try direct API call
+                elif not price_info:
+                    try:
+                        individual_price = self.get_mexc_price_data_working(symbol)
+                        if individual_price and individual_price.get('price') is not None:
+                            price_info = individual_price
+                            source = "direct_api"
+                            successful_symbols += 1
+                            logger.debug(f"✅ {symbol}: ${price_info.get('price')} (direct API)")
+                    except Exception as e:
+                        logger.debug(f"❌ Direct API failed for {symbol}: {e}")
                 
-                if price_found:
-                    continue
+                # METHOD 4: Try alternative symbol formats with direct API
+                if not price_info:
+                    alt_formats = self.get_alternative_symbol_formats(symbol)
+                    for alt_format in alt_formats[:3]:  # Try first 3 alternatives
+                        try:
+                            individual_price = self.get_mexc_price_data_working(alt_format)
+                            if individual_price and individual_price.get('price') is not None:
+                                price_info = individual_price.copy()
+                                price_info['symbol'] = symbol  # Update to correct symbol name
+                                source = f"direct_api_alt_{alt_format}"
+                                successful_symbols += 1
+                                logger.debug(f"✅ {symbol}: ${price_info.get('price')} (direct API alt: {alt_format})")
+                                break
+                        except Exception as e:
+                            continue
                 
-                # Last resort: Try direct API
-                try:
-                    direct_price = self.get_mexc_price_data_working(symbol)
-                    if direct_price and direct_price.get('price') is not None:
-                        price_data[symbol] = direct_price
-                        price_data[symbol]['source'] = 'direct_api'
-                        symbols_with_prices += 1
-                        logger.debug(f"✅ Direct API success for {symbol}")
-                    else:
-                        # Ensure symbol exists in price_data even if no price
-                        price_data[symbol] = {
-                            'symbol': symbol,
-                            'price': None,
-                            'changes': {},
-                            'timestamp': datetime.now(),
-                            'source': 'no_price'
-                        }
-                except Exception as e:
-                    logger.debug(f"Direct API failed for {symbol}: {e}")
-                    # Ensure symbol exists in price_data even if error
+                # If we found price info, add it
+                if price_info:
+                    price_info['source'] = source
+                    price_data[symbol] = price_info
+                else:
+                    # LAST RESORT: Create with None price (should rarely happen now)
+                    logger.warning(f"⚠️ All methods failed for {symbol}, adding with None price")
                     price_data[symbol] = {
                         'symbol': symbol,
                         'price': None,
                         'changes': {},
                         'timestamp': datetime.now(),
-                        'source': 'error'
+                        'source': 'all_methods_failed'
                     }
             
             # Final statistics
-            coverage = (symbols_with_prices / len(unique_futures)) * 100
-            logger.info(f"🎯 ULTRA ROBUST RESULTS: {symbols_with_prices}/{len(unique_futures)} symbols with prices ({coverage:.1f}%)")
+            valid_prices = len([s for s in price_data.values() if s.get('price') is not None])
+            logger.info(f"🎯 SUCCESS: {valid_prices}/{len(unique_futures)} symbols with prices")
+            logger.info(f"💰 SOURCES: {self._get_price_sources_summary(price_data)}")
             
             return price_data
             
         except Exception as e:
-            logger.error(f"ULTRA ROBUST price collection error: {e}")
+            logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
-    
-
 
     def _get_price_sources_summary(self, price_data):
         """Get summary of where prices came from"""
@@ -3533,7 +3541,8 @@ class MEXCTracker:
                 update.message.reply_html(error_message)
             
             logger.error(f"Check command failed: {e}")
-                
+
+        
 
     def find_unique_command(self, update: Update, context: CallbackContext):
         """Find and display currently unique symbols with prices"""
