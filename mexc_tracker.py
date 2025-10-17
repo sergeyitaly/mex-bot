@@ -5,7 +5,6 @@ import os
 import time
 import schedule
 from datetime import datetime, timedelta
-from telegram import Bot, Update
 from telegram import Bot, Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
 from telegram.error import TelegramError
@@ -15,18 +14,17 @@ from google.oauth2.service_account import Credentials
 import fcntl
 import threading
 import atexit
-import io
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
-from datetime import datetime
 import io
 import random
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from typing import Optional, List, Dict, Set, Any, Union
 import hmac
 import hashlib
+import re
+from typing import Optional, List, Dict, Set, Any, Union
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 # Load environment variables
 load_dotenv()
 
@@ -42,6 +40,7 @@ class MEXCTracker:
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
         self.update_interval = int(os.getenv('UPDATE_INTERVAL', 60))
+        self.price_check_interval = int(os.getenv('PRICE_CHECK_INTERVAL', 5))  # minutes
         
         if not self.bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required")
@@ -54,25 +53,23 @@ class MEXCTracker:
         self.last_unique_futures = set()
         self.bybit_api_key = os.getenv('BYBIT_API_KEY', '')
         self.bybit_api_secret = os.getenv('BYBIT_API_SECRET', '')
+        
+        # Price tracking
+        self.price_history = {}  # symbol: {timestamp: price}
+        self.last_price_check = None
+        
         # Google Sheets setup
         self.setup_google_sheets()
         self.session = self._create_session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
         })
         self.proxies = self._get_proxies()
 
     def _create_session(self):
         """Create requests session with minimal headers"""
         session = requests.Session()
-        
-        # MINIMAL headers - avoid detection
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (compatible; Bot)',
-            'Accept': 'application/json',
-        })
         
         # Simple retry strategy
         retry_strategy = Retry(
@@ -87,8 +84,11 @@ class MEXCTracker:
         
         return session
 
+    def _get_proxies(self) -> List[dict]:
+        return [{}]  # Empty dict means no proxy
+
     def setup_google_sheets(self):
-        """Setup Google Sheets connection using the existing spreadsheet"""
+        """Setup Google Sheets connection"""
         try:
             creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
             if not creds_json:
@@ -106,16 +106,20 @@ class MEXCTracker:
                 self.spreadsheet = None
                 return
 
-            # Use the scope that worked in diagnostics
             scope = ['https://www.googleapis.com/auth/spreadsheets']
             
             try:
                 self.creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
                 self.gs_client = gspread.authorize(self.creds)
                 
-                # Connect to your existing spreadsheet
-                self.spreadsheet = self.gs_client.open_by_key("1Axc4-JmvDtYV-uWhVxNqDHPOaXbwo2rJqnBKgnxGJY0")
-                logger.info(f"✅ Connected to existing spreadsheet: {self.spreadsheet.title}")
+                # Connect to existing spreadsheet
+                spreadsheet_id = os.getenv('GOOGLE_SHEET_ID')
+                if spreadsheet_id:
+                    self.spreadsheet = self.gs_client.open_by_key(spreadsheet_id)
+                    logger.info(f"✅ Connected to existing spreadsheet: {self.spreadsheet.title}")
+                else:
+                    self.spreadsheet = None
+                    logger.info("No Google Sheet ID configured")
                 
             except Exception as e:
                 logger.error(f"Failed to connect to spreadsheet: {e}")
@@ -127,289 +131,544 @@ class MEXCTracker:
             self.gs_client = None
             self.spreadsheet = None
 
-    def auto_sheet_command(self, update: Update, context: CallbackContext):
-        """Setup auto-update on the existing Google Sheet"""
-        if not self.gs_client or not self.spreadsheet:
-            update.message.reply_html("❌ Google Sheets not configured or connected.")
-            return
-        
+    # ==================== PRICE MONITORING ====================
+
+    def get_mexc_price_data(self, symbol):
+        """Get price data for MEXC symbol"""
         try:
-            update.message.reply_html("🔄 <b>Setting up auto-update on your existing Google Sheet...</b>")
+            # For perpetual futures on MEXC
+            url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}?interval=Min1&limit=240"
+            response = requests.get(url, timeout=10)
+            data = response.json()
             
-            # Ensure sheets are properly initialized
-            if not self.ensure_sheets_initialized():
-                update.message.reply_html("❌ Failed to initialize sheets.")
-                return
-            
-            # Do initial data update
-            self.update_google_sheet()
-            
-            update.message.reply_html(
-                f"✅ <b>Auto-Update Configured!</b>\n\n"
-                f"📊 <a href='{self.spreadsheet.url}'>Open Your Sheet</a>\n\n"
-                f"• Using existing: {self.spreadsheet.title}\n"
-                f"• Auto-updates every {self.update_interval} minutes\n"
-                f"• Live data from all exchanges\n"
-                f"• Real-time unique futures tracking\n\n"
-                f"<i>Your sheet will automatically update with fresh data.</i>",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ <b>Auto-sheet error:</b>\n{str(e)}")
+            if data.get('success'):
+                klines = data.get('data', [])
+                if klines:
+                    # Get latest price
+                    latest_price = float(klines[-1][4])  # close price
                     
-    def force_update_command(self, update: Update, context: CallbackContext):
-        """Force immediate Google Sheet update"""
-        if not self.gs_client:
-            update.message.reply_html("❌ Google Sheets not configured.")
-            return
-        
-        try:
-            update.message.reply_html("🔄 <b>Force updating Google Sheet...</b>")
-            self.update_google_sheet()
-            update.message.reply_html("✅ <b>Google Sheet updated successfully!</b>")
+                    # Calculate price changes for different timeframes
+                    current_time = datetime.now()
+                    price_changes = {}
+                    
+                    # 5 minutes ago
+                    if len(klines) >= 5:
+                        price_5m = float(klines[-5][4])
+                        change_5m = ((latest_price - price_5m) / price_5m) * 100
+                        price_changes['5m'] = change_5m
+                    
+                    # 15 minutes ago
+                    if len(klines) >= 15:
+                        price_15m = float(klines[-15][4])
+                        change_15m = ((latest_price - price_15m) / price_15m) * 100
+                        price_changes['15m'] = change_15m
+                    
+                    # 30 minutes ago
+                    if len(klines) >= 30:
+                        price_30m = float(klines[-30][4])
+                        change_30m = ((latest_price - price_30m) / price_30m) * 100
+                        price_changes['30m'] = change_30m
+                    
+                    # 60 minutes ago
+                    if len(klines) >= 60:
+                        price_60m = float(klines[-60][4])
+                        change_60m = ((latest_price - price_60m) / price_60m) * 100
+                        price_changes['60m'] = change_60m
+                    
+                    # 240 minutes ago (4 hours)
+                    if len(klines) >= 240:
+                        price_240m = float(klines[-240][4])
+                        change_240m = ((latest_price - price_240m) / price_240m) * 100
+                        price_changes['240m'] = change_240m
+                    
+                    return {
+                        'symbol': symbol,
+                        'price': latest_price,
+                        'changes': price_changes,
+                        'timestamp': current_time
+                    }
+            
+            return None
             
         except Exception as e:
-            update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
-            
-    def check_symbol_command(self, update: Update, context: CallbackContext):
-        """Check if a symbol is unique to MEXC"""
-        if not context.args:
-            update.message.reply_html("Usage: /checksymbol SYMBOL\nExample: /checksymbol BTC")
-            return
-        
-        symbol = context.args[0].upper()
-        update.message.reply_html(f"🔍 Checking symbol: {symbol}")
-        
+            logger.error(f"Error getting price data for {symbol}: {e}")
+            return None
+
+    def get_all_mexc_prices(self):
+        """Get price data for all MEXC futures"""
         try:
-            exchanges = self.analyze_symbol_coverage(symbol)
+            symbols = self.get_mexc_futures()
+            price_data = {}
             
-            if not exchanges:
-                response = f"❌ Symbol not found on any exchange: {symbol}"
-            elif len(exchanges) == 1 and 'MEXC' in exchanges:
-                response = f"🎯 <b>UNIQUE TO MEXC!</b>\n\n{symbol} - Only available on: <b>MEXC</b>"
-            elif 'MEXC' in exchanges:
-                other_exchanges = [e for e in exchanges if e != 'MEXC']
-                response = (f"📊 <b>{symbol} - Multi-Exchange</b>\n\n"
-                        f"✅ Available on MEXC\n"
-                        f"🔸 Also on: {', '.join(other_exchanges)}\n"
-                        f"📈 Total exchanges: {len(exchanges)}")
-            else:
-                response = f"📊 <b>{symbol}</b>\n\nNot on MEXC, available on:\n• " + "\n• ".join(exchanges)
+            logger.info(f"🔄 Getting price data for {len(symbols)} MEXC futures...")
             
-            update.message.reply_html(response)
+            for symbol in list(symbols)[:50]:  # Limit to first 50 to avoid rate limits
+                try:
+                    price_info = self.get_mexc_price_data(symbol)
+                    if price_info:
+                        price_data[symbol] = price_info
+                    time.sleep(0.1)  # Rate limiting
+                except Exception as e:
+                    logger.error(f"Error getting price for {symbol}: {e}")
+                    continue
+            
+            # Store price history
+            current_time = datetime.now()
+            for symbol, data in price_data.items():
+                if symbol not in self.price_history:
+                    self.price_history[symbol] = {}
+                self.price_history[symbol][current_time] = data['price']
+            
+            # Keep only last 24 hours of history
+            cutoff_time = current_time - timedelta(hours=24)
+            for symbol in self.price_history:
+                self.price_history[symbol] = {
+                    ts: price for ts, price in self.price_history[symbol].items() 
+                    if ts > cutoff_time
+                }
+            
+            logger.info(f"✅ Got price data for {len(price_data)} symbols")
+            return price_data
             
         except Exception as e:
-            update.message.reply_html(f"❌ Error checking symbol: {str(e)}")
-            
-    def setup_handlers(self):
-        """Setup command handlers"""
-        self.dispatcher.add_handler(CommandHandler("start", self.start_command))
-        self.dispatcher.add_handler(CommandHandler("status", self.status_command))
-        self.dispatcher.add_handler(CommandHandler("check", self.check_command))
-        self.dispatcher.add_handler(CommandHandler("help", self.help_command))
-        self.dispatcher.add_handler(CommandHandler("stats", self.stats_command))
-        self.dispatcher.add_handler(CommandHandler("exchanges", self.exchanges_command))
-        self.dispatcher.add_handler(CommandHandler("analysis", self.analysis_command))
-        self.dispatcher.add_handler(CommandHandler("sheet", self.sheet_command))
-        self.dispatcher.add_handler(CommandHandler("export", self.export_command))
-        self.dispatcher.add_handler(CommandHandler("autosheet", self.auto_sheet_command))
-        self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
-        
-        # Symbols management handlers
-        self.dispatcher.add_handler(CommandHandler("checksymbol", self.check_symbol_command))
-        self.dispatcher.add_handler(CommandHandler("watch", self.watch_symbol_command))
-        self.dispatcher.add_handler(CommandHandler("unwatch", self.unwatch_symbol_command))
-        self.dispatcher.add_handler(CommandHandler("watchlist", self.watchlist_command))
-        self.dispatcher.add_handler(CommandHandler("coverage", self.coverage_command))
-        self.dispatcher.add_handler(CommandHandler("findunique", self.find_unique_command))
-        self.dispatcher.add_handler(CommandHandler("clearwatchlist", self.clear_watchlist_command)) 
+            logger.error(f"Error getting all MEXC prices: {e}")
+            return {}
 
-        from telegram.ext import MessageHandler, Filters
-        self.dispatcher.add_handler(MessageHandler(
-            Filters.text & (
-                Filters.regex('^(📊 Excel Export|📁 JSON Export|🔗 View Google Sheet|❌ Cancel)$')
-            ), 
-            self.handle_export
-        ))
-            
-    def init_data_file(self):
-        """Initialize data in memory for Fly.io"""
-        self.data = self.get_default_data()
-
-    def load_data(self):
-        """Load data from memory"""
-        return self.data
-    
-    def save_data(self, data):
-        """Save data to memory with proper timezone"""
-        # Always use local time when updating timestamps
-        if 'last_check' in data and data['last_check']:
-            try:
-                # Ensure it's stored with timezone info
-                if 'last_check' in data and data['last_check'] != 'Never':
-                    # If it's already a datetime, ensure it has timezone
-                    if isinstance(data['last_check'], str):
-                        dt = datetime.fromisoformat(data['last_check'].replace('Z', '+00:00'))
-                        data['last_check'] = dt.astimezone().isoformat()
-            except:
-                pass
-        
-        self.data = data
-        logger.info("Data saved to memory")
-
-    def get_default_data(self):
-        """Return default data structure"""
-        return {
-            "unique_futures": [],
-            "last_check": None,
-            "statistics": {
-                "checks_performed": 0,
-                "unique_found_total": 0,
-                "start_time": datetime.now().isoformat()
-            },
-            "exchange_stats": {},
-            "google_sheet_url": None,
-            "watchlist": []  
-        }
-    # ==================== EXCHANGE API METHODS ====================
-    def watch_symbol_command(self, update: Update, context: CallbackContext):
-        """Add symbol to watchlist"""
-        if not context.args:
-            update.message.reply_html("Usage: /watch SYMBOL\nExample: /watch BTC")
-            return
-        
-        symbol = context.args[0].upper()
-        
-        # Load data and update watchlist
-        data = self.load_data()
-        if 'watchlist' not in data:
-            data['watchlist'] = []
-        
-        if symbol in data['watchlist']:
-            update.message.reply_html(f"⚠️ {symbol} is already in your watchlist")
-            return
-        
-        data['watchlist'].append(symbol)
-        self.save_data(data)
-        
-        update.message.reply_html(f"✅ Added {symbol} to watchlist\n\nUse /watchlist to see all watched symbols")
-
-    def unwatch_symbol_command(self, update: Update, context: CallbackContext):
-        """Remove symbol from watchlist"""
-        if not context.args:
-            update.message.reply_html("Usage: /unwatch SYMBOL\nExample: /unwatch BTC")
-            return
-        
-        symbol = context.args[0].upper()
-        
-        data = self.load_data()
-        if 'watchlist' not in data or symbol not in data['watchlist']:
-            update.message.reply_html(f"❌ {symbol} not found in watchlist")
-            return
-        
-        data['watchlist'].remove(symbol)
-        self.save_data(data)
-        
-        update.message.reply_html(f"✅ Removed {symbol} from watchlist")
-
-    def watchlist_command(self, update: Update, context: CallbackContext):
-        """Show watched symbols and their status"""
-        data = self.load_data()
-        watchlist = data.get('watchlist', [])
-        
-        if not watchlist:
-            update.message.reply_html("📝 Your watchlist is empty\n\nUse /watch SYMBOL to add symbols")
-            return
-        
-        update.message.reply_html("🔄 Checking watchlist status...")
-        
+    def analyze_price_movements(self, price_data):
+        """Analyze price movements and identify top performers"""
         try:
+            symbols_with_changes = []
+            
+            for symbol, data in price_data.items():
+                changes = data.get('changes', {})
+                
+                # Calculate overall score based on multiple timeframes
+                score = 0
+                if '5m' in changes:
+                    score += changes['5m'] * 2  # Higher weight for recent changes
+                if '15m' in changes:
+                    score += changes['15m'] * 1.5
+                if '30m' in changes:
+                    score += changes['30m'] * 1.2
+                if '60m' in changes:
+                    score += changes['60m']
+                if '240m' in changes:
+                    score += changes['240m'] * 0.5
+                
+                symbols_with_changes.append({
+                    'symbol': symbol,
+                    'price': data['price'],
+                    'changes': changes,
+                    'score': score,
+                    'latest_change': changes.get('5m', 0)
+                })
+            
+            # Sort by score (highest first)
+            symbols_with_changes.sort(key=lambda x: x['score'], reverse=True)
+            
+            return symbols_with_changes
+            
+        except Exception as e:
+            logger.error(f"Error analyzing price movements: {e}")
+            return []
+
+    # ==================== ENHANCED UNIQUE FUTURES MONITORING ====================
+
+    def monitor_unique_futures_changes(self):
+        """Monitor changes in unique futures and send notifications"""
+        try:
+            logger.info("🔍 Monitoring unique futures changes...")
+            
             # Get current unique futures
-            unique_futures, _ = self.find_unique_futures()
-            unique_normalized = {self.normalize_symbol(s): s for s in unique_futures}
+            current_unique, exchange_stats = self.find_unique_futures_robust()
+            current_unique_set = set(current_unique)
             
-            response = "📝 <b>Your Watchlist</b>\n\n"
+            # Load previous state
+            data = self.load_data()
+            previous_unique = set(data.get('unique_futures', []))
             
-            for symbol in watchlist:
-                normalized = self.normalize_symbol(symbol)
-                if normalized in unique_normalized:
-                    response += f"✅ <b>{symbol}</b> - UNIQUE TO MEXC\n"
-                else:
-                    exchanges = self.analyze_symbol_coverage(symbol)
-                    if 'MEXC' in exchanges:
-                        response += f"🔸 <b>{symbol}</b> - On MEXC + {len(exchanges)-1} other(s)\n"
-                    else:
-                        response += f"❌ <b>{symbol}</b> - Not on MEXC\n"
+            # Find new unique futures
+            new_futures = current_unique_set - previous_unique
+            lost_futures = previous_unique - current_unique_set
             
-            response += f"\nTotal watched symbols: {len(watchlist)}"
-            update.message.reply_html(response)
+            # Send notifications
+            if new_futures:
+                self.send_new_unique_notification(new_futures, current_unique_set)
+            
+            if lost_futures:
+                self.send_lost_unique_notification(lost_futures, current_unique_set)
+            
+            # Update stored data
+            data['unique_futures'] = list(current_unique_set)
+            data['last_check'] = datetime.now().isoformat()
+            data['exchange_stats'] = exchange_stats
+            self.save_data(data)
+            
+            self.last_unique_futures = current_unique_set
+            
+            # Update Google Sheets if configured
+            if self.gs_client and self.spreadsheet:
+                self.update_google_sheet_with_prices()
+            
+            return new_futures, lost_futures
             
         except Exception as e:
-            update.message.reply_html(f"❌ Error checking watchlist: {str(e)}")
+            logger.error(f"Error monitoring unique futures: {e}")
+            return set(), set()
 
-    def coverage_command(self, update: Update, context: CallbackContext):
-        """Show detailed exchange coverage for a symbol"""
-        if not context.args:
-            update.message.reply_html("Usage: /coverage SYMBOL\nExample: /coverage BTC")
+    def send_new_unique_notification(self, new_futures, all_unique):
+        """Send notification about new unique futures"""
+        try:
+            message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
+            
+            # Get price data for new futures
+            price_data = self.get_all_mexc_prices()
+            
+            for symbol in sorted(new_futures):
+                price_info = price_data.get(symbol)
+                if price_info:
+                    changes = price_info.get('changes', {})
+                    change_5m = changes.get('5m', 0)
+                    change_1h = changes.get('60m', 0)
+                    
+                    message += f"✅ <b>{symbol}</b>\n"
+                    message += f"   5m: {self.format_change(change_5m)}\n"
+                    message += f"   1h: {self.format_change(change_1h)}\n\n"
+                else:
+                    message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
+            
+            message += f"📊 Total unique: <b>{len(all_unique)}</b>"
+            
+            self.send_broadcast_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending new unique notification: {e}")
+
+    def send_lost_unique_notification(self, lost_futures, remaining_unique):
+        """Send notification about lost unique futures"""
+        try:
+            message = "📉 <b>FUTURES NO LONGER UNIQUE:</b>\n\n"
+            
+            for symbol in sorted(lost_futures):
+                # Find which exchanges now have this symbol
+                coverage = self.verify_symbol_coverage(symbol)
+                other_exchanges = [e for e in coverage if e != 'MEXC']
+                
+                message += f"❌ <b>{symbol}</b>\n"
+                message += f"   Now also on: {', '.join(other_exchanges)}\n\n"
+            
+            message += f"📊 Remaining unique: <b>{len(remaining_unique)}</b>"
+            
+            self.send_broadcast_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending lost unique notification: {e}")
+
+    def format_change(self, change):
+        """Format price change with color emoji"""
+        if change > 0:
+            return f"🟢 +{change:.2f}%"
+        elif change < 0:
+            return f"🔴 {change:.2f}%"
+        else:
+            return f"⚪ {change:.2f}%"
+
+    # ==================== ENHANCED GOOGLE SHEETS ====================
+
+    def update_google_sheet_with_prices(self):
+        """Update Google Sheet with price data"""
+        if not self.gs_client or not self.spreadsheet:
             return
         
-        symbol = context.args[0].upper()
-        update.message.reply_html(f"🔍 Analyzing exchange coverage for: {symbol}")
-        
         try:
-            exchanges = self.analyze_symbol_coverage(symbol)
-            normalized = self.normalize_symbol(symbol)
+            # Get unique futures and price data
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
             
-            if not exchanges:
-                response = f"❌ Symbol not found on any exchange: {symbol}"
-            else:
-                response = (f"📊 <b>Exchange Coverage: {symbol}</b>\n\n"
-                        f"Normalized: {normalized}\n"
-                        f"Total exchanges: {len(exchanges)}\n\n"
-                        f"<b>Available on:</b>\n")
-                
-                for exchange in sorted(exchanges):
-                    if exchange == 'MEXC':
-                        response += f"✅ <b>{exchange}</b>\n"
-                    else:
-                        response += f"• {exchange}\n"
-                
-                if len(exchanges) == 1 and 'MEXC' in exchanges:
-                    response += f"\n🎯 <b>EXCLUSIVE MEXC LISTING!</b>"
+            # Update Unique Futures sheet with price data
+            self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             
-            update.message.reply_html(response)
+            # Update Price Analysis sheet
+            self.update_price_analysis_sheet(analyzed_prices)
+            
+            logger.info("✅ Google Sheet updated with price data")
             
         except Exception as e:
-            update.message.reply_html(f"❌ Error analyzing coverage: {str(e)}")
-            
-    def find_unique_command(self, update: Update, context: CallbackContext):
-        """Find and display currently unique symbols"""
-        update.message.reply_html("🔍 Scanning for unique MEXC symbols...")
-        
+            logger.error(f"Error updating Google Sheet with prices: {e}")
+
+    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with price information"""
         try:
-            unique_futures, exchange_stats = self.find_unique_futures()
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
             
-            if not unique_futures:
-                update.message.reply_html("❌ No unique symbols found on MEXC")
-                return
+            # Clear existing data
+            if worksheet.row_count > 1:
+                worksheet.clear()
             
-            response = f"🎯 <b>Unique MEXC Symbols Found: {len(unique_futures)}</b>\n\n"
+            # Enhanced headers with price changes
+            headers = [
+                'Symbol', 'Current Price', '5m Change', '15m Change', 
+                '30m Change', '1h Change', '4h Change', 'Score', 'Status', 'Last Updated'
+            ]
+            worksheet.update('A1', [headers])
             
-            # Display symbols in a readable format
-            symbols_list = sorted(unique_futures)
-            for i, symbol in enumerate(symbols_list[:15], 1):  # Show first 15
-                response += f"{i}. {symbol}\n"
+            # Prepare data
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            if len(symbols_list) > 15:
-                response += f"\n... and {len(symbols_list) - 15} more symbols"
+            # Create mapping for quick price lookup
+            price_map = {item['symbol']: item for item in analyzed_prices}
             
-            response += f"\n\n💡 Use /checksymbol SYMBOL for detailed analysis"
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol, {})
+                changes = price_info.get('changes', {})
+                
+                row = [
+                    symbol,
+                    price_info.get('price', 'N/A'),
+                    self.format_change_for_sheet(changes.get('5m')),
+                    self.format_change_for_sheet(changes.get('15m')),
+                    self.format_change_for_sheet(changes.get('30m')),
+                    self.format_change_for_sheet(changes.get('60m')),
+                    self.format_change_for_sheet(changes.get('240m')),
+                    f"{price_info.get('score', 0):.2f}",
+                    'UNIQUE',
+                    current_time
+                ]
+                sheet_data.append(row)
             
-            update.message.reply_html(response)
+            # Update sheet in batches
+            if sheet_data:
+                batch_size = 100
+                for i in range(0, len(sheet_data), batch_size):
+                    batch = sheet_data[i:i + batch_size]
+                    worksheet.update(f'A{i+2}', batch)
             
         except Exception as e:
-            update.message.reply_html(f"❌ Error finding unique symbols: {str(e)}")
+            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
+
+    def update_price_analysis_sheet(self, analyzed_prices):
+        """Update Price Analysis sheet with top performers"""
+        try:
+            # Get or create Price Analysis sheet
+            try:
+                worksheet = self.spreadsheet.worksheet('Price Analysis')
+            except gspread.WorksheetNotFound:
+                worksheet = self.spreadsheet.add_worksheet(title='Price Analysis', rows=1000, cols=12)
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            # Headers
+            headers = [
+                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+                '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
+            ]
+            worksheet.update('A1', [headers])
+            
+            # Prepare data - top 50 performers
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            for i, item in enumerate(analyzed_prices[:50], 1):
+                changes = item.get('changes', {})
+                
+                # Determine trend
+                latest_change = item.get('latest_change', 0)
+                if latest_change > 5:
+                    trend = "🚀 STRONG UP"
+                elif latest_change > 2:
+                    trend = "🟢 UP"
+                elif latest_change < -5:
+                    trend = "🔻 STRONG DOWN"
+                elif latest_change < -2:
+                    trend = "🔴 DOWN"
+                else:
+                    trend = "⚪ FLAT"
+                
+                row = [
+                    i,
+                    item['symbol'],
+                    item.get('price', 'N/A'),
+                    self.format_change_for_sheet(changes.get('5m')),
+                    self.format_change_for_sheet(changes.get('15m')),
+                    self.format_change_for_sheet(changes.get('30m')),
+                    self.format_change_for_sheet(changes.get('60m')),
+                    self.format_change_for_sheet(changes.get('240m')),
+                    f"{item.get('score', 0):.2f}",
+                    trend,
+                    'N/A',  # Volume would require additional API call
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            # Update sheet
+            if sheet_data:
+                worksheet.update('A2', sheet_data)
+            
+        except Exception as e:
+            logger.error(f"Error updating Price Analysis sheet: {e}")
+
+    def format_change_for_sheet(self, change):
+        """Format change for Google Sheets"""
+        if change is None:
+            return 'N/A'
+        return f"{change:+.2f}%"
+
+    # ==================== CORE UNIQUE FUTURES LOGIC ====================
+
+    def normalize_symbol_for_comparison(self, symbol):
+        """Simple and reliable symbol normalization for cross-exchange comparison"""
+        if not symbol:
+            return ""
+        
+        original = symbol.upper()
+        normalized = original
+        
+        # Remove common futures suffixes
+        patterns_to_remove = [
+            r'[-_/]?PERP(ETUAL)?$',
+            r'[-_/]?USDT$', 
+            r'[-_/]?USD$',
+            r'[-_/]?SWAP$',
+            r'[-_/]?FUTURES?$',
+            r'[-_/]?CONTRACT$',
+        ]
+        
+        for pattern in patterns_to_remove:
+            normalized = re.sub(pattern, '', normalized)
+        
+        # Remove separators but keep the main symbol
+        normalized = re.sub(r'[-_/]', '', normalized)
+        
+        # Remove numbers at the end (like BTC230930 for quarterly futures)
+        normalized = re.sub(r'\d+$', '', normalized)
+        
+        return normalized.strip()
+
+    def get_all_exchanges_futures(self):
+        """Get futures from all exchanges except MEXC"""
+        exchanges = {
+            'Binance': self.get_binance_futures,
+            'Bybit': self.get_bybit_futures,
+            'OKX': self.get_okx_futures,
+            'Gate.io': self.get_gate_futures,
+            'KuCoin': self.get_kucoin_futures,
+            'BingX': self.get_bingx_futures,
+            'BitGet': self.get_bitget_futures
+        }
+        
+        all_futures = set()
+        exchange_stats = {}
+        
+        for name, method in exchanges.items():
+            try:
+                logger.info(f"🔍 Getting futures from {name}...")
+                futures = method()
+                if futures:
+                    all_futures.update(futures)
+                    exchange_stats[name] = len(futures)
+                    logger.info(f"✅ {name}: {len(futures)} futures")
+                else:
+                    exchange_stats[name] = 0
+                    logger.warning(f"❌ {name}: No futures found")
+            except Exception as e:
+                exchange_stats[name] = 0
+                logger.error(f"🚨 Error getting {name} futures: {e}")
+        
+        logger.info(f"📊 Total futures from other exchanges: {len(all_futures)}")
+        return all_futures, exchange_stats
+
+    def find_unique_futures_robust(self):
+        """Find truly unique MEXC futures with improved comparison"""
+        try:
+            # Get all futures from other exchanges
+            all_futures, exchange_stats = self.get_all_exchanges_futures()
+            
+            # Get MEXC futures
+            mexc_futures = self.get_mexc_futures()
+            
+            logger.info(f"📊 MEXC futures: {len(mexc_futures)}")
+            logger.info(f"📊 Other exchanges total futures: {len(all_futures)}")
+            
+            # Create normalized mappings
+            all_normalized = set()  # Just track normalized symbols from other exchanges
+            mexc_normalized_map = {} # normalized -> original_mexc_symbol
+            
+            # Process other exchanges - just store normalized symbols
+            for symbol in all_futures:
+                normalized = self.normalize_symbol_for_comparison(symbol)
+                all_normalized.add(normalized)
+            
+            # Process MEXC futures
+            for symbol in mexc_futures:
+                normalized = self.normalize_symbol_for_comparison(symbol)
+                mexc_normalized_map[normalized] = symbol
+            
+            # Find unique futures (only on MEXC)
+            unique_futures = set()
+            
+            for normalized, mexc_original in mexc_normalized_map.items():
+                if normalized not in all_normalized:
+                    unique_futures.add(mexc_original)
+            
+            # Additional verification step
+            verified_unique = set()
+            for symbol in unique_futures:
+                coverage = self.verify_symbol_coverage(symbol)
+                if coverage == ['MEXC']:
+                    verified_unique.add(symbol)
+                else:
+                    logger.warning(f"False positive detected: {symbol} found on {coverage}")
+            
+            logger.info(f"🎯 Initial unique candidates: {len(unique_futures)}")
+            logger.info(f"🎯 Verified unique: {len(verified_unique)}")
+            
+            return verified_unique, exchange_stats
+            
+        except Exception as e:
+            logger.error(f"Error finding unique futures: {e}")
+            return set(), {}
+
+    def verify_symbol_coverage(self, symbol):
+        """Check which exchanges have this specific symbol"""
+        coverage = []
+        
+        exchange_methods = {
+            'MEXC': self.get_mexc_futures,
+            'Binance': self.get_binance_futures,
+            'Bybit': self.get_bybit_futures,
+            'OKX': self.get_okx_futures,
+            'Gate.io': self.get_gate_futures,
+            'KuCoin': self.get_kucoin_futures,
+            'BingX': self.get_bingx_futures,
+            'BitGet': self.get_bitget_futures
+        }
+        
+        for exchange_name, method in exchange_methods.items():
+            try:
+                futures = method()
+                found = False
+                
+                # Check normalized match
+                normalized_target = self.normalize_symbol_for_comparison(symbol)
+                
+                for fut in futures:
+                    normalized_fut = self.normalize_symbol_for_comparison(fut)
+                    if normalized_target == normalized_fut:
+                        found = True
+                        break
+                
+                if found:
+                    coverage.append(exchange_name)
+                    
+            except Exception as e:
+                logger.error(f"Error checking {exchange_name} for {symbol}: {e}")
+        
+        return coverage
+
+    # ==================== EXCHANGE API METHODS ====================
 
     def get_mexc_futures(self):
         """Get ALL futures from MEXC"""
@@ -428,6 +687,45 @@ class MEXCTracker:
             return futures
         except Exception as e:
             logger.error(f"MEXC error: {e}")
+            return set()
+
+    def get_binance_futures(self):
+        """Get Binance perpetual futures"""
+        try:
+            url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+            response = requests.get(url, timeout=10)
+            data = response.json()
+            
+            futures = set()
+            for symbol in data.get('symbols', []):
+                if (symbol.get('contractType') == 'PERPETUAL' and 
+                    symbol.get('status') == 'TRADING'):
+                    futures.add(symbol.get('symbol'))
+            
+            logger.info(f"Binance: {len(futures)} futures")
+            return futures
+        except Exception as e:
+            logger.error(f"Binance error: {e}")
+            return set()
+
+    def get_bybit_futures(self):
+        """Get Bybit perpetual futures"""
+        try:
+            url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+            response = requests.get(url, timeout=10)
+            data = response.json()
+            
+            futures = set()
+            if data.get('retCode') == 0:
+                for item in data.get('result', {}).get('list', []):
+                    symbol = item.get('symbol', '')
+                    if symbol and item.get('status') == 'Trading':
+                        futures.add(symbol)
+            
+            logger.info(f"Bybit: {len(futures)} futures")
+            return futures
+        except Exception as e:
+            logger.error(f"Bybit error: {e}")
             return set()
 
     def get_okx_futures(self):
@@ -507,2018 +805,70 @@ class MEXCTracker:
             return set()
 
     def get_bitget_futures(self):
-        """Get Bitget futures - ROBUST VERSION"""
+        """Get Bitget perpetual futures"""
         try:
-            logger.info("🔄 Fetching Bitget futures...")
-            
             futures = set()
             
             # USDT-FUTURES
             url1 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=usdt-futures"
-            logger.info(f"BitGet URL1: {url1}")
-            
-            response1 = self.session.get(url1, timeout=10)
-            logger.info(f"BitGet Response1 Status: {response1.status_code}")
+            response1 = requests.get(url1, timeout=10)
             
             if response1.status_code == 200:
                 data = response1.json()
-                logger.info(f"BitGet Response1 code: {data.get('code')}")
-                
                 if data.get('code') == '00000':
-                    items = data.get('data', [])
-                    logger.info(f"BitGet USDT-FUTURES items: {len(items)}")
-                    
-                    for item in items:
+                    for item in data.get('data', []):
                         symbol_type = item.get('symbolType')
                         symbol_name = item.get('symbol')
-                        
                         if symbol_type == 'perpetual':
                             futures.add(symbol_name)
-                    
-                    logger.info(f"BitGet USDT perpetuals: {len(futures)}")
             
             # COIN-FUTURES
             url2 = "https://api.bitget.com/api/v2/mix/market/contracts?productType=coin-futures"
-            logger.info(f"BitGet URL2: {url2}")
-            
-            response2 = self.session.get(url2, timeout=10)
-            logger.info(f"BitGet Response2 Status: {response2.status_code}")
+            response2 = requests.get(url2, timeout=10)
             
             if response2.status_code == 200:
                 data = response2.json()
                 if data.get('code') == '00000':
-                    items = data.get('data', [])
-                    logger.info(f"BitGet COIN-FUTURES items: {len(items)}")
-                    
-                    coin_count = 0
-                    for item in items:
+                    for item in data.get('data', []):
                         symbol_type = item.get('symbolType')
                         symbol_name = item.get('symbol')
-                        
                         if symbol_type == 'perpetual':
                             futures.add(symbol_name)
-                            coin_count += 1
-                    
-                    logger.info(f"BitGet COIN perpetuals: {coin_count}")
             
-            logger.info(f"✅ BitGet TOTAL: {len(futures)} futures")
+            logger.info(f"BitGet: {len(futures)} futures")
             return futures
             
         except Exception as e:
             logger.error(f"BitGet error: {e}")
-            return set()        
-
-    def _get_proxies(self) -> List[dict]:
-        return [{}]  # Empty dict means no proxy
-    
-    def _make_request_with_retry(self, url: str, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
-        """Make request with retry logic and proxy rotation"""
-        for attempt in range(max_retries):
-            try:
-                proxy = random.choice(self.proxies) if self.proxies else {}
-                response = self.session.get(url, timeout=timeout, proxies=proxy if proxy else None)
-                
-                if response.status_code == 200:
-                    return response
-                elif response.status_code in [403, 429]:
-                    logger.warning(f"⚠️  Blocked on attempt {attempt + 1} for {url}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                        continue
-                else:
-                    logger.error(f"❌ HTTP {response.status_code} for {url}")
-                    break
-                    
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"⚠️  Request failed on attempt {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-        
-        return None
-
-    def get_binance_futures(self):
-        """Get Binance futures with proxy support"""
-        try:
-            logger.info("🔄 Fetching Binance futures...")
-            
-            futures = set()
-            
-            # USDⓈ-M Futures - try multiple endpoints
-            endpoints = [
-                "https://fapi.binance.com/fapi/v1/exchangeInfo",
-                "https://testnet.binancefuture.com/fapi/v1/exchangeInfo"  # Fallback testnet
-            ]
-            
-            for url in endpoints:
-                logger.info(f"📡 Trying Binance URL: {url}")
-                response = self._make_request_with_retry(url)
-                
-                if response and response.status_code == 200:
-                    data = response.json()
-                    symbols = data.get('symbols', [])
-                    
-                    usdt_futures = set()
-                    for symbol in symbols:
-                        if (symbol.get('contractType') == 'PERPETUAL' and 
-                            symbol.get('status') == 'TRADING'):
-                            usdt_futures.add(symbol.get('symbol'))
-                    
-                    futures.update(usdt_futures)
-                    logger.info(f"✅ Binance USDⓈ-M perpetuals found: {len(usdt_futures)}")
-                    break  # Success, no need to try other endpoints
-                else:
-                    logger.warning(f"❌ Failed to fetch from {url}")
-            
-            # If still no data, try alternative approach
-            if not futures:
-                logger.info("🔄 Trying alternative Binance endpoint...")
-                alt_response = self._make_request_with_retry("https://api.binance.com/api/v3/exchangeInfo")
-                if alt_response and alt_response.status_code == 200:
-                    # This gives spot symbols, but we can use it as fallback
-                    data = alt_response.json()
-                    symbols = data.get('symbols', [])
-                    spot_symbols = {s['symbol'] for s in symbols if s.get('status') == 'TRADING'}
-                    # Filter for common futures symbols pattern
-                    futures = {s for s in spot_symbols if s.endswith('USDT')}
-                    logger.info(f"🔄 Using spot symbols as fallback: {len(futures)}")
-            
-            logger.info(f"🎯 Binance TOTAL: {len(futures)} futures")
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Binance error: {e}")
             return set()
-
-    def get_binance_futures_fallback(self):
-        """Alternative Binance implementation using different approach"""
-        try:
-            logger.info("🔄 Using Binance fallback method...")
-            
-            futures = set()
-            
-            # Method 1: Use price tickers (often less restricted)
-            url = "https://fapi.binance.com/fapi/v1/ticker/price"
-            response = self._make_request_with_retry(url)
-            
-            if response and response.status_code == 200:
-                data = response.json()
-                for item in data:
-                    symbol = item.get('symbol', '')
-                    # Filter for USDT pairs (common futures pattern)
-                    if symbol.endswith('USDT'):
-                        futures.add(symbol)
-                logger.info(f"✅ Binance ticker fallback found: {len(futures)} symbols")
-            
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Binance fallback error: {e}")
-            return set()
-
-    def get_all_exchanges_futures(self):
-        """Get futures from all exchanges with robust error handling and fallbacks"""
-        # Define primary methods and their fallbacks
-        exchange_methods = {
-            'MEXC': {
-                'primary': self.get_mexc_futures,
-                'fallback': None,  # No fallback for MEXC
-                'timeout': 10
-            },
-            'Binance': {
-                'primary': self.get_binance_futures,
-                'fallback': self.get_binance_futures_fallback,
-                'timeout': 15
-            },
-            'Bybit': {
-                'primary': self.get_bybit_futures,
-                'fallback': self.get_bybit_futures_fallback, 
-                'timeout': 15
-            },
-            'OKX': {
-                'primary': self.get_okx_futures,
-                'fallback': None,
-                'timeout': 10
-            },
-            'Gate.io': {
-                'primary': self.get_gate_futures,
-                'fallback': None,
-                'timeout': 10
-            },
-            'KuCoin': {
-                'primary': self.get_kucoin_futures,
-                'fallback': None,
-                'timeout': 10
-            },
-            'BingX': {
-                'primary': self.get_bingx_futures,
-                'fallback': None,
-                'timeout': 10
-            },
-            'BitGet': {
-                'primary': self.get_bitget_futures,
-                'fallback': None,
-                'timeout': 10
-            }
-        }
-        
-        all_futures = set()
-        exchange_stats = {}
-        detailed_stats = {
-            'working': [],
-            'blocked': [],
-            'partial': [],
-            'failed': []
-        }
-        
-        logger.info("🚀 STARTING ROBUST EXCHANGE DATA COLLECTION")
-        logger.info("=" * 60)
-        
-        for name, config in exchange_methods.items():
-            try:
-                logger.info(f"🔄 Fetching {name} futures...")
-                primary_method = config['primary']
-                fallback_method = config['fallback']
-                timeout = config['timeout']
-                
-                # Try primary method with timeout
-                futures = None
-                try:
-                    futures = primary_method()
-                except Exception as e:
-                    logger.warning(f"⚠️ {name} primary method failed: {e}")
-                    futures = None
-                
-                # If primary failed and we have fallback, try it
-                if not futures and fallback_method:
-                    logger.info(f"🔄 Trying fallback for {name}...")
-                    try:
-                        futures = fallback_method()
-                    except Exception as e:
-                        logger.warning(f"⚠️ {name} fallback also failed: {e}")
-                        futures = None
-                
-                # Process results
-                if futures:
-                    count_before = len(all_futures)
-                    all_futures.update(futures)
-                    count_added = len(all_futures) - count_before
-                    
-                    exchange_stats[name] = len(futures)
-                    
-                    if len(futures) > 0:
-                        if len(futures) >= 100:  # Consider it "working" if we get decent data
-                            detailed_stats['working'].append(name)
-                            logger.info(f"✅ {name}: {len(futures)} futures ({count_added} new)")
-                        else:
-                            detailed_stats['partial'].append(name)
-                            logger.warning(f"⚠️ {name}: ONLY {len(futures)} futures (partial data)")
-                        
-                        # Log sample symbols for verification
-                        sample = list(futures)[:3]
-                        logger.info(f"   🔍 Sample: {sample}")
-                    else:
-                        detailed_stats['failed'].append(name)
-                        logger.warning(f"⚠️ {name}: 0 futures (empty response)")
-                else:
-                    exchange_stats[name] = 0
-                    detailed_stats['failed'].append(name)
-                    logger.error(f"❌ {name}: No data from primary or fallback methods")
-                
-                # Smart rate limiting based on exchange responsiveness
-                delay = 2 if name in ['Binance', 'Bybit'] else 1
-                time.sleep(delay)
-                
-            except Exception as e:
-                exchange_stats[name] = 0
-                detailed_stats['failed'].append(name)
-                logger.error(f"❌ {name} unexpected error: {e}", exc_info=True)
-                time.sleep(1)  # Still wait even on error
-        
-        # Generate comprehensive report
-        logger.info("")
-        logger.info("📊 COMPREHENSIVE EXCHANGE STATUS REPORT")
-        logger.info("=" * 60)
-        
-        total_exchanges = len(exchange_methods)
-        working_count = len(detailed_stats['working'])
-        partial_count = len(detailed_stats['partial'])
-        failed_count = len(detailed_stats['failed'])
-        
-        logger.info(f"🏆 Working well: {working_count}/{total_exchanges}")
-        for name in detailed_stats['working']:
-            count = exchange_stats[name]
-            logger.info(f"   ✅ {name}: {count} futures")
-        
-        if detailed_stats['partial']:
-            logger.info(f"⚠️  Partial data: {partial_count}/{total_exchanges}")
-            for name in detailed_stats['partial']:
-                count = exchange_stats[name]
-                logger.info(f"   🟡 {name}: {count} futures")
-        
-        if detailed_stats['failed']:
-            logger.info(f"❌ Failed: {failed_count}/{total_exchanges}")
-            for name in detailed_stats['failed']:
-                logger.info(f"   🔴 {name}: 0 futures")
-        
-        # Overall statistics
-        total_symbols = sum(exchange_stats.values())
-        unique_symbols = len(all_futures)
-        efficiency = (working_count / total_exchanges) * 100
-        
-        logger.info("")
-        logger.info("🎯 OVERALL STATISTICS")
-        logger.info("=" * 60)
-        logger.info(f"📈 Total symbols collected: {total_symbols}")
-        logger.info(f"🔢 Unique symbols: {unique_symbols}")
-        logger.info(f"🏭 Exchanges contributing: {working_count + partial_count}/{total_exchanges}")
-        logger.info(f"📊 Data efficiency: {efficiency:.1f}%")
-        
-        # Health assessment
-        if working_count >= 5:
-            logger.info("💚 EXCELLENT: Most exchanges working correctly")
-        elif working_count >= 3:
-            logger.info("💛 GOOD: Core exchanges providing data")
-        elif working_count >= 1:
-            logger.info("🟠 FAIR: Limited exchange data available")
-        else:
-            logger.error("💥 CRITICAL: No exchange data available")
-        
-        return all_futures, exchange_stats, detailed_stats
-
-
-
-    def get_bybit_futures(self):
-        """Get Bybit futures using the simple authenticated approach"""
-        try:
-            logger.info("🔄 Fetching Bybit futures...")
-            
-            if not hasattr(self, 'bybit_api_key') or not hasattr(self, 'bybit_api_secret'):
-                logger.error("❌ Bybit API credentials not configured")
-                return self.get_bybit_futures_public_fallback()
-            
-            futures = set()
-            
-            # Get linear perpetuals (USDT margined)
-            linear_futures = self._get_bybit_linear_perpetuals()
-            if linear_futures:
-                futures.update(linear_futures)
-                logger.info(f"✅ Bybit linear perpetuals: {len(linear_futures)}")
-            
-            # Get inverse perpetuals (coin margined)  
-            inverse_futures = self._get_bybit_inverse_perpetuals()
-            if inverse_futures:
-                futures.update(inverse_futures)
-                logger.info(f"✅ Bybit inverse perpetuals: {len(inverse_futures)}")
-            
-            logger.info(f"🎯 Bybit TOTAL: {len(futures)} futures")
-            
-            # Log sample symbols for verification
-            if futures:
-                sample = list(futures)[:5]
-                logger.info(f"🔍 Bybit sample: {sample}")
-            
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Bybit error: {e}")
-            return self.get_bybit_futures_public_fallback()
-
-    def _get_bybit_linear_perpetuals(self) -> set:
-        """Get Bybit linear perpetual futures (USDT margined)"""
-        try:
-            base_url = "https://api.bybit.com"
-            endpoint = "/v5/market/instruments-info"
-            
-            timestamp = str(int(time.time() * 1000))
-            recv_window = "5000"
-            
-            # Build parameter string for signature
-            param_string = f"category=linear&recv_window={recv_window}&timestamp={timestamp}"
-            
-            # Generate signature
-            signature = hmac.new(
-                self.bybit_api_secret.encode('utf-8'),
-                param_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            # Build full URL
-            full_url = f"{base_url}{endpoint}?{param_string}&sign={signature}"
-            
-            headers = {
-                'X-BAPI-API-KEY': self.bybit_api_key,
-                'X-BAPI-SIGN': signature,
-                'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': recv_window,
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(full_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    futures = set()
-                    
-                    for item in items:
-                        symbol = item.get('symbol', '')
-                        status = item.get('status', '')
-                        contract_type = item.get('contractType', '')
-                        
-                        # Filter for trading linear perpetuals
-                        if (status == 'Trading' and 
-                            contract_type == 'LinearPerpetual' and
-                            symbol.endswith('USDT')):
-                            futures.add(symbol)
-                    
-                    return futures
-                else:
-                    logger.error(f"❌ Bybit linear API error: {data.get('retMsg')}")
-                    return set()
-            else:
-                logger.error(f"❌ Bybit linear HTTP error: {response.status_code}")
-                return set()
-                
-        except Exception as e:
-            logger.error(f"❌ Bybit linear perpetuals error: {e}")
-            return set()
-
-    def _get_bybit_inverse_perpetuals(self) -> set:
-        """Get Bybit inverse perpetual futures (coin margined)"""
-        try:
-            base_url = "https://api.bybit.com"
-            endpoint = "/v5/market/instruments-info"
-            
-            timestamp = str(int(time.time() * 1000))
-            recv_window = "5000"
-            
-            # Build parameter string for signature
-            param_string = f"category=inverse&recv_window={recv_window}&timestamp={timestamp}"
-            
-            # Generate signature
-            signature = hmac.new(
-                self.bybit_api_secret.encode('utf-8'),
-                param_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            
-            # Build full URL
-            full_url = f"{base_url}{endpoint}?{param_string}&sign={signature}"
-            
-            headers = {
-                'X-BAPI-API-KEY': self.bybit_api_key,
-                'X-BAPI-SIGN': signature,
-                'X-BAPI-TIMESTAMP': timestamp,
-                'X-BAPI-RECV-WINDOW': recv_window,
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(full_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    futures = set()
-                    
-                    for item in items:
-                        symbol = item.get('symbol', '')
-                        status = item.get('status', '')
-                        contract_type = item.get('contractType', '')
-                        
-                        # Filter for trading inverse perpetuals (BTCUSD, ETHUSD, etc.)
-                        if (status == 'Trading' and 
-                            contract_type == 'InversePerpetual' and
-                            symbol.endswith('USD')):
-                            futures.add(symbol)
-                    
-                    return futures
-                else:
-                    logger.error(f"❌ Bybit inverse API error: {data.get('retMsg')}")
-                    return set()
-            else:
-                logger.error(f"❌ Bybit inverse HTTP error: {response.status_code}")
-                return set()
-                
-        except Exception as e:
-            logger.error(f"❌ Bybit inverse perpetuals error: {e}")
-            return set()
-
-    def get_bybit_futures_public_fallback(self):
-        """Fallback method if authenticated API fails"""
-        try:
-            logger.info("🔄 Trying Bybit public fallback...")
-            futures = set()
-            
-            # Try public tickers endpoint as last resort
-            url = "https://api.bybit.com/v5/market/tickers?category=linear"
-            response = requests.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('retCode') == 0:
-                    items = data.get('result', {}).get('list', [])
-                    for item in items:
-                        symbol = item.get('symbol', '')
-                        if symbol and symbol.endswith('USDT'):
-                            futures.add(symbol)
-                    logger.info(f"✅ Bybit public fallback: {len(futures)} symbols")
-            
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Bybit public fallback error: {e}")
-            return set()
-
-
-
-    def find_unique_futures(self):
-        """Find unique futures using robust method"""
-        try:
-            # Get all futures from other exchanges
-            all_futures, exchange_stats = self.get_all_exchanges_futures()
-            
-            # Get MEXC futures separately
-            mexc_futures = self.get_mexc_futures()
-            
-            # Normalize all symbols for comparison
-            all_normalized = {}
-            for symbol in all_futures:
-                normalized = self.normalize_symbol(symbol)
-                all_normalized[normalized] = symbol
-            
-            mexc_normalized = {}
-            for symbol in mexc_futures:
-                normalized = self.normalize_symbol(symbol)
-                mexc_normalized[normalized] = symbol
-            
-            # Find unique futures (only on MEXC)
-            unique_futures = set()
-            for normalized, original in mexc_normalized.items():
-                if normalized not in all_normalized:
-                    unique_futures.add(original)
-            
-            logger.info(f"🎯 Found {len(unique_futures)} unique MEXC futures")
-            return unique_futures, exchange_stats
-            
-        except Exception as e:
-            logger.error(f"Error finding unique futures: {e}")
-            return set(), {}
-
-
-
-    def is_valid_coin_symbol(self, symbol):
-        """Check if this looks like a valid coin symbol"""
-        if not symbol or len(symbol) < 2:
-            return False
-        
-        normalized = self.normalize_symbol(symbol)
-        
-        # Should contain only letters and numbers after normalization
-        if not normalized.isalnum():
-            return False
-        
-        # Should not be too short or too long
-        if len(normalized) < 2 or len(normalized) > 20:
-            return False
-        
-        return True
-
-
-
-    def normalize_symbol(self, symbol):
-        """Normalize symbol for comparison across exchanges - IMPROVED VERSION"""
-        if not symbol:
-            return ""
-        
-        import re
-        
-        original = symbol.upper()
-        normalized = original
-        
-        # Remove futures/contract specific suffixes using regex
-        futures_patterns = [
-            r'[-_ ](PERP(ETUAL)?)$',
-            r'[-_ ](FUTURES?)$',
-            r'[-_ ](SWAP)$',
-            r'[-_ ](CONTRACT)$',
-        ]
-        
-        for pattern in futures_patterns:
-            normalized = re.sub(pattern, '', normalized)
-        
-        # Smart separator removal - preserve trading pair structure
-        # Pattern: word_separator_word (like BTC-USDT, ETH_USDC, etc.)
-        separator_pattern = r'^([A-Z0-9]{2,10})[-_ ]([A-Z0-9]{2,10})$'
-        match = re.match(separator_pattern, normalized)
-        
-        if match:
-            # This looks like a trading pair with separator - remove the separator
-            base, quote = match.groups()
-            normalized = base + quote
-        else:
-            # Remove all separators for other cases
-            normalized = re.sub(r'[-_ ]', '', normalized)
-        
-        # Clean up any double separators or edge cases
-        normalized = re.sub(r'[-_ ]+', '', normalized)
-        
-        # Remove common futures modifiers when they appear at the end
-        futures_modifiers = ['M', 'T', 'Z', 'H', 'U', 'P']  # Common futures suffixes
-        if len(normalized) > 4 and normalized[-1] in futures_modifiers:
-            # Only remove if it looks like a modifier (preceded by letters/numbers)
-            normalized = normalized[:-1]
-        
-        logger.debug(f"Symbol normalized: '{original}' -> '{normalized}'")
-        return normalized
-
-
-    def analyze_symbol_coverage(self, symbol):
-        """Check which exchanges have a specific symbol"""
-        normalized = self.normalize_symbol(symbol)
-        exchanges_with_symbol = []
-        
-        exchange_methods = {
-            'MEXC': self.get_mexc_futures,
-            'Binance': self.get_binance_futures,
-            'Bybit': self.get_bybit_futures,
-            'OKX': self.get_okx_futures,
-            'Gate.io': self.get_gate_futures,
-            'KuCoin': self.get_kucoin_futures,
-            'BingX': self.get_bingx_futures,
-            'BitGet': self.get_bitget_futures
-        }
-        
-        for exchange_name, method in exchange_methods.items():
-            try:
-                futures = method()
-                normalized_futures = {self.normalize_symbol(s) for s in futures}
-                if normalized in normalized_futures:
-                    exchanges_with_symbol.append(exchange_name)
-            except Exception as e:
-                logger.error(f"Error checking {exchange_name} for {symbol}: {e}")
-        
-        return exchanges_with_symbol
-
-    # ==================== GOOGLE SHEETS ANALYSIS ====================
-    
-    def create_comprehensive_analysis(self):
-        """Create comprehensive Google Sheets analysis"""
-        if not self.gs_client:
-            return "Google Sheets not configured. Set GOOGLE_CREDENTIALS_JSON in .env"
-        
-        try:
-            # Collect all futures data
-            all_futures_data = []
-            exchanges = {
-                'MEXC': self.get_mexc_futures,
-                'Binance': self.get_binance_futures,
-                'Bybit': self.get_bybit_futures,
-                'OKX': self.get_okx_futures,
-                'Gate.io': self.get_gate_futures,
-                'KuCoin': self.get_kucoin_futures,
-                'BingX': self.get_bingx_futures,
-                'BitGet': self.get_bitget_futures
-            }
-            
-            exchange_stats = {}
-            for name, method in exchanges.items():
-                futures = method()
-                exchange_stats[name] = len(futures)
-                
-                for symbol in futures:
-                    all_futures_data.append({
-                        'symbol': symbol,
-                        'exchange': name,
-                        'timestamp': datetime.now().isoformat()
-                    })
-                
-                time.sleep(0.5)  # Rate limiting
-            
-            # Analyze data
-            symbol_coverage = {}
-            for future in all_futures_data:
-                normalized = self.normalize_symbol(future['symbol'])
-                if normalized not in symbol_coverage:
-                    symbol_coverage[normalized] = set()
-                symbol_coverage[normalized].add(future['exchange'])
-            
-            # Create Google Sheet
-            spreadsheet_name = f"MEXC Futures Analysis {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            spreadsheet = self.gs_client.create(spreadsheet_name)
-            
-            # Share with email if configured
-            share_email = os.getenv('GOOGLE_SHEET_EMAIL')
-            if share_email:
-                spreadsheet.share(share_email, perm_type='user', role='writer')
-            
-            # Summary sheet
-            summary_sheet = spreadsheet.get_worksheet(0)
-            summary_sheet.update_title("Summary")
-            
-            summary_data = [
-                ["COMPREHENSIVE FUTURES ANALYSIS", ""],
-                ["Created", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-                ["", ""],
-                ["EXCHANGE", "FUTURES COUNT", "STATUS"]
-            ]
-            
-            total_futures = 0
-            for exchange, count in exchange_stats.items():
-                status = "✅" if count > 0 else "❌"
-                summary_data.append([exchange, count, status])
-                total_futures += count
-            
-            unique_count = len([s for s in symbol_coverage.values() if len(s) == 1])
-            
-            summary_data.extend([
-                ["", "", ""],
-                ["TOTAL FUTURES", total_futures, ""],
-                ["UNIQUE SYMBOLS", len(symbol_coverage), ""],
-                ["EXCLUSIVE LISTINGS", unique_count, ""],
-                ["EXCHANGES", len(exchanges), ""]
-            ])
-            
-            summary_sheet.update('A1', summary_data)
-            
-            # All Futures sheet
-            all_sheet = spreadsheet.add_worksheet(title="All Futures", rows="5000", cols="6")
-            all_data = [["Symbol", "Exchange", "Normalized", "Available On", "Coverage", "Timestamp"]]
-            
-            for future in all_futures_data:
-                normalized = self.normalize_symbol(future['symbol'])
-                exchanges_list = symbol_coverage[normalized]
-                available_on = ", ".join(sorted(exchanges_list))
-                coverage = f"{len(exchanges_list)}/{len(exchanges)}"
-                
-                all_data.append([
-                    future['symbol'],
-                    future['exchange'],
-                    normalized,
-                    available_on,
-                    coverage,
-                    future['timestamp']
-                ])
-            
-            all_sheet.update('A1', all_data)
-            
-            # Unique Futures sheet
-            unique_sheet = spreadsheet.add_worksheet(title="Unique Futures", rows="1000", cols="5")
-            unique_data = [["Symbol", "Exchange", "Normalized", "Exchanges", "Timestamp"]]
-            
-            for normalized, exchanges_set in symbol_coverage.items():
-                if len(exchanges_set) == 1:
-                    exchange = list(exchanges_set)[0]
-                    # Find original symbol
-                    original_symbol = next((f['symbol'] for f in all_futures_data 
-                                          if self.normalize_symbol(f['symbol']) == normalized 
-                                          and f['exchange'] == exchange), normalized)
-                    
-                    unique_data.append([
-                        original_symbol,
-                        exchange,
-                        normalized,
-                        ", ".join(exchanges_set),
-                        datetime.now().isoformat()
-                    ])
-            
-            unique_sheet.update('A1', unique_data)
-            
-            # MEXC Analysis sheet
-            mexc_sheet = spreadsheet.add_worksheet(title="MEXC Analysis", rows="1000", cols="6")
-            mexc_data = [["MEXC Symbol", "Normalized", "Available On", "Exchanges", "Status", "Unique"]]
-            
-            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
-            for future in mexc_futures:
-                normalized = self.normalize_symbol(future['symbol'])
-                exchanges_list = symbol_coverage[normalized]
-                available_on = ", ".join(sorted(exchanges_list))
-                status = "Unique" if len(exchanges_list) == 1 else "Multi-exchange"
-                unique_flag = "✅" if len(exchanges_list) == 1 else "🔸"
-                
-                mexc_data.append([
-                    future['symbol'],
-                    normalized,
-                    available_on,
-                    len(exchanges_list),
-                    status,
-                    unique_flag
-                ])
-            
-            mexc_sheet.update('A1', mexc_data)
-            
-            # Save URL
-            data = self.load_data()
-            data['google_sheet_url'] = spreadsheet.url
-            self.save_data(data)
-            
-            logger.info(f"Google Sheet created: {spreadsheet.url}")
-            return spreadsheet.url
-            
-        except Exception as e:
-            logger.error(f"Google Sheets analysis error: {e}")
-            return f"Error creating analysis: {str(e)}"
 
     # ==================== TELEGRAM COMMANDS ====================
-    
-    def start_command(self, update: Update, context: CallbackContext):
-        """Send welcome message"""
-        user = update.effective_user
-        welcome_text = (
-            f"🤖 Hello {user.mention_html()}!\n\n"
-            "I'm <b>MEXC Unique Futures Tracker</b>\n\n"
-            "<b>Features:</b>\n"
-            "• Real-time monitoring of 8 exchanges\n"
-            "• Unique futures detection\n"
-            "• Google Sheets analysis\n"
-            "• Automatic alerts\n"
-            "• Symbols management & tracking\n\n"
-            "<b>Commands:</b>\n"
-            "/start - Welcome message\n"
-            "/status - Current status\n"
-            "/check - Immediate check\n"
-            "/analysis - Full analysis\n"
-            "/sheet - Google Sheet link\n"
-            "/exchanges - Exchange info\n"
-            "/stats - Bot statistics\n"
-            "/help - Help information\n\n"
-            "<b>Symbols Management:</b>\n"
-            "/checksymbol SYMBOL - Check specific symbol\n"
-            "/watch SYMBOL - Add symbol to watchlist\n"
-            "/unwatch SYMBOL - Remove from watchlist\n"
-            "/clearwatchlist - Clear entire watchlist\n"
-            "/watchlist - Show watched symbols\n"
-            "/coverage SYMBOL - Show exchange coverage\n"
-            "/findunique - Find currently unique symbols\n\n"
-            "Use /help for complete command list"
-        )
-        update.message.reply_html(welcome_text)
-        
-    def status_command(self, update: Update, context: CallbackContext):
-        """Send current status with blocked exchange info"""
-        data = self.load_data()
-        unique_count = len(data.get('unique_futures', []))
-        last_check = data.get('last_check', 'Never')
-        
-        # Get stats from data or use defaults
-        stats = data.get('stats', {})
-        exchange_stats = data.get('exchange_stats', {})
-        
-        # Calculate working and blocked exchanges
-        working_exchanges = []
-        blocked_exchanges = []
-        
-        for exchange, count in exchange_stats.items():
-            if count > 0:
-                working_exchanges.append(exchange)
-            else:
-                blocked_exchanges.append(exchange)
-        
-        # Add MEXC to working (since it's our source)
-        working_exchanges.append('MEXC')
-        
-        if last_check != 'Never':
-            try:
-                last_dt = datetime.fromisoformat(last_check.replace('Z', '+00:00'))
-                last_check = last_dt.strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                pass
-        
-        status_text = (
-            "📈 <b>Bot Statistics</b>\n\n"
-            f"🔄 Checks performed: <b>{stats.get('checks_performed', 0)}</b>\n"
-            f"🎯 Max unique found: <b>{stats.get('unique_found_total', 0)}</b>\n"
-            f"⏰ Current unique: <b>{unique_count}</b>\n"
-            f"✅ Working exchanges: <b>{len(working_exchanges)}</b>\n"
-            f"❌ Blocked exchanges: <b>{len(blocked_exchanges)}</b>\n"
-            f"📅 Running since: {self.format_start_time(stats.get('start_time'))}\n"
-            f"🤖 Uptime: {self.get_uptime()}\n"
-            f"⚡ Auto-check: {self.update_interval}min\n"
-            f"📝 Last check: {last_check}"
-        )
-        
-        # Show blocked exchanges if any
-        if blocked_exchanges:
-            status_text += f"\n\n<b>🚫 Blocked exchanges:</b>\n"
-            for exchange in sorted(blocked_exchanges):
-                status_text += f"• {exchange}\n"
-            status_text += f"\n<i>Using alternative data sources for blocked exchanges</i>"
-        
-        # Show unique futures if any
-        if unique_count > 0:
-            status_text += "\n\n<b>🎯 Unique futures:</b>\n"
-            for symbol in sorted(data['unique_futures'])[:5]:
-                status_text += f"• {symbol}\n"
-            if unique_count > 5:
-                status_text += f"• ... and {unique_count - 5} more"
-        
-        update.message.reply_html(status_text)
 
-    def check_command(self, update: Update, context: CallbackContext):
-        """Perform immediate check"""
-        update.message.reply_html("🔍 <b>Checking all exchanges...</b>")
-        
-        try:
-            # Use the robust method instead of the old one
-            unique_futures, exchange_stats = self.find_unique_futures()
-            data = self.load_data()
-            
-            stats = data.get('statistics', {})
-            stats['checks_performed'] = stats.get('checks_performed', 0) + 1
-            stats['unique_found_total'] = max(stats.get('unique_found_total', 0), len(unique_futures))
-            
-            data['unique_futures'] = list(unique_futures)
-            data['last_check'] = datetime.now().astimezone().isoformat()
-            data['statistics'] = stats
-            data['exchange_stats'] = exchange_stats
-            self.save_data(data)
-            
-            if unique_futures:
-                message = "✅ <b>Check Complete!</b>\n\n"
-                message += f"🎯 Found <b>{len(unique_futures)}</b> unique futures:\n\n"
-                for symbol in sorted(unique_futures)[:8]:
-                    message += f"• {symbol}\n"
-                if len(unique_futures) > 8:
-                    message += f"• ... and {len(unique_futures) - 8} more"
-            else:
-                message = "✅ <b>Check Complete!</b>\n\nNo unique futures found."
-            
-            update.message.reply_html(message)
-            
-        except Exception as e:
-            error_msg = f"❌ <b>Check failed:</b>\n{str(e)}"
-            update.message.reply_html(error_msg)
-            
-    def analysis_command(self, update: Update, context: CallbackContext):
-        """Create comprehensive analysis without Google Sheets"""
-        update.message.reply_html("📈 <b>Creating comprehensive analysis...</b>")
-        
-        try:
-            # Collect data from all exchanges
-            all_futures_data = []
-            exchanges = {
-                'MEXC': self.get_mexc_futures,
-                'Binance': self.get_binance_futures,
-                'Bybit': self.get_bybit_futures,
-                'OKX': self.get_okx_futures,
-                'Gate.io': self.get_gate_futures,
-                'KuCoin': self.get_kucoin_futures,
-                'BingX': self.get_bingx_futures,
-                'BitGet': self.get_bitget_futures
-            }
-            
-            exchange_stats = {}
-            symbol_coverage = {}
-            
-            for name, method in exchanges.items():
-                try:
-                    futures = method()
-                    exchange_stats[name] = len(futures)
-                    
-                    for symbol in futures:
-                        all_futures_data.append({
-                            'symbol': symbol,
-                            'exchange': name,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        
-                        # Track symbol coverage
-                        normalized = self.normalize_symbol(symbol)
-                        if normalized not in symbol_coverage:
-                            symbol_coverage[normalized] = set()
-                        symbol_coverage[normalized].add(name)
-                    
-                    time.sleep(1)  # Rate limiting
-                    
-                except Exception as e:
-                    logger.error(f"Exchange {name} error: {e}")
-                    exchange_stats[name] = 0
-            
-            # Create and send analysis files directly
-            self.send_comprehensive_analysis(update, all_futures_data, exchange_stats, symbol_coverage)
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
+    def setup_handlers(self):
+        """Setup command handlers"""
+        self.dispatcher.add_handler(CommandHandler("start", self.start_command))
+        self.dispatcher.add_handler(CommandHandler("status", self.status_command))
+        self.dispatcher.add_handler(CommandHandler("check", self.check_command))
+        self.dispatcher.add_handler(CommandHandler("help", self.help_command))
+        self.dispatcher.add_handler(CommandHandler("stats", self.stats_command))
+        self.dispatcher.add_handler(CommandHandler("exchanges", self.exchanges_command))
+        self.dispatcher.add_handler(CommandHandler("analysis", self.analysis_command))
+        self.dispatcher.add_handler(CommandHandler("findunique", self.find_unique_command))
+        self.dispatcher.add_handler(CommandHandler("checksymbol", self.check_symbol_command))
+        self.dispatcher.add_handler(CommandHandler("prices", self.prices_command))
+        self.dispatcher.add_handler(CommandHandler("toppers", self.top_performers_command))
+        self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
 
-    def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage):
-        """Create MEXC analysis as Excel file"""
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "MEXC Analysis"
-        
-        # Header
-        ws['A1'] = 'MEXC FUTURES ANALYSIS'
-        ws['A1'].font = Font(bold=True, size=14)
-        
-        # Headers
-        headers = ['Symbol', 'Normalized Symbol', 'Available Exchanges']
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=2, column=col)
-            cell.value = header
-            cell.font = Font(bold=True)
-        
-        # MEXC data
-        row = 3
-        for future in all_futures_data:
-            if future['exchange'] == 'MEXC':
-                normalized = self.normalize_symbol(future['symbol'])
-                exchanges_list = symbol_coverage.get(normalized, [])
-                available_on = ', '.join(sorted(exchanges_list))
-                
-                ws[f'A{row}'] = future['symbol']
-                ws[f'B{row}'] = normalized
-                ws[f'C{row}'] = available_on
-                row += 1
-        
-        # Adjust column widths
-        ws.column_dimensions['A'].width = 25
-        ws.column_dimensions['B'].width = 25
-        ws.column_dimensions['C'].width = 40
-        
-        # Save to bytes
-        output = io.BytesIO()
-        wb.save(output)
-        excel_content = output.getvalue()
-        output.close()
-        
-        return excel_content
-
-    def send_comprehensive_analysis(self, update: Update, all_futures_data, exchange_stats, symbol_coverage):
-        """Send comprehensive analysis as Excel files"""
-        try:
-            # File 1: Complete analysis
-            excel1_content = self.create_complete_analysis_excel(all_futures_data, symbol_coverage, exchange_stats)
-            file1 = io.BytesIO(excel1_content)  # Remove .encode('utf-8')
-            file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Change to .xlsx
-            
-            # File 2: Unique futures only
-            excel2_content = self.create_unique_futures_excel(symbol_coverage, all_futures_data)
-            file2 = io.BytesIO(excel2_content)  # Remove .encode('utf-8')
-            file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Change to .xlsx
-            
-            # File 3: MEXC analysis - FIX THIS FUNCTION TO RETURN EXCEL TOO
-            excel3_content = self.create_mexc_analysis_excel(all_futures_data, symbol_coverage)  # Rename to create_mexc_analysis_excel
-            file3 = io.BytesIO(excel3_content)  # Remove .encode('utf-8')
-            file3.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Change to .xlsx
-            
-            # Send files
-            update.message.reply_document(
-                document=file1,
-                caption="📊 <b>Complete Futures Analysis</b>\n\nAll futures from all exchanges",
-                parse_mode='HTML'
-            )
-            
-            update.message.reply_document(
-                document=file2,
-                caption="💎 <b>Unique Futures</b>\n\nFutures available on only one exchange",
-                parse_mode='HTML'
-            )
-            
-            update.message.reply_document(
-                document=file3,
-                caption="🎯 <b>MEXC Analysis</b>\n\nDetailed MEXC futures coverage",
-                parse_mode='HTML'
-            )
-            
-            # Send summary
-            unique_count = len([s for s in symbol_coverage.values() if len(s) == 1])
-            working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
-            
-            summary = (
-                "📈 <b>Analysis Complete!</b>\n\n"
-                f"🏢 Exchanges working: {working_exchanges}/{len(exchange_stats)}\n"
-                f"📊 Total symbols: {len(symbol_coverage)}\n"
-                f"💎 Unique listings: {unique_count}\n"
-                f"🔄 MEXC futures: {exchange_stats.get('MEXC', 0)}\n"
-                f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            )
-            
-            update.message.reply_html(summary)
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ <b>Error sending analysis:</b>\n{str(e)}")
-        
-    def create_complete_analysis_excel(self, all_futures_data, symbol_coverage, exchange_stats):
-        """Create complete analysis Excel file"""
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Complete Analysis"
-        
-        # Header styling
-        header_font = Font(bold=True, size=14)
-        title_font = Font(bold=True, size=12)
-        normal_font = Font(size=10)
-        
-        # Write header
-        ws.merge_cells('A1:E1')
-        ws['A1'] = 'COMPLETE FUTURES ANALYSIS'
-        ws['A1'].font = header_font
-        ws['A1'].alignment = Alignment(horizontal='center')
-        
-        ws['A2'] = 'Generated'
-        ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        ws['A2'].font = title_font
-        ws['B2'].font = normal_font
-        
-        # Exchange summary
-        ws['A4'] = 'EXCHANGE SUMMARY'
-        ws['A4'].font = title_font
-        
-        # Exchange summary headers
-        headers = ['Exchange', 'Status', 'Futures Count']
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=5, column=col)
-            cell.value = header
-            cell.font = title_font
-            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-        
-        # Exchange summary data
-        row = 6
-        for exchange, count in exchange_stats.items():
-            status = 'WORKING' if count > 0 else 'FAILED'
-            ws[f'A{row}'] = exchange
-            ws[f'B{row}'] = status
-            ws[f'C{row}'] = count
-            row += 1
-        
-        # Detailed futures data
-        ws[f'A{row+2}'] = 'DETAILED FUTURES DATA'
-        ws[f'A{row+2}'].font = title_font
-        
-        # Detailed data headers
-        detail_headers = ['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage']
-        for col, header in enumerate(detail_headers, 1):
-            cell = ws.cell(row=row+3, column=col)
-            cell.value = header
-            cell.font = title_font
-            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-        
-        # Detailed data
-        data_row = row + 4
-        for future in all_futures_data:
-            normalized = self.normalize_symbol(future['symbol'])
-            exchanges_list = symbol_coverage.get(normalized, [])
-            available_on = ', '.join(sorted(exchanges_list))
-            coverage = f"{len(exchanges_list)} exchanges"
-            
-            ws[f'A{data_row}'] = future['symbol']
-            ws[f'B{data_row}'] = future['exchange']
-            ws[f'C{data_row}'] = normalized
-            ws[f'D{data_row}'] = available_on
-            ws[f'E{data_row}'] = coverage
-            data_row += 1
-        
-        # SIMPLE COLUMN WIDTH ADJUSTMENT - NO ITERATION OVER COLUMNS
-        # Manually set reasonable column widths
-        ws.column_dimensions['A'].width = 20  # Symbol
-        ws.column_dimensions['B'].width = 15  # Exchange
-        ws.column_dimensions['C'].width = 20  # Normalized Symbol
-        ws.column_dimensions['D'].width = 30  # Available On
-        ws.column_dimensions['E'].width = 15  # Coverage
-        
-        # Save to bytes
-        output = io.BytesIO()
-        wb.save(output)
-        excel_content = output.getvalue()
-        output.close()
-        
-        return excel_content
-
-    def create_unique_futures_excel(self, symbol_coverage, all_futures_data):
-        """Create unique futures Excel file"""
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Unique Futures"
-        
-        # Styling
-        header_font = Font(bold=True, size=14)
-        title_font = Font(bold=True, size=12)
-        normal_font = Font(size=10)
-        
-        # Write header
-        ws.merge_cells('A1:C1')
-        ws['A1'] = 'UNIQUE FUTURES ANALYSIS'
-        ws['A1'].font = header_font
-        ws['A1'].alignment = Alignment(horizontal='center')
-        
-        ws['A2'] = 'Generated'
-        ws['B2'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        ws['A2'].font = title_font
-        ws['B2'].font = normal_font
-        
-        # Headers
-        headers = ['Symbol', 'Exchange', 'Normalized Symbol']
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=4, column=col)
-            cell.value = header
-            cell.font = title_font
-            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-        
-        # Data
-        row = 5
-        unique_count = 0
-        for normalized, exchanges_set in symbol_coverage.items():
-            if len(exchanges_set) == 1:
-                unique_count += 1
-                exchange = list(exchanges_set)[0]
-                original_symbol = next((f['symbol'] for f in all_futures_data 
-                                    if self.normalize_symbol(f['symbol']) == normalized 
-                                    and f['exchange'] == exchange), normalized)
-                
-                ws[f'A{row}'] = original_symbol
-                ws[f'B{row}'] = exchange
-                ws[f'C{row}'] = normalized
-                row += 1
-        
-        # Summary
-        ws[f'A{row+2}'] = 'SUMMARY'
-        ws[f'A{row+2}'].font = title_font
-        
-        ws[f'A{row+3}'] = 'Total unique futures'
-        ws[f'B{row+3}'] = unique_count
-        ws[f'A{row+3}'].font = title_font
-        ws[f'B{row+3}'].font = normal_font
-        
-        # SIMPLE COLUMN WIDTH ADJUSTMENT - NO ITERATION OVER COLUMNS
-        ws.column_dimensions['A'].width = 25  # Symbol
-        ws.column_dimensions['B'].width = 15  # Exchange
-        ws.column_dimensions['C'].width = 25  # Normalized Symbol
-        
-        # Save to bytes
-        output = io.BytesIO()
-        wb.save(output)
-        excel_content = output.getvalue()
-        output.close()
-        
-        return excel_content
-
-    def sheet_command(self, update: Update, context: CallbackContext):
-        """Get Google Sheet link or create new one"""
-        data = self.load_data()
-        sheet_url = data.get('google_sheet_url')
-        
-        if sheet_url:
-            keyboard = [
-                ['📊 Open Existing Sheet', '📈 Create New Analysis'],
-                ['❌ Cancel']
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
-            
-            update.message.reply_html(
-                f"📋 <b>Google Sheet Available</b>\n\n"
-                f"Existing sheet: {sheet_url}\n\n"
-                f"Choose an option:",
-                reply_markup=reply_markup
-            )
-            
-            # Store context for handling the choice
-            context.user_data['existing_sheet_url'] = sheet_url
-        else:
-            update.message.reply_html(
-                "No analysis sheet found. Use /export and choose Google Sheets option to create one."
-            )
-
-
-    def clear_watchlist_command(self, update: Update, context: CallbackContext):
-        """Clear the entire watchlist"""
-        data = self.load_data()
-        
-        if 'watchlist' not in data or not data['watchlist']:
-            update.message.reply_html("📝 Your watchlist is already empty")
-            return
-        
-        # Store the count for the message
-        watchlist_count = len(data['watchlist'])
-        
-        # Clear the watchlist
-        data['watchlist'] = []
-        self.save_data(data)
-        
-        update.message.reply_html(
-            f"🗑️ <b>Watchlist Cleared!</b>\n\n"
-            f"Removed {watchlist_count} symbols from your watchlist\n\n"
-            f"Use /watch SYMBOL to add new symbols"
-        )
-        
-    def exchanges_command(self, update: Update, context: CallbackContext):
-        """Show exchange information"""
-        data = self.load_data()
-        exchange_stats = data.get('exchange_stats', {})
-        
-        exchanges_text = "🏢 <b>Supported Exchanges</b>\n\n"
-        exchanges_text += "🎯 <b>MEXC</b> (source)\n"
-        
-        if exchange_stats:
-            exchanges_text += "\n<b>Other exchanges:</b>\n"
-            for exchange, count in sorted(exchange_stats.items()):
-                status = "✅" if count > 0 else "❌"
-                exchanges_text += f"{status} {exchange}: {count} futures\n"
-        else:
-            exchanges_text += "\nNo data. Use /check first."
-        
-        exchanges_text += f"\n🔍 Monitoring <b>{len(exchange_stats) + 1}</b> exchanges"
-        
-        update.message.reply_html(exchanges_text)
-    
-    def stats_command(self, update: Update, context: CallbackContext):
-        """Show statistics"""
-        data = self.load_data()
-        stats = data.get('statistics', {})
-        exchange_stats = data.get('exchange_stats', {})
-        
-        stats_text = (
-            "📈 <b>Bot Statistics</b>\n\n"
-            f"🔄 Checks performed: <b>{stats.get('checks_performed', 0)}</b>\n"
-            f"🎯 Max unique found: <b>{stats.get('unique_found_total', 0)}</b>\n"
-            f"⏰ Current unique: <b>{len(data.get('unique_futures', []))}</b>\n"
-            f"🏢 Exchanges: <b>{len(exchange_stats) + 1}</b>\n"
-            f"📅 Running since: {self.format_start_time(stats.get('start_time'))}\n"
-            f"🤖 Uptime: {self.get_uptime()}\n"
-            f"⚡ Auto-check: {self.update_interval}min"
-        )
-        
-        update.message.reply_html(stats_text)
-    
-    def help_command(self, update: Update, context: CallbackContext):
-        """Show help information"""
-        help_text = (
-            "🆘 <b>MEXC Futures Tracker - Help</b>\n\n"
-            "<b>Monitoring 8 exchanges:</b>\n"
-            "MEXC, Binance, Bybit, OKX,\n"
-            "Gate.io, KuCoin, BingX, BitGet\n\n"
-            "<b>Main commands:</b>\n"
-            "/check - Quick check for unique futures\n"
-            "/analysis - Full analysis (Excel files)\n"
-            "/export - Download data (Excel/JSON/Google Sheets)\n"
-            "/autosheet - Auto-updating Google Sheet\n"
-            "/forceupdate - Force update Google Sheet\n"
-            "/status - Current status\n"
-            "/exchanges - Exchange information\n\n"
-            "<b>Symbols Management:</b>\n"
-            "/checksymbol SYMBOL - Check if a specific symbol is unique to MEXC\n"
-            "/watch SYMBOL - Add symbol to personal watchlist\n"
-            "/unwatch SYMBOL - Remove symbol from watchlist\n"
-             "/clearwatchlist - Remove all symbols from watchlist\n"
-            "/watchlist - View all watched symbols with their status\n"
-            "/coverage SYMBOL - Show detailed exchange coverage\n"
-            "/findunique - Find currently unique symbols\n\n"
-            "<b>Auto-features:</b>\n"
-            f"• Checks every {self.update_interval} minutes\n"
-            "• Alerts for new unique futures\n"
-            "• Google Sheets auto-updates\n"
-            "• Data export available\n\n"
-            "⚡ <i>Happy trading!</i>"
-        )
-        update.message.reply_html(help_text)  
-
-
-    def get_uptime(self):
-        """Calculate bot uptime"""
-        data = self.load_data()
-        start_time = data.get('statistics', {}).get('start_time')
-        if start_time:
-            try:
-                start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                uptime = datetime.now() - start_dt
-                days = uptime.days
-                hours = uptime.seconds // 3600
-                minutes = (uptime.seconds % 3600) // 60
-                return f"{days}d {hours}h {minutes}m"
-            except:
-                pass
-        return "Unknown"
-    
-    def format_start_time(self, start_time):
-        """Format start time for display in local time"""
-        if start_time:
-            try:
-                dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                # Convert to local time
-                return dt.astimezone().strftime("%Y-%m-%d %H:%M")
-            except:
-                pass
-        return "Unknown"
-    
-    def send_broadcast_message(self, message):
-        """Send message to configured chat"""
-        try:
-            if self.chat_id:
-                self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message,
-                    parse_mode='HTML'
-                )
-        except Exception as e:
-            logger.error(f"Broadcast error: {e}")
-        
-    def setup_scheduler(self):
-        """Setup scheduled tasks"""
-        # Auto-check for unique futures
-        schedule.every(self.update_interval).minutes.do(self.run_auto_check)
-        
-        # Google Sheets auto-update (same interval or different)
-        schedule.every(self.update_interval).minutes.do(self.update_google_sheet)
-        
-        logger.info(f"Scheduler setup - checking every {self.update_interval} minutes")
-
-    def run_auto_check(self):
-        """Run automatic check and update Google Sheet"""
-        try:
-            logger.info("Running scheduled check...")
-            
-            unique_futures, exchange_stats = self.find_unique_futures()
-            current_unique = set(unique_futures)
-            
-            # Update Google Sheet with fresh data
-            self.update_google_sheet()
-            
-            if current_unique != self.last_unique_futures:
-                new_futures = current_unique - self.last_unique_futures
-                removed_futures = self.last_unique_futures - current_unique
-                
-                data = self.load_data()
-                data['unique_futures'] = list(current_unique)
-                data['last_check'] = datetime.now().isoformat()
-                data['exchange_stats'] = exchange_stats
-                self.save_data(data)
-                
-                if new_futures:
-                    # Get auto-update sheet URL for the message
-                    auto_sheet_url = data.get('auto_update_sheet_url', 'N/A')
-                    message = "🚀 <b>NEW UNIQUE FUTURES!</b>\n\n"
-                    for symbol in sorted(new_futures):
-                        message += f"✅ {symbol}\n"
-                    message += f"\n📊 Total: {len(current_unique)}"
-                    if auto_sheet_url != 'N/A':
-                        message += f"\n📊 <a href='{auto_sheet_url}'>View in Google Sheet</a>"
-                    self.send_broadcast_message(message)
-                
-                if removed_futures:
-                    message = "📉 <b>FUTURES NO LONGER UNIQUE:</b>\n\n"
-                    for symbol in sorted(removed_futures):
-                        message += f"❌ {symbol}\n"
-                    message += f"\n📊 Remaining: {len(current_unique)}"
-                    self.send_broadcast_message(message)
-                
-                self.last_unique_futures = current_unique
-            
-        except Exception as e:
-            logger.error(f"Auto-check error: {e}")
-                
-    def run_scheduler(self):
-        """Run the scheduler"""
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-        
-    def export_command(self, update: Update, context: CallbackContext):
-        """Export data to Excel/JSON or show Google Sheet"""
-        update.message.reply_html("🔄 <b>Getting fresh data from exchanges...</b>")
-        
-        try:
-            # Get fresh data directly from APIs
-            unique_futures, exchange_stats = self.find_unique_futures()
-            
-            if not unique_futures:
-                update.message.reply_html("❌ No unique futures found to export.")
-                return
-            
-            # Create simplified keyboard
-            keyboard = [
-                ['📊 Excel Export', '📁 JSON Export'],
-            ]
-            
-            if self.spreadsheet:
-                # Only show the option to view existing sheet
-                keyboard.append(['🔗 View Google Sheet'])
-            
-            keyboard.append(['❌ Cancel'])
-                
-            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-            
-            # Save data in context
-            context.user_data['export_data'] = {
-                'unique_futures': list(unique_futures),
-                'exchange_stats': exchange_stats,
-                'mexc_futures': list(self.get_mexc_futures()),
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            message = f"✅ <b>Data collected!</b>\n\n🎯 Unique futures: {len(unique_futures)}\n🏢 Exchanges: {len(exchange_stats) + 1}\n\n"
-            
-            if self.spreadsheet:
-                message += "<b>Choose export format:</b>"
-            else:
-                message += "<b>Choose export format:</b>\n\n⚠️ Google Sheets not configured"
-            
-            update.message.reply_html(message, reply_markup=reply_markup)
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ <b>Error collecting data:</b>\n{str(e)}")
-                    
-    def format_google_sheet(self, worksheet):
-        """Apply basic formatting to Google Sheet"""
-        try:
-            # Format header row
-            worksheet.format('A1:Z1', {
-                'textFormat': {'bold': True},
-                'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
-            })
-            
-            # Auto-resize columns
-            worksheet.columns_auto_resize(0, 10)
-            
-        except Exception as e:
-            logger.error(f"Sheet formatting error: {e}")
-          
-
-
-
-
-    def handle_export(self, update: Update, context: CallbackContext):
-        """Handle export format selection"""
-        choice = update.message.text
-        logger.info(f"Export menu selected: {choice}")
-        
-        if choice == '❌ Cancel':
-            update.message.reply_html("Export cancelled.", reply_markup=ReplyKeyboardRemove())
-            return
-        
-        if choice == '📊 Excel Export':
-            export_data = context.user_data.get('export_data', {})
-            if export_data:
-                self.export_to_excel(update, export_data)
-            else:
-                update.message.reply_html("❌ No export data found. Use /export first.")
-        
-        elif choice == '📁 JSON Export':
-            export_data = context.user_data.get('export_data', {})
-            if export_data:
-                self.export_to_json(update, export_data)
-            else:
-                update.message.reply_html("❌ No export data found. Use /export first.")
-        
-        elif choice == '🔗 View Google Sheet':
-            if self.spreadsheet:
-                update.message.reply_html(
-                    f"📊 <b>Your Auto-Update Google Sheet</b>\n\n"
-                    f"🔗 <a href='{self.spreadsheet.url}'>Open Google Sheet</a>\n\n"
-                    f"• Real-time data from all exchanges\n"
-                    f"• Auto-updates every {self.update_interval} minutes\n"
-                    f"• Unique futures tracking\n"
-                    f"• Comprehensive analysis",
-                    reply_markup=ReplyKeyboardRemove()
-                )
-            else:
-                update.message.reply_html("❌ Google Sheets not configured.")
-        
-        else:
-            update.message.reply_html("❌ Unknown export option.", reply_markup=ReplyKeyboardRemove())
-        
-        # Clear context
-        context.user_data.pop('export_data', None)
-                                
-    def export_to_excel(self, update: Update, export_data):
-        """Export to Excel format"""
-        try:
-            unique_futures = export_data['unique_futures']
-            exchange_stats = export_data['exchange_stats']
-            mexc_futures = export_data['mexc_futures']
-            
-            # Create Excel workbook in memory
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "MEXC Export"
-            
-            # Styling
-            header_font = Font(bold=True, size=14)
-            title_font = Font(bold=True, size=12)
-            normal_font = Font(size=10)
-            
-            # Header
-            ws.merge_cells('A1:C1')
-            ws['A1'] = 'MEXC UNIQUE FUTURES EXPORT'
-            ws['A1'].font = header_font
-            ws['A1'].alignment = Alignment(horizontal='center')
-            
-            ws['A2'] = 'Generated'
-            ws['B2'] = datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')
-            ws['A2'].font = title_font
-            ws['B2'].font = normal_font
-            
-            # Unique futures section
-            ws['A4'] = 'UNIQUE FUTURES ON MEXC'
-            ws['A4'].font = title_font
-            
-            # Headers for unique futures
-            headers = ['Symbol', 'Status', 'Timestamp']
-            for col, header in enumerate(headers, 1):
-                cell = ws.cell(row=5, column=col)
-                cell.value = header
-                cell.font = title_font
-                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-            
-            # Unique futures data
-            row = 6
-            for symbol in sorted(unique_futures):
-                ws[f'A{row}'] = symbol
-                ws[f'B{row}'] = 'UNIQUE'
-                ws[f'C{row}'] = export_data['timestamp']
-                row += 1
-            
-            # Exchange statistics section
-            ws[f'A{row+2}'] = 'EXCHANGE STATISTICS'
-            ws[f'A{row+2}'].font = title_font
-            
-            # Exchange headers
-            exchange_headers = ['Exchange', 'Futures Count']
-            for col, header in enumerate(exchange_headers, 1):
-                cell = ws.cell(row=row+3, column=col)
-                cell.value = header
-                cell.font = title_font
-                cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-            
-            # Exchange data
-            stat_row = row + 4
-            ws[f'A{stat_row}'] = 'MEXC'
-            ws[f'B{stat_row}'] = len(mexc_futures)
-            stat_row += 1
-            
-            for exchange, count in sorted(exchange_stats.items()):
-                ws[f'A{stat_row}'] = exchange
-                ws[f'B{stat_row}'] = count
-                stat_row += 1
-            
-            # Summary section
-            ws[f'A{stat_row+2}'] = 'SUMMARY'
-            ws[f'A{stat_row+2}'].font = title_font
-            
-            summary_data = [
-                ['Total Unique Futures', len(unique_futures)],
-                ['Total Exchanges', len(exchange_stats) + 1],
-                ['Total MEXC Futures', len(mexc_futures)]
-            ]
-            
-            for i, (label, value) in enumerate(summary_data, start=stat_row+3):
-                ws[f'A{i}'] = label
-                ws[f'B{i}'] = value
-                ws[f'A{i}'].font = title_font
-            
-            # Adjust column widths
-            ws.column_dimensions['A'].width = 25
-            ws.column_dimensions['B'].width = 15
-            ws.column_dimensions['C'].width = 20
-            
-            # Save to bytes
-            output = io.BytesIO()
-            wb.save(output)
-            excel_content = output.getvalue()
-            output.close()
-            
-            # Prepare file for sending
-            file_obj = io.BytesIO(excel_content)
-            file_obj.name = f'mexc_unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx'  # Changed to .xlsx
-            
-            update.message.reply_document(
-                document=file_obj,
-                caption="📊 <b>MEXC Unique Futures Export</b>\n\n"
-                    f"✅ {len(unique_futures)} unique futures\n"
-                    f"🏢 {len(exchange_stats) + 1} exchanges monitored\n"
-                    f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardRemove()
-            )
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ <b>Excel export error:</b>\n{str(e)}")
-            logger.error(f"Excel export error: {e}")
-            
-    def export_to_json(self, update: Update, export_data):
-        """Export to JSON format"""
-        try:
-            # Создаем структуру данных для JSON
-            json_data = {
-                "metadata": {
-                    "export_timestamp": export_data['timestamp'],
-                    "total_exchanges": len(export_data['exchange_stats']) + 1,
-                    "unique_futures_count": len(export_data['unique_futures']),
-                    "mexc_futures_count": len(export_data['mexc_futures'])
-                },
-                "unique_futures": export_data['unique_futures'],
-                "exchange_statistics": export_data['exchange_stats'],
-                "mexc_futures": export_data['mexc_futures']
-            }
-            
-            # Конвертируем в JSON строку
-            json_str = json.dumps(json_data, indent=2, ensure_ascii=False)
-            
-            # Подготавливаем файл для отправки
-            file_obj = io.BytesIO(json_str.encode('utf-8'))
-            file_obj.name = f'mexc_futures_data_{datetime.now().strftime("%Y%m%d_%H%M")}.json'
-            
-            update.message.reply_document(
-                document=file_obj,
-                caption="📁 <b>MEXC Futures Data Export</b>\n\n"
-                    "Complete dataset in JSON format",
-                parse_mode='HTML',
-                reply_markup=ReplyKeyboardRemove()
-            )
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ <b>JSON export error:</b>\n{str(e)}")
-            logger.error(f"JSON export error: {e}")
-
-    def export_full_analysis(self, update: Update):
-        """Create and send full analysis files"""
-        update.message.reply_html("📈 <b>Creating full analysis export...</b>")
-        
-        def create_analysis():
-            try:
-                # Collect all data
-                all_futures_data = []
-                exchanges = {
-                    'MEXC': self.get_mexc_futures,
-                    'Binance': self.get_binance_futures,
-                    'Bybit': self.get_bybit_futures,
-                    'OKX': self.get_okx_futures,
-                    'Gate.io': self.get_gate_futures,
-                    'KuCoin': self.get_kucoin_futures,
-                    'BingX': self.get_bingx_futures,
-                    'BitGet': self.get_bitget_futures
-                }
-                
-                exchange_stats = {}
-                symbol_coverage = {}
-                
-                for name, method in exchanges.items():
-                    futures = method()
-                    exchange_stats[name] = len(futures)
-                    
-                    for symbol in futures:
-                        all_futures_data.append({
-                            'symbol': symbol,
-                            'exchange': name,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                        
-                        # Track symbol coverage
-                        normalized = self.normalize_symbol(symbol)
-                        if normalized not in symbol_coverage:
-                            symbol_coverage[normalized] = set()
-                        symbol_coverage[normalized].add(name)
-                    
-                    time.sleep(0.5)
-                
-                # Create comprehensive Excel
-                import Excel
-                import io
-                
-                # Excel 1: All futures with coverage
-                output1 = io.StringIO()
-                writer1 = Excel.writer(output1)
-                writer1.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Available On', 'Coverage'])
-                
-                for future in all_futures_data:
-                    normalized = self.normalize_symbol(future['symbol'])
-                    exchanges_list = symbol_coverage[normalized]
-                    available_on = ', '.join(sorted(exchanges_list))
-                    coverage = f"{len(exchanges_list)}/{len(exchanges)}"
-                    
-                    writer1.writerow([
-                        future['symbol'],
-                        future['exchange'],
-                        normalized,
-                        available_on,
-                        coverage
-                    ])
-                
-                Excel1_data = output1.getvalue().encode('utf-8')
-                file1 = io.BytesIO(Excel1_data)
-                file1.name = f'futures_complete_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
-                
-                # Excel 2: Unique futures only
-                output2 = io.StringIO()
-                writer2 = Excel.writer(output2)
-                writer2.writerow(['Symbol', 'Exchange', 'Normalized Symbol', 'Exchanges Count'])
-                
-                unique_count = 0
-                for normalized, exchanges_set in symbol_coverage.items():
-                    if len(exchanges_set) == 1:
-                        unique_count += 1
-                        exchange = list(exchanges_set)[0]
-                        original_symbol = next((f['symbol'] for f in all_futures_data 
-                                            if self.normalize_symbol(f['symbol']) == normalized 
-                                            and f['exchange'] == exchange), normalized)
-                        
-                        writer2.writerow([
-                            original_symbol,
-                            exchange,
-                            normalized,
-                            len(exchanges_set)
-                        ])
-                
-                Excel2_data = output2.getvalue().encode('utf-8')
-                file2 = io.BytesIO(Excel2_data)
-                file2.name = f'unique_futures_{datetime.now().strftime("%Y%m%d_%H%M")}.excel'
-                
-                # Send files
-                update.message.reply_document(
-                    document=file1,
-                    caption="📊 <b>Complete Futures Analysis</b>\n\n"
-                        f"Total symbols: {len(symbol_coverage)}\n"
-                        f"Unique listings: {unique_count}\n"
-                        f"Exchanges: {len(exchanges)}",
-                    parse_mode='HTML'
-                )
-                
-                update.message.reply_document(
-                    document=file2,
-                    caption="💎 <b>Unique Futures Only</b>\n\n"
-                        f"Found {unique_count} exclusive listings",
-                    parse_mode='HTML'
-                )
-                
-            except Exception as e:
-                update.message.reply_html(f"❌ <b>Analysis export error:</b>\n{str(e)}")
-        
-        # Run in background
-        import threading
-        thread = threading.Thread(target=create_analysis)
-        thread.start()
-            
-    def setup_auto_update_sheet(self):
-        """Setup auto-update using the existing spreadsheet"""
-        if not self.gs_client or not self.spreadsheet:
-            logger.error("Google Sheets client or spreadsheet not available")
-            return None
-        
-        try:
-            # Use the existing spreadsheet we're already connected to
-            spreadsheet = self.spreadsheet
-            
-            # Initialize or update the sheets structure
-            self.initialize_auto_update_sheets(spreadsheet)
-            
-            # Save URL for reference
-            data = self.load_data()
-            data['auto_update_sheet_url'] = spreadsheet.url
-            self.save_data(data)
-            
-            logger.info(f"✅ Auto-update configured for: {spreadsheet.title}")
-            return spreadsheet
-                
-        except Exception as e:
-            logger.error(f"Error setting up auto-update sheet: {e}")
-            return None
-
-    def initialize_auto_update_sheets(self, spreadsheet):
-        """Initialize the sheet structure in your existing spreadsheet"""
-        try:
-            # Clear existing worksheets except the first one (Лист1)
-            existing_sheets = spreadsheet.worksheets()
-            
-            # Keep the first sheet, remove others
-            if len(existing_sheets) > 1:
-                for sheet in existing_sheets[1:]:
-                    spreadsheet.del_worksheet(sheet)
-            
-            # Rename first sheet to Dashboard
-            main_sheet = existing_sheets[0]
-            main_sheet.update_title("Dashboard")
-            
-            # Create other sheets
-            sheets_to_create = [
-                ("Unique Futures", 5),
-                ("All Futures", 7), 
-                ("MEXC Analysis", 6),
-                ("Exchange Stats", 5)
-            ]
-            
-            for sheet_name, cols in sheets_to_create:
-                try:
-                    spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=str(cols))
-                except Exception as e:
-                    logger.warning(f"Could not create sheet {sheet_name}: {e}")
-            
-            # Setup Dashboard
-            self.setup_dashboard_sheet(main_sheet)
-            
-            logger.info("✅ Sheet structure initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Error initializing sheets: {e}")
-
-    def initialize_sheet_with_headers(self, spreadsheet, sheet_name, headers):
-        """Initialize a sheet with headers if it doesn't exist"""
-        try:
-            worksheet = spreadsheet.worksheet(sheet_name)
-            # Clear existing data but keep headers
-            if worksheet.row_count > 1:
-                worksheet.delete_rows(2, worksheet.row_count)
-        except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows='1000', cols=str(len(headers[0])))
-            worksheet.update('A1', headers)
-
-    def format_auto_update_sheets(self, spreadsheet):
-        """Apply formatting to auto-update sheets"""
-        try:
-            for sheet_name in ['Dashboard', 'Unique Futures', 'All Futures', 'MEXC Analysis', 'Exchange Stats']:
-                try:
-                    worksheet = spreadsheet.worksheet(sheet_name)
-                    
-                    # Format headers
-                    worksheet.format('A1:Z1', {
-                        'textFormat': {'bold': True},
-                        'backgroundColor': {'red': 0.2, 'green': 0.6, 'blue': 0.8},
-                        'horizontalAlignment': 'CENTER'
-                    })
-                    
-                    # Auto-resize columns
-                    worksheet.columns_auto_resize(0, worksheet.col_count)
-                    
-                    # Add freeze panes for headers
-                    worksheet.freeze(rows=1)
-                    
-                except gspread.WorksheetNotFound:
-                    continue
-                    
-        except Exception as e:
-            logger.error(f"Error formatting sheets: {e}")
-
-    def ensure_sheets_initialized(self):
-        """Ensure all required sheets exist and have proper headers with enough rows"""
-        if not self.spreadsheet:
-            return False
-        
-        try:
-            # Delete all existing sheets except the first one
-            existing_sheets = self.spreadsheet.worksheets()
-            if len(existing_sheets) > 1:
-                for sheet in existing_sheets[1:]:
-                    self.spreadsheet.del_worksheet(sheet)
-            
-            # Rename first sheet to Dashboard
-            main_sheet = existing_sheets[0]
-            main_sheet.update_title("Dashboard")
-            
-            # Define sheets with proper row counts
-            sheets_config = {
-                'Unique Futures': {
-                    'rows': 1000,
-                    'cols': 5,
-                    'headers': [['Symbol', 'Status', 'Last Updated', 'Normalized Symbol', 'First Detected']]
-                },
-                'All Futures': {
-                    'rows': 3000,  # Increased for more data
-                    'cols': 7,
-                    'headers': [['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique']]
-                },
-                'MEXC Analysis': {
-                    'rows': 1000,
-                    'cols': 7,
-                    'headers': [['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges', 'Status', 'Unique', 'Timestamp']]
-                },
-                'Exchange Stats': {
-                    'rows': 20,
-                    'cols': 5,
-                    'headers': [['Exchange', 'Futures Count', 'Status', 'Last Updated', 'Success Rate']]
-                }
-            }
-            
-            for sheet_name, config in sheets_config.items():
-                try:
-                    worksheet = self.spreadsheet.add_worksheet(
-                        title=sheet_name, 
-                        rows=config['rows'],
-                        cols=config['cols']
-                    )
-                    worksheet.update('A1', config['headers'])
-                    logger.info(f"Created sheet: {sheet_name} with {config['rows']} rows")
-                except Exception as e:
-                    logger.error(f"Error creating sheet {sheet_name}: {e}")
-            
-            # Setup Dashboard
-            self.setup_dashboard_sheet(main_sheet)
-            
-            logger.info("✅ All sheets initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error ensuring sheets initialized: {e}")
-            return False
-        
     def update_google_sheet(self):
-        """Update the Google Sheet with fresh data - FIXED"""
+        """Update the Google Sheet with fresh data including price analysis"""
         if not self.gs_client or not self.spreadsheet:
             logger.warning("Google Sheets not available for update")
             return
         
         try:
-            logger.info("🔄 Starting Google Sheet update...")
+            logger.info("🔄 Starting comprehensive Google Sheet update...")
             
-            # Collect fresh data
+            # Collect fresh data from all exchanges
             all_futures_data = []
             exchanges = {
                 'MEXC': self.get_mexc_futures,
@@ -2550,7 +900,7 @@ class MEXCTracker:
                         })
                         
                         # Track symbol coverage
-                        normalized = self.normalize_symbol(symbol)
+                        normalized = self.normalize_symbol_for_comparison(symbol)
                         if normalized not in symbol_coverage:
                             symbol_coverage[normalized] = set()
                         symbol_coverage[normalized].add(name)
@@ -2564,110 +914,91 @@ class MEXCTracker:
             logger.info(f"Total futures collected: {len(all_futures_data)}")
             logger.info(f"Unique symbols: {len(symbol_coverage)}")
             
+            # Get unique futures
+            unique_futures, _ = self.find_unique_futures_robust()
+            logger.info(f"Unique MEXC futures: {len(unique_futures)}")
+            
+            # Get price data for analysis
+            logger.info("💰 Getting price data for analysis...")
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
             # Update all sheets with fresh data
-            self.update_unique_futures_sheet(self.spreadsheet, symbol_coverage, all_futures_data, current_time)
+            self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             self.update_all_futures_sheet(self.spreadsheet, all_futures_data, symbol_coverage, current_time)
-            self.update_mexc_analysis_sheet(self.spreadsheet, all_futures_data, symbol_coverage, current_time)
+            self.update_mexc_analysis_sheet_with_prices(all_futures_data, symbol_coverage, analyzed_prices, current_time)
+            self.update_price_analysis_sheet(analyzed_prices)
             self.update_exchange_stats_sheet(self.spreadsheet, exchange_stats, current_time)
-            self.update_dashboard_stats(exchange_stats, len(symbol_coverage))
+            self.update_dashboard_with_comprehensive_stats(exchange_stats, len(symbol_coverage), len(unique_futures), analyzed_prices)
             
             logger.info("✅ Google Sheet update completed successfully")
             
         except Exception as e:
             logger.error(f"❌ Google Sheet update error: {e}")
-            
-    def update_unique_futures_sheet(self, spreadsheet, symbol_coverage, all_futures_data, timestamp):
-        """Update Unique Futures sheet with batch writing"""
+
+    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with price information"""
         try:
-            worksheet = spreadsheet.worksheet('Unique Futures')
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
             
-            # Clear existing data (keep headers)
+            # Clear existing data
             if worksheet.row_count > 1:
                 worksheet.clear()
-                # Re-add headers
-                worksheet.update('A1', [['Symbol', 'Status', 'Last Updated', 'Normalized Symbol', 'First Detected']])
             
-            unique_data = []
-            for normalized, exchanges_set in symbol_coverage.items():
-                if len(exchanges_set) == 1:
-                    exchange = list(exchanges_set)[0]
-                    original_symbol = next((f['symbol'] for f in all_futures_data 
-                                        if self.normalize_symbol(f['symbol']) == normalized 
-                                        and f['exchange'] == exchange), normalized)
-                    
-                    unique_data.append([
-                        original_symbol,
-                        'UNIQUE',
-                        timestamp,
-                        normalized,
-                        timestamp  # First detected
-                    ])
+            # Enhanced headers with price changes
+            headers = [
+                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+            ]
+            worksheet.update('A1', [headers])
             
-            # Write in batches to avoid API limits
-            if unique_data:
-                # Split into batches of 100 rows
+            # Prepare data
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Create mapping for quick price lookup
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol, {})
+                changes = price_info.get('changes', {})
+                
+                row = [
+                    symbol,
+                    price_info.get('price', 'N/A'),
+                    self.format_change_for_sheet(changes.get('5m')),
+                    self.format_change_for_sheet(changes.get('15m')),
+                    self.format_change_for_sheet(changes.get('30m')),
+                    self.format_change_for_sheet(changes.get('60m')),
+                    self.format_change_for_sheet(changes.get('240m')),
+                    f"{price_info.get('score', 0):.2f}",
+                    'UNIQUE',
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            # Update sheet in batches
+            if sheet_data:
                 batch_size = 100
-                for i in range(0, len(unique_data), batch_size):
-                    batch = unique_data[i:i + batch_size]
+                for i in range(0, len(sheet_data), batch_size):
+                    batch = sheet_data[i:i + batch_size]
                     worksheet.update(f'A{i+2}', batch)
                 
-                logger.info(f"Updated Unique Futures with {len(unique_data)} records")
-            
-        except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet: {e}")
-
-
-    def update_all_futures_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
-        """Update All Futures sheet with batch writing"""
-        try:
-            worksheet = spreadsheet.worksheet('All Futures')
-            
-            # Clear existing data (keep headers)
-            if worksheet.row_count > 1:
-                worksheet.clear()
-                # Re-add headers
-                worksheet.update('A1', [['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique']])
-            
-            all_data = []
-            for future in all_futures_data:
-                normalized = self.normalize_symbol(future['symbol'])
-                exchanges_list = symbol_coverage.get(normalized, set())
-                available_on = ", ".join(sorted(exchanges_list))
-                coverage = f"{len(exchanges_list)} exchanges"
-                is_unique = "✅" if len(exchanges_list) == 1 else ""
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+            else:
+                logger.warning("No unique futures data to update")
                 
-                all_data.append([
-                    future['symbol'],
-                    future['exchange'],
-                    normalized,
-                    available_on,
-                    coverage,
-                    timestamp,
-                    is_unique
-                ])
-            
-            # Write in batches
-            if all_data:
-                batch_size = 100
-                for i in range(0, len(all_data), batch_size):
-                    batch = all_data[i:i + batch_size]
-                    worksheet.update(f'A{i+2}', batch)
-                
-                logger.info(f"Updated All Futures with {len(all_data)} records")
-            
         except Exception as e:
-            logger.error(f"Error updating All Futures sheet: {e}")
+            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
 
-    def update_mexc_analysis_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
-        """Update MEXC Analysis sheet - FIXED VERSION"""
+    def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
+        """Update MEXC Analysis sheet with price data"""
         try:
-            worksheet = spreadsheet.worksheet('MEXC Analysis')
-            
-            logger.info(f"Updating MEXC Analysis sheet with {len(all_futures_data)} total futures")
+            worksheet = self.spreadsheet.worksheet('MEXC Analysis')
             
             # Get only MEXC futures
             mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
-            logger.info(f"Found {len(mexc_futures)} MEXC futures")
+            logger.info(f"Updating MEXC Analysis with {len(mexc_futures)} futures")
             
             if not mexc_futures:
                 logger.warning("No MEXC futures found to analyze")
@@ -2675,30 +1006,46 @@ class MEXCTracker:
             
             # Clear the sheet completely and set up headers
             worksheet.clear()
-            headers = [['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges', 'Status', 'Unique', 'Timestamp']]
-            worksheet.update('A1', headers)
+            headers = [
+                'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
+                'Current Price', '5m Change %', '1h Change %', '4h Change %', 
+                'Status', 'Unique', 'Timestamp'
+            ]
+            worksheet.update('A1', [headers])
             
             mexc_data = []
+            
+            # Create price mapping
+            price_map = {item['symbol']: item for item in analyzed_prices}
             
             for future in mexc_futures:
                 try:
                     symbol = future['symbol']
-                    normalized = self.normalize_symbol(symbol)
+                    normalized = self.normalize_symbol_for_comparison(symbol)
                     exchanges_list = symbol_coverage.get(normalized, set())
                     available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
                     exchange_count = len(exchanges_list)
                     status = "Unique" if exchange_count == 1 else "Multi-exchange"
                     unique_flag = "✅" if exchange_count == 1 else "🔸"
                     
-                    mexc_data.append([
+                    # Get price info
+                    price_info = price_map.get(symbol, {})
+                    changes = price_info.get('changes', {})
+                    
+                    row = [
                         symbol,
                         normalized,
                         available_on,
                         exchange_count,
+                        price_info.get('price', 'N/A'),
+                        self.format_change_for_sheet(changes.get('5m')),
+                        self.format_change_for_sheet(changes.get('60m')),
+                        self.format_change_for_sheet(changes.get('240m')),
                         status,
                         unique_flag,
                         timestamp
-                    ])
+                    ]
+                    mexc_data.append(row)
                     
                 except Exception as e:
                     logger.error(f"Error processing MEXC future {future.get('symbol', 'unknown')}: {e}")
@@ -2721,41 +1068,74 @@ class MEXCTracker:
             
         except Exception as e:
             logger.error(f"❌ Error updating MEXC Analysis sheet: {e}")
-            raise  # Re-raise to see the full error
 
-
-    def update_exchange_stats_sheet(self, spreadsheet, exchange_stats, timestamp):
-        """Update Exchange Stats sheet"""
+    def update_price_analysis_sheet(self, analyzed_prices):
+        """Update Price Analysis sheet with top performers"""
         try:
-            worksheet = spreadsheet.worksheet('Exchange Stats')
+            # Get or create Price Analysis sheet
+            try:
+                worksheet = self.spreadsheet.worksheet('Price Analysis')
+            except gspread.WorksheetNotFound:
+                worksheet = self.spreadsheet.add_worksheet(title='Price Analysis', rows=1000, cols=12)
             
-            # Clear existing data (keep headers)
-            if worksheet.row_count > 1:
-                worksheet.clear()
-                # Re-add headers
-                worksheet.update('A1', [['Exchange', 'Futures Count', 'Status', 'Last Updated', 'Success Rate']])
+            # Clear existing data
+            worksheet.clear()
             
-            stats_data = []
-            for exchange, count in exchange_stats.items():
-                status = "✅ WORKING" if count > 0 else "❌ FAILED"
-                stats_data.append([
-                    exchange,
-                    count,
-                    status,
-                    timestamp,
-                    "100%"  # Placeholder
-                ])
+            # Headers
+            headers = [
+                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+                '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
+            ]
+            worksheet.update('A1', [headers])
             
-            if stats_data:
-                worksheet.update('A2', stats_data)
-                logger.info(f"Updated Exchange Stats with {len(stats_data)} records")
+            # Prepare data - top 50 performers
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            for i, item in enumerate(analyzed_prices[:50], 1):
+                changes = item.get('changes', {})
+                
+                # Determine trend
+                latest_change = item.get('latest_change', 0)
+                if latest_change > 5:
+                    trend = "🚀 STRONG UP"
+                elif latest_change > 2:
+                    trend = "🟢 UP"
+                elif latest_change < -5:
+                    trend = "🔻 STRONG DOWN"
+                elif latest_change < -2:
+                    trend = "🔴 DOWN"
+                else:
+                    trend = "⚪ FLAT"
+                
+                row = [
+                    i,
+                    item['symbol'],
+                    item.get('price', 'N/A'),
+                    self.format_change_for_sheet(changes.get('5m')),
+                    self.format_change_for_sheet(changes.get('15m')),
+                    self.format_change_for_sheet(changes.get('30m')),
+                    self.format_change_for_sheet(changes.get('60m')),
+                    self.format_change_for_sheet(changes.get('240m')),
+                    f"{item.get('score', 0):.2f}",
+                    trend,
+                    'N/A',  # Volume would require additional API call
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            # Update sheet
+            if sheet_data:
+                worksheet.update('A2', sheet_data)
+                logger.info(f"✅ Updated Price Analysis with {len(sheet_data)} top performers")
+            else:
+                logger.warning("No price data to update")
             
         except Exception as e:
-            logger.error(f"Error updating Exchange Stats sheet: {e}")
+            logger.error(f"Error updating Price Analysis sheet: {e}")
 
-
-    def update_dashboard_stats(self, exchange_stats, unique_symbols_count):
-        """Update the dashboard with current statistics"""
+    def update_dashboard_with_comprehensive_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
+        """Update the dashboard with comprehensive statistics including price analysis"""
         if not self.spreadsheet:
             return
         
@@ -2766,96 +1146,578 @@ class MEXCTracker:
             working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
             total_exchanges = len(exchange_stats)
             
-            # Get unique futures count
-            try:
-                unique_ws = self.spreadsheet.worksheet("Unique Futures")
-                unique_count = len(unique_ws.get_all_values()) - 1  # Subtract header
-            except:
-                unique_count = 0
+            # Calculate price statistics
+            top_performers = analyzed_prices[:10] if analyzed_prices else []
+            strong_movers = [p for p in analyzed_prices if p.get('latest_change', 0) > 5]
             
             stats_update = [
-                ["Total Unique Futures", unique_count],
-                ["Total MEXC Futures", exchange_stats.get('MEXC', 0)],
-                ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
-                ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')]
-            ]
-            
-            # Update stats section (starting at row 6)
-            for i, (label, value) in enumerate(stats_update):
-                worksheet.update(f'A{6+i}:B{6+i}', [[label, value]])
-                
-        except Exception as e:
-            logger.error(f"Error updating dashboard stats: {e}")
-
-
-
-    def update_dashboard_timestamp(self, spreadsheet):
-        """Update the last updated timestamp on Dashboard"""
-        try:
-            worksheet = spreadsheet.worksheet('Dashboard')
-            worksheet.update('B2', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-        except Exception as e:
-            logger.error(f"Error updating dashboard timestamp: {e}")
-    def setup_dashboard_sheet(self, worksheet):
-        """Setup the dashboard sheet with basic info"""
-        try:
-            dashboard_data = [
                 ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
                 ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
                 ["Update Interval", f"{self.update_interval} minutes"],
                 ["", ""],
-                ["QUICK STATS", ""],
-                ["Total Unique Futures", "Will update automatically"],
-                ["Total MEXC Futures", "Will update automatically"],
-                ["Working Exchanges", "Will update automatically"],
+                ["📊 EXCHANGE STATISTICS", ""],
+                ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+                ["Total Unique Symbols", unique_symbols_count],
+                ["Unique MEXC Futures", unique_futures_count],
                 ["", ""],
-                ["BOT STATUS", "🟢 RUNNING"],
-                ["Next Auto-Update", "Will update automatically"],
+                ["💰 PRICE ANALYSIS", ""],
+                ["Top Performers Tracked", len(top_performers)],
+                ["Strong Movers (>5%)", len(strong_movers)],
+                ["Best 5m Change", f"{top_performers[0].get('changes', {}).get('5m', 0):.2f}%" if top_performers else "N/A"],
                 ["", ""],
-                ["SHEETS", ""],
-                ["Dashboard", "Overview and stats"],
-                ["Unique Futures", "Futures only on MEXC"],
-                ["All Futures", "All futures from all exchanges"],
-                ["MEXC Analysis", "Detailed MEXC coverage"],
-                ["Exchange Stats", "Exchange performance"]
+                ["⚡ PERFORMANCE", ""],
+                ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
+                ["Status", "🟢 RUNNING"],
+                ["", ""],
+                ["🏆 TOP 5 PERFORMERS", ""],
             ]
             
-            worksheet.update('A1', dashboard_data)
-            logger.info("✅ Dashboard sheet initialized")
+            # Add top performers
+            for i, performer in enumerate(top_performers[:5], 1):
+                changes = performer.get('changes', {})
+                stats_update.append([
+                    f"{i}. {performer['symbol']}",
+                    f"${performer.get('price', 0):.4f} ({changes.get('5m', 0):.2f}%)"
+                ])
+            
+            # Update dashboard
+            worksheet.clear()
+            worksheet.update('A1', stats_update)
+            
+            logger.info("✅ Dashboard updated with comprehensive stats")
             
         except Exception as e:
-            logger.error(f"Error setting up dashboard: {e}")
+            logger.error(f"Error updating dashboard stats: {e}")
 
+    def format_change_for_sheet(self, change):
+        """Format change for Google Sheets with color indicators"""
+        if change is None:
+            return 'N/A'
+        
+        # Add emoji based on change value
+        if change > 10:
+            return f"🚀 {change:+.2f}%"
+        elif change > 5:
+            return f"🟢 {change:+.2f}%"
+        elif change > 2:
+            return f"📈 {change:+.2f}%"
+        elif change < -10:
+            return f"💥 {change:+.2f}%"
+        elif change < -5:
+            return f"🔴 {change:+.2f}%"
+        elif change < -2:
+            return f"📉 {change:+.2f}%"
+        else:
+            return f"{change:+.2f}%"
 
-    def test_google_sheets(self, update: Update, context: CallbackContext):
-        """Test Google Sheets connection"""
+    # Also update the forceupdate command to use the new method
+    def force_update_command(self, update: Update, context: CallbackContext):
+        """Force immediate Google Sheet update with comprehensive data"""
         if not self.gs_client:
             update.message.reply_html("❌ Google Sheets not configured.")
             return
         
         try:
-            update.message.reply_html("🔄 Testing Google Sheets connection...")
+            update.message.reply_html("🔄 <b>Force updating Google Sheet with comprehensive data...</b>")
             
-            # Try to create a test sheet
-            test_sheet_name = f"Test Sheet {datetime.now().strftime('%H:%M:%S')}"
-            spreadsheet = self.gs_client.create(test_sheet_name)
+            # Ensure sheets are properly initialized
+            if not self.ensure_sheets_initialized():
+                update.message.reply_html("❌ Failed to initialize sheets.")
+                return
             
-            # Clean up test sheet
-            self.gs_client.del_spreadsheet(spreadsheet.id)
+            # Run the comprehensive update
+            self.update_google_sheet()
             
-            update.message.reply_html("✅ Google Sheets connection working!")
+            # Get the spreadsheet URL for the message
+            data = self.load_data()
+            sheet_url = data.get('google_sheet_url') or (self.spreadsheet.url if self.spreadsheet else 'N/A')
+            
+            update.message.reply_html(
+                f"✅ <b>Google Sheet updated successfully!</b>\n\n"
+                f"📊 <a href='{sheet_url}'>Open Your Sheet</a>\n\n"
+                f"• Updated all exchange data\n"
+                f"• Added price analysis\n"
+                f"• Tracked top performers\n"
+                f"• Unique futures with price changes\n"
+                f"• Comprehensive dashboard stats",
+                reply_markup=ReplyKeyboardRemove()
+            )
             
         except Exception as e:
-            update.message.reply_html(f"❌ Google Sheets test failed: {str(e)}")
+            update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
+                  
 
+    def start_command(self, update: Update, context: CallbackContext):
+        """Send welcome message"""
+        user = update.effective_user
+        welcome_text = (
+            f"🤖 Hello {user.mention_html()}!\n\n"
+            "I'm <b>MEXC Unique Futures Tracker</b>\n\n"
+            "<b>Features:</b>\n"
+            "• Real-time monitoring of 8 exchanges\n"
+            "• Unique futures detection\n"
+            "• Price movement analysis\n"
+            "• Automatic alerts\n"
+            "• Google Sheets integration\n\n"
+            "<b>Commands:</b>\n"
+            "/start - Welcome message\n"
+            "/status - Current status\n"
+            "/check - Immediate check\n"
+            "/analysis - Full analysis\n"
+            "/exchanges - Exchange info\n"
+            "/stats - Bot statistics\n"
+            "/help - Help information\n"
+            "/findunique - Find unique futures\n"
+            "/checksymbol SYMBOL - Check specific symbol\n"
+            "/prices - Check current prices\n"
+            "/toppers - Top performing futures\n\n"
+            "⚡ <i>Happy trading!</i>"
+        )
+        update.message.reply_html(welcome_text)
 
-    def run(self):
-        """Start the bot with single instance lock"""
-        # Acquire lock to ensure only one instance runs
-        if not self.acquire_lock():
-            logger.error("Another instance is already running. Exiting.")
+    def prices_command(self, update: Update, context: CallbackContext):
+        """Get current price information for unique futures"""
+        update.message.reply_html("📊 <b>Getting current prices...</b>")
+        
+        try:
+            unique_futures, _ = self.find_unique_futures_robust()
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # Filter to only unique futures
+            unique_prices = [p for p in analyzed_prices if p['symbol'] in unique_futures]
+            
+            if not unique_prices:
+                update.message.reply_html("❌ No price data available for unique futures")
+                return
+            
+            message = "💰 <b>Unique Futures Prices</b>\n\n"
+            
+            for i, item in enumerate(unique_prices[:10], 1):  # Show top 10
+                changes = item.get('changes', {})
+                message += f"{i}. <b>{item['symbol']}</b>\n"
+                message += f"   Price: ${item['price']:.4f}\n"
+                
+                if '5m' in changes:
+                    message += f"   5m: {self.format_change(changes['5m'])}\n"
+                if '1h' in changes:
+                    message += f"   1h: {self.format_change(changes.get('60m', 0))}\n"
+                if '4h' in changes:
+                    message += f"   4h: {self.format_change(changes.get('240m', 0))}\n"
+                
+                message += "\n"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error getting prices: {str(e)}")
+
+    def top_performers_command(self, update: Update, context: CallbackContext):
+        """Show top performing futures"""
+        update.message.reply_html("🚀 <b>Analyzing top performers...</b>")
+        
+        try:
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            if not analyzed_prices:
+                update.message.reply_html("❌ No price data available")
+                return
+            
+            message = "🏆 <b>Top Performing Futures</b>\n\n"
+            
+            for i, item in enumerate(analyzed_prices[:15], 1):
+                changes = item.get('changes', {})
+                message += f"{i}. <b>{item['symbol']}</b>\n"
+                message += f"   Price: ${item['price']:.4f}\n"
+                
+                change_5m = changes.get('5m', 0)
+                change_1h = changes.get('60m', 0)
+                change_4h = changes.get('240m', 0)
+                
+                message += f"   5m: {self.format_change(change_5m)}"
+                message += f" | 1h: {self.format_change(change_1h)}"
+                message += f" | 4h: {self.format_change(change_4h)}\n"
+                
+                # Add emoji for very strong performers
+                if change_5m > 10 or change_1h > 20:
+                    message += "   🚀 <b>STRONG UPTREND!</b>\n"
+                elif change_5m > 5 or change_1h > 10:
+                    message += "   📈 <b>Uptrend</b>\n"
+                
+                message += "\n"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error analyzing performers: {str(e)}")
+
+    def check_command(self, update: Update, context: CallbackContext):
+        """Perform immediate check with price analysis"""
+        update.message.reply_html("🔍 <b>Checking all exchanges with price analysis...</b>")
+        
+        try:
+            new_futures, lost_futures = self.monitor_unique_futures_changes()
+            
+            if not new_futures and not lost_futures:
+                unique_futures, _ = self.find_unique_futures_robust()
+                message = "✅ <b>Check Complete!</b>\n\n"
+                message += f"🎯 No changes detected\n"
+                message += f"📊 Current unique: <b>{len(unique_futures)}</b>"
+                update.message.reply_html(message)
+            
+        except Exception as e:
+            error_msg = f"❌ <b>Check failed:</b>\n{str(e)}"
+            update.message.reply_html(error_msg)
+
+    def find_unique_command(self, update: Update, context: CallbackContext):
+        """Find and display currently unique symbols with prices"""
+        update.message.reply_html("🔍 Scanning for unique MEXC symbols with prices...")
+        
+        try:
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            price_data = self.get_all_mexc_prices()
+            
+            if not unique_futures:
+                update.message.reply_html("❌ No unique symbols found on MEXC")
+                return
+            
+            # Get price info for unique futures
+            unique_with_prices = []
+            for symbol in unique_futures:
+                price_info = price_data.get(symbol)
+                if price_info:
+                    unique_with_prices.append({
+                        'symbol': symbol,
+                        'price': price_info['price'],
+                        'changes': price_info.get('changes', {})
+                    })
+                else:
+                    unique_with_prices.append({
+                        'symbol': symbol,
+                        'price': None,
+                        'changes': {}
+                    })
+            
+            # Sort by 5m change if available
+            unique_with_prices.sort(key=lambda x: x['changes'].get('5m', 0), reverse=True)
+            
+            response = f"🎯 <b>Unique MEXC Symbols: {len(unique_futures)}</b>\n\n"
+            
+            for i, item in enumerate(unique_with_prices[:15], 1):
+                response += f"{i}. <b>{item['symbol']}</b>"
+                if item['price']:
+                    response += f" - ${item['price']:.4f}"
+                    if '5m' in item['changes']:
+                        response += f" {self.format_change(item['changes']['5m'])}"
+                response += "\n"
+            
+            if len(unique_with_prices) > 15:
+                response += f"\n... and {len(unique_with_prices) - 15} more symbols"
+            
+            response += f"\n\n💡 Use /prices for detailed price info"
+            
+            update.message.reply_html(response)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error finding unique symbols: {str(e)}")
+
+    def check_symbol_command(self, update: Update, context: CallbackContext):
+        """Check if a symbol is unique to MEXC"""
+        if not context.args:
+            update.message.reply_html("Usage: /checksymbol SYMBOL\nExample: /checksymbol BTC")
             return
         
+        symbol = context.args[0].upper()
+        update.message.reply_html(f"🔍 Checking symbol: {symbol}")
+        
+        try:
+            coverage = self.verify_symbol_coverage(symbol)
+            
+            if not coverage:
+                response = f"❌ Symbol not found on any exchange: {symbol}"
+            elif len(coverage) == 1 and 'MEXC' in coverage:
+                response = f"🎯 <b>UNIQUE TO MEXC!</b>\n\n{symbol} - Only available on: <b>MEXC</b>"
+            elif 'MEXC' in coverage:
+                other_exchanges = [e for e in coverage if e != 'MEXC']
+                response = (f"📊 <b>{symbol} - Multi-Exchange</b>\n\n"
+                        f"✅ Available on MEXC\n"
+                        f"🔸 Also on: {', '.join(other_exchanges)}\n"
+                        f"📈 Total exchanges: {len(coverage)}")
+            else:
+                response = f"📊 <b>{symbol}</b>\n\nNot on MEXC, available on:\n• " + "\n• ".join(coverage)
+            
+            update.message.reply_html(response)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error checking symbol: {str(e)}")
+
+    def status_command(self, update: Update, context: CallbackContext):
+        """Send current status"""
+        data = self.load_data()
+        unique_count = len(data.get('unique_futures', []))
+        last_check = data.get('last_check', 'Never')
+        exchange_stats = data.get('exchange_stats', {})
+        
+        if last_check != 'Never':
+            try:
+                last_dt = datetime.fromisoformat(last_check.replace('Z', '+00:00'))
+                last_check = last_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+        
+        status_text = (
+            "📈 <b>Bot Status</b>\n\n"
+            f"🎯 Current unique: <b>{unique_count}</b>\n"
+            f"📅 Last check: {last_check}\n"
+            f"⚡ Auto-check: {self.update_interval}min\n"
+        )
+        
+        # Show exchange status
+        working_exchanges = [name for name, count in exchange_stats.items() if count > 0]
+        status_text += f"✅ Working exchanges: {len(working_exchanges)}/7\n"
+        
+        # Show unique futures if any
+        if unique_count > 0:
+            status_text += "\n<b>🎯 Unique futures:</b>\n"
+            for symbol in sorted(data['unique_futures'])[:5]:
+                status_text += f"• {symbol}\n"
+            if unique_count > 5:
+                status_text += f"• ... and {unique_count - 5} more"
+        
+        update.message.reply_html(status_text)
+
+    def analysis_command(self, update: Update, context: CallbackContext):
+        """Create comprehensive analysis"""
+        update.message.reply_html("📈 <b>Creating comprehensive analysis...</b>")
+        
+        try:
+            # Get fresh data
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            
+            # Create analysis report
+            report = self.create_analysis_report(unique_futures, exchange_stats)
+            
+            # Send as document
+            file_obj = io.BytesIO(report.encode('utf-8'))
+            file_obj.name = f'mexc_analysis_{datetime.now().strftime("%Y%m%d_%H%M")}.txt'
+            
+            update.message.reply_document(
+                document=file_obj,
+                caption=f"📊 <b>MEXC Analysis Complete</b>\n\n"
+                       f"🎯 Unique futures: {len(unique_futures)}\n"
+                       f"🏢 Exchanges: {len(exchange_stats) + 1}\n"
+                       f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                parse_mode='HTML'
+            )
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
+
+    def create_analysis_report(self, unique_futures, exchange_stats):
+        """Create comprehensive analysis report"""
+        report = []
+        report.append("=" * 60)
+        report.append("🎯 MEXC UNIQUE FUTURES ANALYSIS REPORT")
+        report.append("=" * 60)
+        report.append(f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append("")
+        
+        # Exchange statistics
+        report.append("🏭 EXCHANGE STATISTICS:")
+        total_futures = sum(exchange_stats.values())
+        report.append(f"  MEXC: {len(self.get_mexc_futures())} futures")
+        for exchange, count in exchange_stats.items():
+            status = "✅" if count > 0 else "❌"
+            report.append(f"  {status} {exchange}: {count} futures")
+        
+        report.append(f"  Total futures from other exchanges: {total_futures}")
+        report.append("")
+        
+        # Unique futures
+        report.append(f"🎯 UNIQUE MEXC FUTURES ({len(unique_futures)}):")
+        if unique_futures:
+            for i, symbol in enumerate(sorted(unique_futures), 1):
+                report.append(f"  {i:2d}. {symbol}")
+        else:
+            report.append("  No unique futures found")
+        
+        report.append("")
+        report.append("📊 ANALYSIS SUMMARY:")
+        report.append(f"  MEXC futures analyzed: {len(self.get_mexc_futures())}")
+        report.append(f"  Unique ratio: {len(unique_futures)}/{len(self.get_mexc_futures())}")
+        report.append(f"  Market coverage: {len(exchange_stats) + 1} exchanges")
+        
+        report.append("=" * 60)
+        
+        return "\n".join(report)
+
+    def exchanges_command(self, update: Update, context: CallbackContext):
+        """Show exchange information"""
+        data = self.load_data()
+        exchange_stats = data.get('exchange_stats', {})
+        
+        exchanges_text = "🏢 <b>Supported Exchanges</b>\n\n"
+        exchanges_text += "🎯 <b>MEXC</b> (source)\n"
+        
+        if exchange_stats:
+            exchanges_text += "\n<b>Other exchanges:</b>\n"
+            for exchange, count in sorted(exchange_stats.items()):
+                status = "✅" if count > 0 else "❌"
+                exchanges_text += f"{status} {exchange}: {count} futures\n"
+        else:
+            exchanges_text += "\nNo data. Use /check first."
+        
+        exchanges_text += f"\n🔍 Monitoring <b>{len(exchange_stats) + 1}</b> exchanges"
+        
+        update.message.reply_html(exchanges_text)
+
+    def stats_command(self, update: Update, context: CallbackContext):
+        """Show statistics"""
+        data = self.load_data()
+        stats = data.get('statistics', {})
+        exchange_stats = data.get('exchange_stats', {})
+        
+        stats_text = (
+            "📈 <b>Bot Statistics</b>\n\n"
+            f"🔄 Checks performed: <b>{stats.get('checks_performed', 0)}</b>\n"
+            f"🎯 Max unique found: <b>{stats.get('unique_found_total', 0)}</b>\n"
+            f"⏰ Current unique: <b>{len(data.get('unique_futures', []))}</b>\n"
+            f"🏢 Exchanges: <b>{len(exchange_stats) + 1}</b>\n"
+            f"📅 Running since: {self.format_start_time(stats.get('start_time'))}\n"
+            f"🤖 Uptime: {self.get_uptime()}\n"
+            f"⚡ Auto-check: {self.update_interval}min"
+        )
+        
+        update.message.reply_html(stats_text)
+
+    def help_command(self, update: Update, context: CallbackContext):
+        """Show help information"""
+        help_text = (
+            "🆘 <b>MEXC Futures Tracker - Help</b>\n\n"
+            "<b>Monitoring 8 exchanges:</b>\n"
+            "MEXC, Binance, Bybit, OKX,\n"
+            "Gate.io, KuCoin, BingX, BitGet\n\n"
+            "<b>Main commands:</b>\n"
+            "/check - Quick check for unique futures\n"
+            "/analysis - Full analysis report\n"
+            "/status - Current status\n"
+            "/exchanges - Exchange information\n"
+            "/stats - Bot statistics\n"
+            "/findunique - Find currently unique symbols\n"
+            "/checksymbol SYMBOL - Check specific symbol\n\n"
+            f"⚡ Auto-checks every {self.update_interval} minutes\n"
+            "🎯 Alerts for new unique futures\n"
+            "📊 Comprehensive analysis available\n\n"
+            "⚡ <i>Happy trading!</i>"
+        )
+        update.message.reply_html(help_text)
+
+
+    # ==================== SCHEDULER ====================
+
+    def setup_scheduler(self):
+        """Setup scheduled tasks"""
+        # Unique futures monitoring
+        schedule.every(self.update_interval).minutes.do(self.monitor_unique_futures_changes)
+        
+        # Price monitoring (more frequent)
+        schedule.every(self.price_check_interval).minutes.do(self.run_price_monitoring)
+        
+        logger.info(f"Scheduler setup - unique check every {self.update_interval}min, prices every {self.price_check_interval}min")
+
+    def run_price_monitoring(self):
+        """Run price monitoring and alert on significant movements"""
+        try:
+            logger.info("💰 Running price monitoring...")
+            
+            price_data = self.get_all_mexc_prices()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # Check for significant movers
+            significant_movers = []
+            for item in analyzed_prices[:20]:  # Check top 20
+                changes = item.get('changes', {})
+                change_5m = changes.get('5m', 0)
+                change_1h = changes.get('60m', 0)
+                
+                # Alert criteria
+                if change_5m > 10 or change_1h > 25:  # 10% in 5min or 25% in 1h
+                    significant_movers.append(item)
+            
+            # Send alerts for significant movers
+            if significant_movers:
+                self.send_price_alert(significant_movers)
+            
+        except Exception as e:
+            logger.error(f"Price monitoring error: {e}")
+
+    def send_price_alert(self, significant_movers):
+        """Send alert for significant price movements"""
+        try:
+            message = "🚨 <b>SIGNIFICANT PRICE MOVEMENTS!</b>\n\n"
+            
+            for item in significant_movers[:5]:  # Max 5 alerts
+                changes = item.get('changes', {})
+                message += f"📈 <b>{item['symbol']}</b>\n"
+                message += f"   Price: ${item['price']:.4f}\n"
+                
+                if changes.get('5m', 0) > 10:
+                    message += f"   🚀 5m: {self.format_change(changes['5m'])}\n"
+                if changes.get('60m', 0) > 25:
+                    message += f"   📊 1h: {self.format_change(changes['60m'])}\n"
+                
+                message += "\n"
+            
+            self.send_broadcast_message(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending price alert: {e}")
+
+    # ==================== DATA MANAGEMENT ====================
+
+    def init_data_file(self):
+        """Initialize data in memory"""
+        self.data = self.get_default_data()
+
+    def load_data(self):
+        """Load data from memory"""
+        return self.data
+    
+    def save_data(self, data):
+        """Save data to memory"""
+        self.data = data
+        logger.info("Data saved to memory")
+
+    def get_default_data(self):
+        """Return default data structure"""
+        return {
+            "unique_futures": [],
+            "last_check": None,
+            "statistics": {
+                "checks_performed": 0,
+                "unique_found_total": 0,
+                "start_time": datetime.now().isoformat()
+            },
+            "exchange_stats": {},
+            "google_sheet_url": None,
+            "price_alerts_sent": {}
+        }
+
+    def send_broadcast_message(self, message):
+        """Send message to configured chat"""
+        try:
+            if self.chat_id:
+                self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    parse_mode='HTML'
+                )
+        except Exception as e:
+            logger.error(f"Broadcast error: {e}")
+
+    def run(self):
+        """Start the bot"""
         try:
             # Load initial data
             data = self.load_data()
@@ -2865,69 +1727,41 @@ class MEXCTracker:
             self.setup_scheduler()
             
             # Start scheduler in background
-            import threading
             scheduler_thread = threading.Thread(target=self.run_scheduler, daemon=True)
             scheduler_thread.start()
             
             # Start the bot
             self.updater.start_polling()
             
-            logger.info("Bot started successfully - single instance running")
+            logger.info("Bot started successfully")
             
             # Send startup message
             startup_msg = (
                 "🤖 <b>MEXC Futures Tracker Started</b>\n\n"
                 "✅ Monitoring 8 exchanges\n"
-                f"⏰ Auto-check: {self.update_interval} minutes\n"
-                "📊 Google Sheets auto-updates\n"
-                "📤 Data export available (/export)\n"
+                f"⏰ Unique check: {self.update_interval} minutes\n"
+                f"💰 Price check: {self.price_check_interval} minutes\n"
+                "🎯 Unique futures detection\n"
+                "🚀 Price movement alerts\n"
                 "💬 Use /help for commands"
             )
-            
-            # Add Google Sheets info if configured
-            if self.gs_client:
-                startup_msg += "\n\n📊 Use /autosheet for auto-updating Google Sheet"
             
             self.send_broadcast_message(startup_msg)
             
             logger.info("Bot is now running and ready for commands...")
             
-            # Keep running with proper cleanup
-            try:
-                self.updater.idle()
-            except KeyboardInterrupt:
-                logger.info("Bot stopped by user")
-            finally:
-                self.cleanup()
+            # Keep running
+            self.updater.idle()
                 
         except Exception as e:
             logger.error(f"Bot run error: {e}")
-            self.cleanup()
             raise
-        
-    def acquire_lock(self):
-        """Acquire lock to ensure only one instance runs"""
-        try:
-            self.lock_file = open('/tmp/mexc_bot.lock', 'w')
-            fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            atexit.register(self.cleanup)
-            return True
-        except (IOError, BlockingIOError):
-            return False
 
-    def cleanup(self):
-        """Cleanup resources on exit"""
-        try:
-            if hasattr(self, 'lock_file') and self.lock_file:
-                fcntl.flock(self.lock_file, fcntl.LOCK_UN)
-                self.lock_file.close()
-                try:
-                    os.unlink('/tmp/mexc_bot.lock')
-                except:
-                    pass
-            logger.info("Bot cleanup completed")
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+    def run_scheduler(self):
+        """Run the scheduler"""
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
 
 def main():
     tracker = MEXCTracker()
