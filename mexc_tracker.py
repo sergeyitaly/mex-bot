@@ -3270,7 +3270,7 @@ class MEXCTracker:
             update.message.reply_html(f"❌ Error analyzing performers: {str(e)}")
 
     def check_command(self, update: Update, context: CallbackContext):
-        """Perform immediate check with colorful visual progress bar - FIXED UNIQUE DATA"""
+        """Perform immediate check with colorful visual progress bar - FIXED PRICE DATA FLOW"""
         try:
             # Send initial message
             progress_message = update.message.reply_html(
@@ -3346,7 +3346,6 @@ class MEXCTracker:
             new_futures = set()
             lost_futures = set()
             price_data = {}
-            analyzed_prices = []
             
             # Execute each step with progress updates
             for i, (step_name, status_text) in enumerate(steps):
@@ -3403,19 +3402,58 @@ class MEXCTracker:
                         current_count = len(bitget_futures)
                         
                     elif step_name == "Finding unique symbols":
-                        # FIX: Use find_unique_futures_robust directly instead of monitor_unique_futures_changes
+                        # Get unique futures directly
                         unique_after, exchange_stats = self.find_unique_futures_robust()
                         
-                        # Calculate changes manually without resetting data
+                        # Calculate changes
                         new_futures = unique_after - unique_before
                         lost_futures = unique_before - unique_after
                         current_count = len(unique_after)
                         
                     elif step_name == "Collecting price data":
-                        # Use the ULTRA ROBUST price collection
-                        price_data = self.get_all_mexc_prices_ultra_robust()
-                        analyzed_prices = self.analyze_price_movements(price_data)
-                        current_count = len([p for p in analyzed_prices if p.get('price') is not None])
+                        # CRITICAL FIX: Use the EXACT SAME method as symbolsearch
+                        # Get batch data directly (what symbolsearch uses)
+                        batch_data = self.get_mexc_prices_batch_working()
+                        logger.info(f"📊 Batch data collected: {len(batch_data)} symbols")
+                        
+                        # Create price_data by matching unique symbols with batch data
+                        price_data = {}
+                        matched_symbols = 0
+                        
+                        for symbol in unique_after:
+                            # Try exact match first
+                            if symbol in batch_data:
+                                price_data[symbol] = batch_data[symbol]
+                                matched_symbols += 1
+                            else:
+                                # Try alternative formats (what symbolsearch does)
+                                alt_formats = [
+                                    symbol.replace('_', ''),
+                                    symbol.replace('_', '-'), 
+                                    symbol.replace('_', '/'),
+                                ]
+                                
+                                found = False
+                                for alt_format in alt_formats:
+                                    if alt_format in batch_data:
+                                        price_data[symbol] = batch_data[alt_format].copy()
+                                        price_data[symbol]['symbol'] = symbol  # Fix symbol name
+                                        matched_symbols += 1
+                                        found = True
+                                        break
+                                
+                                if not found:
+                                    # Symbol not found in batch, add with None price
+                                    price_data[symbol] = {
+                                        'symbol': symbol,
+                                        'price': None,
+                                        'changes': {},
+                                        'timestamp': datetime.now(),
+                                        'source': 'not_found'
+                                    }
+                        
+                        logger.info(f"💰 Price data: {matched_symbols}/{len(unique_after)} symbols matched")
+                        current_count = matched_symbols
                         
                     elif step_name == "Analyzing results":
                         # Analysis is already done, just update progress
@@ -3442,6 +3480,16 @@ class MEXCTracker:
             # Calculate price coverage statistics
             unique_with_prices = len([s for s in unique_after if s in price_data and price_data[s].get('price') is not None])
             price_coverage_percent = (unique_with_prices / len(unique_after)) * 100 if unique_after else 0
+
+            # DEBUG: Log what we found for specific symbols
+            debug_symbols = ['METASTOCK_USDT', 'TRY_USDT', 'BOBBSC_USDT']
+            logger.info("🔍 DEBUG - Checking specific symbols in price_data:")
+            for symbol in debug_symbols:
+                if symbol in price_data:
+                    price_info = price_data[symbol]
+                    logger.info(f"  {symbol}: ${price_info.get('price')} (source: {price_info.get('source')})")
+                else:
+                    logger.info(f"  {symbol}: NOT in price_data")
 
             # Create final report WITH PRICE DATA
             final_message = "🎯 <b>COMPREHENSIVE CHECK COMPLETE</b>\n\n"
@@ -3541,8 +3589,7 @@ class MEXCTracker:
                 update.message.reply_html(error_message)
             
             logger.error(f"Check command failed: {e}")
-
-        
+                
 
     def find_unique_command(self, update: Update, context: CallbackContext):
         """Find and display currently unique symbols with prices"""
