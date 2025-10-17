@@ -725,7 +725,7 @@ class MEXCTracker:
             
         except Exception as e:
             logger.error(f"Error sending lost unique notification: {e}")
-            
+
     def get_all_exchanges_futures(self):
         """Get futures from all exchanges except MEXC"""
         exchanges = {
@@ -1524,33 +1524,31 @@ class MEXCTracker:
 
     # Also update the forceupdate command to use the new method
     def ensure_sheets_initialized(self):
-        """Ensure all required sheets exist and have proper headers with enough rows"""
+        """Ensure all required sheets exist with proper error handling"""
         if not self.spreadsheet:
+            logger.error("❌ No spreadsheet available - check GOOGLE_SHEET_ID")
             return False
         
         try:
-            # Get existing sheets
-            existing_sheets = self.spreadsheet.worksheets()
-            existing_sheet_names = [sheet.title for sheet in existing_sheets]
-            
-            logger.info(f"Existing sheets: {existing_sheet_names}")
-            
-            # Keep Dashboard if it exists, otherwise use first sheet
-            main_sheet = None
-            if 'Dashboard' in existing_sheet_names:
-                main_sheet = self.spreadsheet.worksheet('Dashboard')
-            elif existing_sheets:
-                main_sheet = existing_sheets[0]
-                main_sheet.update_title("Dashboard")
-            else:
-                # Create Dashboard if no sheets exist
-                main_sheet = self.spreadsheet.add_worksheet(title="Dashboard", rows=50, cols=10)
-            
-            # Define sheets with enhanced headers for price data
+            # Get existing sheets with better error handling
+            try:
+                existing_sheets = self.spreadsheet.worksheets()
+                existing_sheet_names = [sheet.title for sheet in existing_sheets]
+                logger.info(f"📊 Found {len(existing_sheets)} existing sheets: {existing_sheet_names}")
+            except Exception as e:
+                logger.error(f"❌ Failed to get existing sheets: {e}")
+                return False
+
+            # Define sheets configuration
             sheets_config = {
+                'Dashboard': {
+                    'rows': 50,
+                    'cols': 10,
+                    'headers': ['Section', 'Value']
+                },
                 'Unique Futures': {
                     'rows': 1000,
-                    'cols': 11,  # Increased for price data
+                    'cols': 11,
                     'headers': [
                         'Symbol', 'Current Price', '5m Change %', '15m Change %', 
                         '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
@@ -1558,7 +1556,7 @@ class MEXCTracker:
                 },
                 'All Futures': {
                     'rows': 3000,
-                    'cols': 8,  # Increased columns
+                    'cols': 8,
                     'headers': [
                         'Symbol', 'Exchange', 'Normalized', 'Available On', 
                         'Coverage', 'Timestamp', 'Unique', 'Current Price'
@@ -1566,7 +1564,7 @@ class MEXCTracker:
                 },
                 'MEXC Analysis': {
                     'rows': 1000,
-                    'cols': 12,  # Increased for price analysis
+                    'cols': 12,
                     'headers': [
                         'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
                         'Current Price', '5m Change %', '1h Change %', '4h Change %', 
@@ -1583,23 +1581,21 @@ class MEXCTracker:
                 },
                 'Exchange Stats': {
                     'rows': 20,
-                    'cols': 6,  # Added price data column
+                    'cols': 6,
                     'headers': [
                         'Exchange', 'Futures Count', 'Status', 'Last Updated', 
                         'Success Rate', 'Price Data Available'
                     ]
                 }
             }
-            
-            # Create or update sheets
+
+            # Create or update each sheet
             for sheet_name, config in sheets_config.items():
                 try:
                     if sheet_name in existing_sheet_names:
-                        # Sheet exists, just clear and update headers
+                        # Sheet exists - just clear and update headers
                         worksheet = self.spreadsheet.worksheet(sheet_name)
-                        # Clear existing data but keep formatting
                         worksheet.clear()
-                        # Update headers
                         worksheet.update('A1', [config['headers']])
                         logger.info(f"✅ Updated existing sheet: {sheet_name}")
                     else:
@@ -1610,7 +1606,7 @@ class MEXCTracker:
                             cols=config['cols']
                         )
                         worksheet.update('A1', [config['headers']])
-                        logger.info(f"✅ Created new sheet: {sheet_name} with {config['rows']} rows")
+                        logger.info(f"✅ Created new sheet: {sheet_name}")
                     
                     # Apply basic formatting
                     try:
@@ -1618,33 +1614,30 @@ class MEXCTracker:
                             'textFormat': {'bold': True},
                             'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
                         })
-                        
-                        # Auto-resize columns for better readability
-                        if hasattr(worksheet, 'columns_auto_resize'):
-                            worksheet.columns_auto_resize(0, min(config['cols'], 10))
-                        
-                        # Freeze header row
                         worksheet.freeze(rows=1)
-                        
                     except Exception as format_error:
-                        logger.warning(f"Could not format sheet {sheet_name}: {format_error}")
-                    
+                        logger.warning(f"⚠️ Could not format sheet {sheet_name}: {format_error}")
+                        
                 except Exception as e:
-                    logger.error(f"❌ Error processing sheet {sheet_name}: {e}")
+                    logger.error(f"❌ Failed to process sheet {sheet_name}: {e}")
                     # Continue with other sheets even if one fails
-            
-            # Delete any unexpected sheets (optional - be careful with this)
-            self.cleanup_unexpected_sheets(existing_sheet_names, list(sheets_config.keys()) + ['Dashboard'])
-            
-            # Setup Dashboard with comprehensive data
-            self.setup_dashboard_sheet(main_sheet)
-            
+
+            # Setup Dashboard with content
+            try:
+                dashboard_worksheet = self.spreadsheet.worksheet('Dashboard')
+                self.setup_dashboard_sheet(dashboard_worksheet)
+                logger.info("✅ Dashboard setup completed")
+            except Exception as e:
+                logger.error(f"❌ Failed to setup dashboard: {e}")
+
             logger.info("✅ All sheets initialized successfully")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error ensuring sheets initialized: {e}")
+            logger.error(f"❌ Critical error in sheet initialization: {e}")
             return False
+
+
 
     def cleanup_unexpected_sheets(self, existing_sheet_names, expected_sheets):
         """Remove sheets that are not in the expected list"""
@@ -1719,7 +1712,7 @@ class MEXCTracker:
             # Update the dashboard
             worksheet.update('A1', dashboard_data)
             
-            # Apply formatting to dashboard
+            # Apply formatting
             try:
                 # Format title row
                 worksheet.format('A1:B1', {
@@ -1735,18 +1728,18 @@ class MEXCTracker:
                         'textFormat': {'bold': True},
                         'backgroundColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95}
                     })
-                
-                # Auto-resize columns
-                worksheet.columns_auto_resize(0, 2)
-                
+                    
             except Exception as format_error:
-                logger.warning(f"Could not format dashboard: {format_error}")
+                logger.warning(f"⚠️ Could not format dashboard: {format_error}")
             
-            logger.info("✅ Dashboard setup completed successfully")
+            logger.info("✅ Dashboard content updated")
             
         except Exception as e:
             logger.error(f"❌ Error setting up dashboard: {e}")
+            raise
 
+            
+            
     def force_update_command(self, update: Update, context: CallbackContext):
         """Force immediate Google Sheet update with comprehensive data"""
         if not self.gs_client:
