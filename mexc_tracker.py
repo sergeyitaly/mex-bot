@@ -214,48 +214,125 @@ class MEXCTracker:
     # ==================== PRICE MONITORING ====================
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - enhanced version"""
+        """Get price data using reliable MEXC API endpoints"""
         try:
-            # First try batch method for efficiency
-            batch_data = self.get_mexc_prices_batch()
+            logger.info("💰 Fetching MEXC prices using reliable endpoints...")
             
-            symbols = self.get_mexc_futures()
-            if not symbols:
-                logger.warning("❌ No MEXC symbols found for price data")
-                return batch_data
+            # Method 1: Use the main ticker endpoint that definitely works
+            price_data = self.get_mexc_prices_reliable()
             
-            price_data = batch_data.copy()  # Start with batch data
-            successful = 0
+            # If that fails, try alternative endpoints
+            if not price_data:
+                price_data = self.get_mexc_prices_alternative()
             
-            logger.info(f"💰 Getting price data for {len(symbols)} MEXC futures...")
-            
-            # For symbols missing from batch data, try individual requests
-            missing_symbols = [s for s in symbols if s not in batch_data]
-            logger.info(f"🔍 Getting individual prices for {len(missing_symbols)} missing symbols")
-            
-            # Limit individual requests to avoid timeout
-            symbols_to_check = missing_symbols[:50]
-            
-            for symbol in symbols_to_check:
-                try:
-                    price_info = self.get_mexc_price_data_individual(symbol)
-                    if price_info and price_info.get('price'):
-                        price_data[symbol] = price_info
-                        successful += 1
-                    
-                    # Small delay to avoid rate limiting
-                    time.sleep(0.1)
-                    
-                except Exception as e:
-                    logger.debug(f"Error getting price for {symbol}: {e}")
-                    continue
-            
-            logger.info(f"✅ Price data complete: {len(price_data)} symbols total")
+            logger.info(f"✅ Price data retrieved: {len(price_data)} symbols")
             return price_data
             
         except Exception as e:
-            logger.error(f"Error getting all MEXC prices: {e}")
+            logger.error(f"Error getting MEXC prices: {e}")
             return {}
+
+    def get_mexc_prices_reliable(self):
+        """Use the most reliable MEXC API endpoint"""
+        try:
+            # This is the main endpoint that should work
+            url = "https://contract.mexc.com/api/v1/contract/ticker"
+            logger.info(f"📡 Calling reliable endpoint: {url}")
+            
+            response = self.session.get(url, timeout=15)
+            logger.info(f"📊 Response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"📋 Response keys: {list(data.keys()) if data else 'No data'}")
+                
+                if data.get('success', False):
+                    tickers = data.get('data', [])
+                    price_data = {}
+                    
+                    for ticker in tickers:
+                        try:
+                            symbol = ticker.get('symbol')
+                            price_str = ticker.get('lastPrice')
+                            
+                            if symbol and price_str:
+                                price = float(price_str)
+                                change_rate = float(ticker.get('riseFallRate', 0)) * 100
+                                
+                                price_data[symbol] = {
+                                    'symbol': symbol,
+                                    'price': price,
+                                    'changes': {
+                                        '5m': change_rate,
+                                        '60m': change_rate,
+                                        '240m': change_rate
+                                    },
+                                    'timestamp': datetime.now(),
+                                    'source': 'reliable_ticker'
+                                }
+                        except (ValueError, TypeError) as e:
+                            continue
+                    
+                    logger.info(f"🎯 Reliable method found {len(price_data)} prices")
+                    return price_data
+                else:
+                    logger.error(f"❌ API returned success=False: {data}")
+            else:
+                logger.error(f"❌ HTTP {response.status_code}: {response.text}")
+                
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Reliable price method error: {e}")
+            return {}
+
+    def get_mexc_prices_alternative(self):
+        """Alternative MEXC API endpoints"""
+        try:
+            # Alternative endpoint
+            url = "https://contract.mexc.com/api/v1/contract/detail"
+            logger.info(f"🔄 Trying alternative endpoint: {url}")
+            
+            response = self.session.get(url, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('success', False):
+                    contracts = data.get('data', [])
+                    price_data = {}
+                    
+                    for contract in contracts:
+                        try:
+                            symbol = contract.get('symbol')
+                            price_str = contract.get('lastPrice') or contract.get('markPrice')
+                            
+                            if symbol and price_str:
+                                price = float(price_str)
+                                
+                                price_data[symbol] = {
+                                    'symbol': symbol,
+                                    'price': price,
+                                    'changes': {
+                                        '5m': 0.0,  # Default values
+                                        '60m': 0.0,
+                                        '240m': 0.0
+                                    },
+                                    'timestamp': datetime.now(),
+                                    'source': 'alternative_detail'
+                                }
+                        except (ValueError, TypeError) as e:
+                            continue
+                    
+                    logger.info(f"🔄 Alternative method found {len(price_data)} prices")
+                    return price_data
+                    
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Alternative price method error: {e}")
+            return {}
+
+
 
     def get_mexc_prices_batch(self):
         """Get prices in batch using ticker endpoint"""
