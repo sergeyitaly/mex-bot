@@ -352,37 +352,8 @@ class MEXCTracker:
             return None
     
     def get_mexc_price_data(self, symbol):
-        """Get price data for a single MEXC symbol"""
-        try:
-            # Use the contract ticker endpoint
-            url = f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}"
-            response = self.session.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('success', False):
-                    ticker_data = data.get('data', {})
-                    if ticker_data:
-                        price = float(ticker_data.get('lastPrice', 0))
-                        
-                        # Create basic price info
-                        price_info = {
-                            'symbol': symbol,
-                            'price': price,
-                            'changes': {
-                                '5m': float(ticker_data.get('riseFallRate', 0)) * 100,  # Convert to percentage
-                            },
-                            'timestamp': datetime.now(),
-                            'source': 'ticker'
-                        }
-                        return price_info
-            
-            return None
-            
-        except Exception as e:
-            logger.debug(f"Price data error for {symbol}: {e}")
-            return None
-        
+        """Main price data method - use the working version"""
+        return self.get_mexc_price_data_working(symbol)    
 
     def get_mexc_prices_batch(self):
         """Get prices in batch using ticker endpoint"""
