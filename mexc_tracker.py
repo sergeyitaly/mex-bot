@@ -2278,43 +2278,67 @@ class MEXCTracker:
 
 
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet - PROPER MICRO-CAP FORMATTING"""
+        """Update Unique Futures sheet with price information - DEBUG VERSION"""
         try:
             worksheet = self.spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data
             worksheet.clear()
             
+            # Enhanced headers with price changes
             headers = [
                 'Symbol', 'Current Price', '5m Change %', '15m Change %', 
                 '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
             ]
-            worksheet.update([headers], 'A1')
+            worksheet.update([headers], 'A1')  # CORRECT: values first, range second
             
+            # Prepare data
             sheet_data = []
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
+            # DEBUG: Check what's in analyzed_prices
+            debug_symbols = ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']  # Test symbols
+            logger.info("🔍 DEBUG - Checking analyzed_prices content:")
+            for symbol in debug_symbols:
+                price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
+                if price_info:
+                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')}")
+                else:
+                    logger.info(f"  ❌ {symbol}: Not in analyzed_prices")
+            
+            # Create mapping for quick price lookup
             price_map = {item['symbol']: item for item in analyzed_prices}
+            logger.info(f"🔍 Price map size: {len(price_map)} symbols")
+            
+            # Check specific symbol in price_map
+            if 'QKC_USDT' in price_map:
+                qkc_info = price_map['QKC_USDT']
+                logger.info(f"🔍 QKC_USDT in price_map: ${qkc_info.get('price')}")
+            else:
+                logger.info("❌ QKC_USDT NOT in price_map")
             
             for symbol in sorted(unique_futures):
-                price_info = price_map.get(symbol, {})
-                changes = price_info.get('changes', {})
-                price = price_info.get('price')
+                price_info = price_map.get(symbol)
+                changes = price_info.get('changes', {}) if price_info else {}
+                price = price_info.get('price') if price_info else None
                 
-                # IMPROVED PRICE FORMATTING FOR ALL RANGES
-                if price is not None and price >= 0:
-                    if price >= 1000:
-                        price_display = f"${price:,.2f}"
-                    elif price >= 1:
-                        price_display = f"${price:.2f}"
-                    elif price >= 0.1:
+                # DEBUG specific symbol
+                if symbol == 'QKC_USDT':
+                    logger.info(f"🔍 Processing QKC_USDT - price_info: {price_info is not None}, price: {price}")
+                
+                # Format price display
+                if price:
+                    if price >= 1:
                         price_display = f"${price:.4f}"
-                    elif price >= 0.001:
+                    elif price >= 0.01:
                         price_display = f"${price:.6f}"
-                    elif price >= 0.000001:
-                        price_display = f"${price:.8f}"
                     else:
-                        price_display = f"${price:.2e}"  # Scientific notation for extremely small
+                        price_display = f"${price:.8f}"
                 else:
                     price_display = 'N/A'
+                    # DEBUG: Log why specific symbols are N/A
+                    if symbol in ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']:
+                        logger.info(f"🔍 {symbol} marked as N/A - price: {price}, price_info: {price_info is not None}")
                 
                 row = [
                     symbol,
@@ -2330,13 +2354,20 @@ class MEXCTracker:
                 ]
                 sheet_data.append(row)
             
+            # Update sheet in batches - CORRECTED PARAMETER ORDER
             if sheet_data:
-                worksheet.update(sheet_data, 'A2')
+                batch_size = 100
+                for i in range(0, len(sheet_data), batch_size):
+                    batch = sheet_data[i:i + batch_size]
+                    worksheet.update(batch, f'A{i+2}')  # CORRECT: values first, range second
+                
                 logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+            else:
+                logger.warning("No unique futures data to update")
                 
         except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet: {e}")
-            
+            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
+                
     def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
         """Update MEXC Analysis sheet with price data"""
         try:
