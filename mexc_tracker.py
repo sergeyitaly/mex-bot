@@ -320,52 +320,49 @@ class MEXCTracker:
             unique_futures, _ = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures: {len(unique_futures)} symbols")
             
-            # CRITICAL FIX: Start with empty dict and add ALL symbols we care about
-            price_data = {}
+            # CRITICAL FIX: Start with batch data and ensure ALL unique symbols are included
+            price_data = batch_data.copy()  # Start with all batch data
             
-            # Step 1: Add all batch data
-            price_data.update(batch_data)
-            logger.info(f"✅ Added {len(batch_data)} symbols from batch")
-            
-            # Step 2: Ensure ALL unique symbols are included
+            # Ensure ALL unique symbols are in the final result
             missing_unique = [s for s in unique_futures if s not in price_data]
             logger.info(f"🔍 Unique symbols missing after batch: {len(missing_unique)}")
             
-            # Step 3: Get individual prices for missing unique symbols
+            # Get individual prices for missing unique symbols
             successful_individual = 0
-            for symbol in missing_unique[:80]:  # Increased limit
+            for symbol in missing_unique[:50]:  # Limit to avoid timeout
                 try:
-                    logger.info(f"🔍 Fetching individual price for: {symbol}")
-                    price_info = self.get_mexc_price_data_working(symbol)
-                    if price_info and price_info.get('price'):
-                        price_data[symbol] = price_info
+                    individual_price = self.get_mexc_price_data_working(symbol)
+                    if individual_price and individual_price.get('price'):
+                        price_data[symbol] = individual_price
                         successful_individual += 1
-                        logger.info(f"✅ Added {symbol}: ${price_info['price']}")
+                        logger.info(f"✅ Added {symbol}: ${individual_price['price']}")
                     else:
-                        logger.info(f"❌ No price data for {symbol}")
+                        # Even if no price, add placeholder to ensure symbol appears
+                        price_data[symbol] = {
+                            'symbol': symbol,
+                            'price': None,
+                            'changes': {},
+                            'timestamp': datetime.now(),
+                            'source': 'missing'
+                        }
                     
-                    time.sleep(0.1)  # Reduced delay
+                    time.sleep(0.1)  # Rate limiting
                     
                 except Exception as e:
                     logger.error(f"Price fetch failed for {symbol}: {e}")
                     continue
             
-            # Step 4: VERIFICATION - Check if all unique symbols are now in price_data
-            final_unique_coverage = len([s for s in unique_futures if s in price_data])
-            logger.info(f"🎯 Final unique coverage: {final_unique_coverage}/{len(unique_futures)}")
-            
-            # CRITICAL: Log specific missing symbols for debugging
-            still_missing = [s for s in unique_futures if s not in price_data]
-            if still_missing:
-                logger.info(f"⚠️ Still missing {len(still_missing)} unique symbols: {still_missing[:10]}")
-            
+            # Final verification
+            final_coverage = len([s for s in unique_futures if s in price_data])
+            logger.info(f"🎯 Final unique coverage: {final_coverage}/{len(unique_futures)}")
             logger.info(f"💰 Final price data: {len(price_data)} total symbols")
+            
             return price_data
             
         except Exception as e:
             logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
-            
+    
     def get_mexc_prices_batch_working(self):
         """Get prices using working MEXC API endpoint - ACCEPT MICRO-CAP"""
         try:
