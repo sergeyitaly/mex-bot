@@ -1765,6 +1765,117 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("dataflow", self.data_flow_debug_command))
         self.dispatcher.add_handler(CommandHandler("qkctest", self.qkc_test_command))
         self.dispatcher.add_handler(CommandHandler("validateprices", self.validate_prices_command))
+        self.dispatcher.add_handler(CommandHandler("symbolsearch", self.symbol_search_command))
+        self.dispatcher.add_handler(CommandHandler("debugdatasources", self.debug_data_sources))
+
+
+    def symbol_search_command(self, update: Update, context: CallbackContext):
+        """Search for symbols in MEXC API"""
+        try:
+            if not context.args:
+                update.message.reply_html("Usage: /symbolsearch SYMBOL\nExample: /symbolsearch BOBBSC")
+                return
+            
+            search_term = context.args[0].upper()
+            update.message.reply_html(f"🔍 <b>Searching for:</b> {search_term}")
+            
+            # Get batch data to see what's available
+            batch_data = self.get_mexc_prices_batch_working()
+            
+            # Search for matching symbols
+            matching_symbols = [s for s in batch_data.keys() if search_term in s]
+            
+            # Get MEXC futures to see what should be there
+            mexc_futures = self.get_mexc_futures()
+            mexc_matches = [s for s in mexc_futures if search_term in s]
+            
+            message = (
+                f"🔍 <b>Symbol Search: {search_term}</b>\n\n"
+                f"📊 <b>MEXC Futures List:</b> {len(mexc_matches)} matches\n"
+            )
+            
+            if mexc_matches:
+                message += "\n".join([f"• {s}" for s in mexc_matches[:10]]) + "\n"
+            else:
+                message += "• No matches found\n"
+            
+            message += f"\n📊 <b>Batch API Data:</b> {len(matching_symbols)} matches\n"
+            
+            if matching_symbols:
+                for symbol in matching_symbols[:10]:
+                    price = batch_data[symbol].get('price')
+                    message += f"• {symbol}: ${price}\n"
+            else:
+                message += "• No matches in batch API\n"
+            
+            # Try direct API calls for specific symbols
+            message += f"\n🔧 <b>Direct API Tests:</b>\n"
+            test_symbols = [f"{search_term}_USDT", f"{search_term}USDT", search_term]
+            
+            for test_symbol in test_symbols:
+                try:
+                    url = f"https://contract.mexc.com/api/v1/contract/ticker?symbol={test_symbol}"
+                    response = requests.get(url, timeout=5)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('success') and data.get('data'):
+                            price = data['data'][0].get('lastPrice') if isinstance(data['data'], list) else data['data'].get('lastPrice')
+                            message += f"• {test_symbol}: ✅ FOUND (${price})\n"
+                        else:
+                            message += f"• {test_symbol}: ❌ NOT FOUND\n"
+                    else:
+                        message += f"• {test_symbol}: ❌ HTTP {response.status_code}\n"
+                except Exception as e:
+                    message += f"• {test_symbol}: ❌ ERROR\n"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Search error: {str(e)}")
+
+
+    def debug_data_sources(self, update: Update, context: CallbackContext):
+        """Debug where data is coming from"""
+        try:
+            update.message.reply_html("🔍 <b>Debugging data sources...</b>")
+            
+            # Source 1: MEXC futures list
+            mexc_futures = self.get_mexc_futures()
+            
+            # Source 2: Batch price data
+            batch_data = self.get_mexc_prices_batch_working()
+            
+            # Source 3: Unique futures
+            unique_futures, _ = self.find_unique_futures_robust()
+            
+            # Test symbols
+            test_symbols = ['BOBBSC_USDT', 'MANYU_USDT', 'RVV_USDT', 'AAPLSTOCK_USDT', 'LAZIO_USDT']
+            
+            message = "🔍 <b>Data Source Analysis</b>\n\n"
+            
+            for symbol in test_symbols:
+                message += f"<b>{symbol}</b>\n"
+                message += f"• MEXC Futures: {'✅' if symbol in mexc_futures else '❌'}\n"
+                message += f"• Batch Prices: {'✅' if symbol in batch_data else '❌'}\n"
+                message += f"• Unique Futures: {'✅' if symbol in unique_futures else '❌'}\n"
+                message += "\n"
+            
+            # Check if there are symbol format differences
+            message += "<b>🔍 Symbol Format Analysis</b>\n"
+            batch_symbols_sample = list(batch_data.keys())[:5]
+            message += f"Batch API symbols sample: {batch_symbols_sample}\n\n"
+            
+            mexc_futures_sample = list(mexc_futures)[:5]
+            message += f"MEXC Futures sample: {mexc_futures_sample}\n\n"
+            
+            unique_sample = list(unique_futures)[:5]
+            message += f"Unique Futures sample: {unique_sample}"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Debug error: {str(e)}")
 
     def validate_prices_command(self, update: Update, context: CallbackContext):
         """Validate prices for symbols with issues"""
