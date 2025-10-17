@@ -423,8 +423,8 @@ class MEXCTracker:
         try:
             endpoints = [
             f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
-            #f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
-            #f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
+            f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
+            f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
         ]
             
             for url in endpoints:
@@ -1745,7 +1745,7 @@ class MEXCTracker:
 
 
     def symbol_search_command(self, update: Update, context: CallbackContext):
-        """Search for symbols in MEXC API"""
+        """Search for symbols in MEXC API - CORRECTED"""
         try:
             if not context.args:
                 update.message.reply_html("Usage: /symbolsearch SYMBOL\nExample: /symbolsearch BOBBSC")
@@ -1783,9 +1783,15 @@ class MEXCTracker:
             else:
                 message += "• No matches in batch API\n"
             
-            # Try direct API calls for specific symbols
+            # FIXED: Create proper test symbols based on input
             message += f"\n🔧 <b>Direct API Tests:</b>\n"
-            test_symbols = [f"{search_term}_USDT", f"{search_term}USDT", search_term]
+            
+            # If search_term already has _USDT, test it directly
+            if search_term.endswith('_USDT'):
+                test_symbols = [search_term]  # Just test the exact symbol
+            else:
+                # If it's a base symbol, add _USDT suffix
+                test_symbols = [f"{search_term}_USDT"]
             
             for test_symbol in test_symbols:
                 try:
@@ -1795,20 +1801,29 @@ class MEXCTracker:
                     if response.status_code == 200:
                         data = response.json()
                         if data.get('success') and data.get('data'):
-                            price = data['data'][0].get('lastPrice') if isinstance(data['data'], list) else data['data'].get('lastPrice')
-                            message += f"• {test_symbol}: ✅ FOUND (${price})\n"
+                            # Handle both list and dict response formats
+                            ticker_data = data['data']
+                            if isinstance(ticker_data, list) and ticker_data:
+                                price = ticker_data[0].get('lastPrice')
+                            else:
+                                price = ticker_data.get('lastPrice')
+                                
+                            if price:
+                                message += f"• {test_symbol}: ✅ FOUND (${price})\n"
+                            else:
+                                message += f"• {test_symbol}: ✅ FOUND but no price data\n"
                         else:
-                            message += f"• {test_symbol}: ❌ NOT FOUND\n"
+                            message += f"• {test_symbol}: ❌ API returned success=False\n"
                     else:
                         message += f"• {test_symbol}: ❌ HTTP {response.status_code}\n"
                 except Exception as e:
-                    message += f"• {test_symbol}: ❌ ERROR\n"
+                    message += f"• {test_symbol}: ❌ ERROR: {str(e)[:50]}...\n"
             
             update.message.reply_html(message)
             
         except Exception as e:
             update.message.reply_html(f"❌ Search error: {str(e)}")
-
+            
 
     def debug_data_sources(self, update: Update, context: CallbackContext):
         """Debug where data is coming from"""
