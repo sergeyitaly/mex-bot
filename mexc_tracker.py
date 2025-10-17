@@ -1284,18 +1284,19 @@ class MEXCTracker:
 
 
     def normalize_symbol_for_comparison(self, symbol):
-        """Robust symbol normalization"""
+        """Robust symbol normalization - FIXED STOCK SYMBOLS"""
         if not symbol:
             return ""
         
         # Convert to uppercase
         symbol = symbol.upper()
         
-        # Remove common suffixes
+        # DON'T remove stock-related suffixes - this is the main bug!
+        # Keep STOCK, SHARE, etc. as they are important for stock symbols
+        
+        # Only remove common futures/perp suffixes
         patterns = [
             r'[-_/]?PERP(ETUAL)?$',
-            r'[-_/]?USDT$', 
-            r'[-_/]?USD$',
             r'[-_/]?SWAP$',
             r'[-_/]?FUTURES?$',
             r'[-_/]?CONTRACT$',
@@ -1305,9 +1306,11 @@ class MEXCTracker:
         for pattern in patterns:
             normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
         
-        # Remove separators and clean up
+        # Remove separators but keep the symbol structure
         normalized = re.sub(r'[-_/]', '', normalized)
-        normalized = re.sub(r'\d+$', '', normalized)  # Remove trailing numbers
+        
+        # DON'T remove trailing numbers - stock symbols often have numbers
+        # normalized = re.sub(r'\d+$', '', normalized)  # REMOVE THIS LINE
         
         return normalized.strip()
 
@@ -1494,7 +1497,7 @@ class MEXCTracker:
         return all_futures, exchange_stats
 
     def verify_symbol_coverage(self, symbol, all_futures_cache=None, mexc_futures_cache=None):
-        """FAST symbol coverage check using cached data"""
+        """FAST symbol coverage check using cached data - FIXED"""
         coverage = []
         
         # Use cached data if provided
@@ -1502,7 +1505,19 @@ class MEXCTracker:
             coverage.append('MEXC')
         
         # Check other exchanges using cached data
+        # FIX: Use LESS aggressive normalization for stock symbols
         normalized_target = self.normalize_symbol_for_comparison(symbol)
+        
+        # For stock symbols, be more careful with normalization
+        if 'STOCK' in symbol.upper():
+            # For stock symbols, try multiple normalization approaches
+            normalized_variations = [
+                normalized_target,
+                symbol.upper().replace('_', '').replace('-', '').replace('/', ''),
+                symbol.upper().replace('STOCK', '').replace('_', '').replace('-', '').replace('/', ''),
+            ]
+        else:
+            normalized_variations = [normalized_target]
         
         exchange_checks = {
             'Binance': all_futures_cache,
@@ -1520,16 +1535,19 @@ class MEXCTracker:
                 
             found = False
             for fut in futures_cache:
-                normalized_fut = self.normalize_symbol_for_comparison(fut)
-                if normalized_target == normalized_fut:
-                    found = True
+                # Try all normalization variations
+                for normalized_variation in normalized_variations:
+                    normalized_fut = self.normalize_symbol_for_comparison(fut)
+                    if normalized_variation == normalized_fut:
+                        found = True
+                        break
+                if found:
                     break
             
             if found:
                 coverage.append(exchange_name)
         
         return coverage
-
 
     # ==================== EXCHANGE API METHODS ====================
 
@@ -3252,7 +3270,7 @@ class MEXCTracker:
             update.message.reply_html(f"❌ Error analyzing performers: {str(e)}")
 
     def check_command(self, update: Update, context: CallbackContext):
-        """Perform immediate check with colorful visual progress bar"""
+        """Perform immediate check with colorful visual progress bar - FIXED PRICE DATA"""
         try:
             # Send initial message
             progress_message = update.message.reply_html(
@@ -3302,7 +3320,7 @@ class MEXCTracker:
                 except Exception as e:
                     logger.debug(f"Progress update failed: {e}")
 
-            # Define check steps with more detail
+            # Define check steps with more detail - ADD PRICE COLLECTION STEP
             steps = [
                 ("Initializing systems", "⚡ Starting tracking systems..."),
                 ("Checking MEXC", "🔍 Scanning MEXC futures database..."),
@@ -3314,6 +3332,7 @@ class MEXCTracker:
                 ("Checking BingX", "🔄 Accessing BingX futures..."),
                 ("Checking BitGet", "🔍 Analyzing BitGet perpetuals..."),
                 ("Finding unique symbols", "🎯 Calculating unique futures..."),
+                ("Collecting price data", "💰 Fetching current prices..."),  # ADDED STEP
                 ("Analyzing results", "📊 Compiling comprehensive report..."),
                 ("Finalizing", "✅ Completing analysis...")
             ]
@@ -3321,6 +3340,13 @@ class MEXCTracker:
             exchange_results = {}
             data_before = self.load_data()
             unique_before = set(data_before.get('unique_futures', []))
+            
+            # VARIABLES TO STORE RESULTS
+            unique_after = set()
+            new_futures = set()
+            lost_futures = set()
+            price_data = {}  # ADD THIS
+            analyzed_prices = []  # ADD THIS
             
             # Execute each step with progress updates
             for i, (step_name, status_text) in enumerate(steps):
@@ -3378,10 +3404,18 @@ class MEXCTracker:
                         
                     elif step_name == "Finding unique symbols":
                         new_futures, lost_futures = self.monitor_unique_futures_changes()
-                        
-                    elif step_name == "Analyzing results":
                         data_after = self.load_data()
                         unique_after = set(data_after.get('unique_futures', []))
+                        
+                    elif step_name == "Collecting price data":  # NEW STEP
+                        # Use the SAME price collection as symbolsearch
+                        price_data = self.get_all_mexc_prices()
+                        analyzed_prices = self.analyze_price_movements(price_data)
+                        current_count = len([p for p in analyzed_prices if p.get('price') is not None])
+                        
+                    elif step_name == "Analyzing results":
+                        # Analysis is already done, just update progress
+                        pass
                         
                     # Update progress with results
                     update_progress(i, len(steps), status_text, current_exchange, current_count)
@@ -3401,32 +3435,19 @@ class MEXCTracker:
             working_exchanges = [name for name, count in exchange_results.items() if count > 0]
             total_futures = sum(exchange_results.values())
             
-            # Get unique futures count
-            data_after = self.load_data()
-            unique_after = set(data_after.get('unique_futures', []))
-            unique_before = set(data_before.get('unique_futures', []))
-            
-            new_futures = unique_after - unique_before
-            lost_futures = unique_before - unique_after
+            # Calculate price coverage statistics
+            unique_with_prices = len([s for s in unique_after if s in price_data and price_data[s].get('price') is not None])
+            price_coverage_percent = (unique_with_prices / len(unique_after)) * 100 if unique_after else 0
 
-            # In the check command, after getting unique futures:
-            if step_name == "Analyzing results":
-                # Get price data for analysis
-                logger.info("💰 Getting price data for analysis...")
-                price_data = self.get_all_mexc_prices()
-                analyzed_prices = self.analyze_price_movements(price_data)
-                
-                data_after = self.load_data()
-                unique_after = set(data_after.get('unique_futures', []))
-
-            # Create final report
+            # Create final report WITH PRICE DATA
             final_message = "🎯 <b>COMPREHENSIVE CHECK COMPLETE</b>\n\n"
             
             # Exchange Statistics
             final_message += "📊 <b>EXCHANGE STATISTICS</b>\n"
             final_message += f"✅ Working: {len(working_exchanges)}/{len(exchange_results)} exchanges\n"
             final_message += f"📈 Total Futures: {total_futures}\n"
-            final_message += f"🎯 MEXC Unique: {len(unique_after)}\n\n"
+            final_message += f"🎯 MEXC Unique: {len(unique_after)}\n"
+            final_message += f"💰 Price Coverage: {unique_with_prices}/{len(unique_after)} ({price_coverage_percent:.1f}%)\n\n"
             
             # Detailed Exchange Results
             final_message += "🔍 <b>DETAILED RESULTS</b>\n"
@@ -3460,6 +3481,32 @@ class MEXCTracker:
             
             final_message += "✅ <i>Check completed successfully!</i>"
 
+            # ADD NEW SECTION: SHOW NEW UNIQUE FUTURES WITH PRICES
+            if new_futures:
+                final_message += f"\n\n🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
+                
+                priced_count = 0
+                for symbol in list(new_futures)[:10]:  # Show first 10
+                    price_info = price_data.get(symbol)
+                    
+                    if price_info and price_info.get('price') is not None:
+                        price = price_info['price']
+                        changes = price_info.get('changes', {})
+                        change_5m = changes.get('5m', 0)
+                        
+                        final_message += f"✅ <b>{symbol}</b>\n"
+                        final_message += f"   Price: ${price}\n"
+                        final_message += f"   5m: {self.format_change(change_5m)}\n\n"
+                        priced_count += 1
+                    else:
+                        final_message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
+                
+                if len(new_futures) > 10:
+                    final_message += f"... and {len(new_futures) - 10} more symbols\n\n"
+                
+                final_message += f"📊 Total unique: <b>{len(unique_after)}</b>\n"
+                final_message += f"💰 With prices: <b>{priced_count}/10</b> shown symbols"
+
             # Send final message
             context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
@@ -3491,6 +3538,7 @@ class MEXCTracker:
             
             logger.error(f"Check command failed: {e}")
 
+        
 
     def find_unique_command(self, update: Update, context: CallbackContext):
         """Find and display currently unique symbols with prices"""
