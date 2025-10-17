@@ -2098,7 +2098,57 @@ class MEXCTracker:
             logger.error(f"Error updating Price Analysis sheet: {e}")
 
     def update_dashboard_with_comprehensive_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
+        """Update the dashboard with comprehensive statistics including price coverage"""
+        if not self.spreadsheet:
+            return
         
+        try:
+            worksheet = self.spreadsheet.worksheet("Dashboard")
+            
+            # Count working exchanges
+            working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+            total_exchanges = len(exchange_stats)
+            
+            # Calculate price statistics
+            valid_prices = [p for p in analyzed_prices if p.get('price') is not None] if analyzed_prices else []
+            top_performers = valid_prices[:10] if valid_prices else []
+            strong_movers = [p for p in valid_prices if abs(p.get('latest_change', 0)) > 5]
+            
+            # Get unique futures for price coverage calculation
+            unique_futures, _ = self.find_unique_futures_robust()
+            price_coverage = len(valid_prices) / max(len(unique_futures), 1) * 100
+            
+            stats_update = [
+                ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
+                ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["Update Interval", f"{self.update_interval} minutes"],
+                ["", ""],
+                ["📊 EXCHANGE STATISTICS", ""],
+                ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+                ["Total Unique Symbols", unique_symbols_count],
+                ["Unique MEXC Futures", f"{unique_futures_count} 🎯"],
+                ["", ""],
+                ["💰 PRICE ANALYSIS", ""],
+                ["Symbols with Price Data", f"{len(valid_prices)}/{unique_futures_count}"],
+                ["Price Data Coverage", f"{price_coverage:.1f}%"],
+                ["Top Performers Tracked", len(top_performers)],
+                ["Strong Movers (>5%)", len(strong_movers)],
+                ["", ""],
+                ["⚡ PERFORMANCE", ""],
+                ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
+                ["Status", "🟢 RUNNING"],
+                ["Price System", "✅ WORKING"],
+            ]
+            
+            # Update dashboard
+            worksheet.clear()
+            worksheet.update(stats_update, 'A1')  # Fixed parameter order
+            
+            logger.info("✅ Dashboard updated with comprehensive stats")
+            
+        except Exception as e:
+            logger.error(f"Error updating dashboard stats: {e}")
+
     def format_change_for_sheet(self, change):
         """Format change for Google Sheets with color indicators"""
         if change is None:
