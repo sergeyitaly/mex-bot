@@ -57,7 +57,8 @@ class MEXCTracker:
         # Price tracking
         self.price_history = {}  # symbol: {timestamp: price}
         self.last_price_check = None
-        
+        self.restart_count = 0
+        self.last_restart = None
         # Google Sheets setup
         self.setup_google_sheets()
         self.session = self._create_session()
