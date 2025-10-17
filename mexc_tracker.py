@@ -213,6 +213,102 @@ class MEXCTracker:
         
     # ==================== PRICE MONITORING ====================
 
+
+
+    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with price information - DEBUG VERSION"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            # Enhanced headers with price changes
+            headers = [
+                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            # Prepare data
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # DEBUG: Check what's in analyzed_prices
+            debug_symbols = ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']  # Test symbols
+            logger.info("🔍 DEBUG - Checking analyzed_prices content:")
+            for symbol in debug_symbols:
+                price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
+                if price_info:
+                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')}")
+                else:
+                    logger.info(f"  ❌ {symbol}: Not in analyzed_prices")
+            
+            # Create mapping for quick price lookup
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            logger.info(f"🔍 Price map size: {len(price_map)} symbols")
+            
+            # Check specific symbol in price_map
+            if 'QKC_USDT' in price_map:
+                qkc_info = price_map['QKC_USDT']
+                logger.info(f"🔍 QKC_USDT in price_map: ${qkc_info.get('price')}")
+            else:
+                logger.info("❌ QKC_USDT NOT in price_map")
+            
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol)
+                changes = price_info.get('changes', {}) if price_info else {}
+                price = price_info.get('price') if price_info else None
+                
+                # DEBUG specific symbol
+                if symbol == 'QKC_USDT':
+                    logger.info(f"🔍 Processing QKC_USDT - price_info: {price_info is not None}, price: {price}")
+                
+                # Format price display
+                if price:
+                    if price >= 1:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.8f}"
+                else:
+                    price_display = 'N/A'
+                    # DEBUG: Log why specific symbols are N/A
+                    if symbol in ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']:
+                        logger.info(f"🔍 {symbol} marked as N/A - price: {price}, price_info: {price_info is not None}")
+                
+                row = [
+                    symbol,
+                    price_display,
+                    self.format_change_for_sheet(changes.get('5m')),
+                    self.format_change_for_sheet(changes.get('15m')),
+                    self.format_change_for_sheet(changes.get('30m')),
+                    self.format_change_for_sheet(changes.get('60m')),
+                    self.format_change_for_sheet(changes.get('240m')),
+                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
+                    'UNIQUE',
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            # Update sheet in batches
+            if sheet_data:
+                batch_size = 100
+                for i in range(0, len(sheet_data), batch_size):
+                    batch = sheet_data[i:i + batch_size]
+                    worksheet.update(batch, f'A{i+2}')
+                
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+            else:
+                logger.warning("No unique futures data to update")
+                
+        except Exception as e:
+            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
+
+
+
+
     def get_all_mexc_prices(self):
         """Get price data for MEXC futures - CORRECTED VERSION"""
         try:
@@ -441,8 +537,18 @@ class MEXCTracker:
             return {}
 
     def analyze_price_movements(self, price_data):
-        """Analyze price movements with fallback for missing data"""
+        """Analyze price movements with debugging"""
         try:
+            logger.info(f"🔍 Analyzing price movements for {len(price_data)} symbols")
+            
+            # DEBUG: Check specific symbols
+            debug_symbols = ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']
+            for symbol in debug_symbols:
+                if symbol in price_data:
+                    logger.info(f"  ✅ {symbol} in price_data: ${price_data[symbol].get('price')}")
+                else:
+                    logger.info(f"  ❌ {symbol} NOT in price_data")
+            
             symbols_with_changes = []
             
             for symbol, data in price_data.items():
@@ -451,7 +557,6 @@ class MEXCTracker:
                 
                 # If we have no historical changes, create minimal data
                 if not changes:
-                    # Try to calculate from price history if available
                     historical_changes = self.calculate_changes_from_history(symbol, price)
                     if historical_changes:
                         changes = historical_changes
@@ -491,12 +596,13 @@ class MEXCTracker:
             # Sort by score (highest first)
             symbols_with_changes.sort(key=lambda x: x['score'], reverse=True)
             
+            logger.info(f"✅ Analyzed {len(symbols_with_changes)} symbols")
             return symbols_with_changes
             
         except Exception as e:
             logger.error(f"Error analyzing price movements: {e}")
             return []
-
+        
     def calculate_changes_from_history(self, symbol, current_price):
         """Calculate price changes from historical data if available"""
         try:
@@ -649,89 +755,6 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error updating Google Sheet with prices: {e}")
                 
-    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with price information - ENHANCED"""
-        try:
-            worksheet = self.spreadsheet.worksheet('Unique Futures')
-            
-            # Clear existing data
-            worksheet.clear()
-            
-            # Enhanced headers with price changes
-            headers = [
-                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
-                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
-            ]
-            worksheet.update([headers], 'A1')  # Fixed parameter order
-            
-            # Prepare data
-            sheet_data = []
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Get COMPLETE price data for all unique symbols
-            all_price_data = self.get_all_mexc_prices()
-            
-            # For any missing prices, try to fetch individually
-            missing_symbols = [s for s in unique_futures if s not in all_price_data]
-            logger.info(f"🔍 Fetching individual prices for {len(missing_symbols)} missing symbols")
-            
-            for symbol in missing_symbols[:50]:  # Limit to avoid timeout
-                try:
-                    price_info = self.get_mexc_price_data_working(symbol)
-                    if price_info:
-                        all_price_data[symbol] = price_info
-                    time.sleep(0.1)
-                except Exception as e:
-                    logger.debug(f"Could not get price for {symbol}: {e}")
-            
-            # Now create sheet data with all available prices
-            for symbol in sorted(unique_futures):
-                price_info = all_price_data.get(symbol, {})
-                changes = price_info.get('changes', {})
-                price = price_info.get('price')
-                
-                # Format price display based on value
-                if price:
-                    if price >= 1:
-                        price_display = f"${price:.4f}"
-                    elif price >= 0.01:
-                        price_display = f"${price:.6f}"
-                    else:
-                        price_display = f"${price:.8f}"
-                else:
-                    price_display = 'N/A'
-                
-                row = [
-                    symbol,
-                    price_display,
-                    self.format_change_for_sheet(changes.get('5m')),
-                    self.format_change_for_sheet(changes.get('15m')),
-                    self.format_change_for_sheet(changes.get('30m')),
-                    self.format_change_for_sheet(changes.get('60m')),
-                    self.format_change_for_sheet(changes.get('240m')),
-                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
-                    'UNIQUE',
-                    current_time
-                ]
-                sheet_data.append(row)
-            
-            # Update sheet in batches
-            if sheet_data:
-                batch_size = 100
-                for i in range(0, len(sheet_data), batch_size):
-                    batch = sheet_data[i:i + batch_size]
-                    worksheet.update(batch, f'A{i+2}')  # Fixed parameter order
-                
-                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
-                
-                # Count how many have price data
-                prices_found = sum(1 for row in sheet_data if row[1] != 'N/A')
-                logger.info(f"💰 Price data coverage: {prices_found}/{len(sheet_data)} symbols")
-            else:
-                logger.warning("No unique futures data to update")
-                
-        except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
 
 
     def update_price_analysis_sheet(self, analyzed_prices):
@@ -1677,6 +1700,73 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("download", self.excel_command))
         self.dispatcher.add_handler(CommandHandler("pricedebug", self.price_debug_command))
         self.dispatcher.add_handler(CommandHandler("symboldebug", self.symbol_debug_command))
+        self.dispatcher.add_handler(CommandHandler("dataflow", self.data_flow_debug_command))
+
+
+    def data_flow_debug_command(self, update: Update, context: CallbackContext):
+        """Debug the complete data flow for a symbol"""
+        try:
+            if not context.args:
+                update.message.reply_html("Usage: /dataflow SYMBOL\nExample: /dataflow QKC_USDT")
+                return
+            
+            symbol = context.args[0].upper()
+            update.message.reply_html(f"🔍 <b>Data Flow Debug:</b> {symbol}")
+            
+            # Step 1: Check batch API
+            batch_data = self.get_mexc_prices_batch_working()
+            in_batch = symbol in batch_data
+            batch_price = batch_data.get(symbol, {}).get('price') if in_batch else None
+            
+            # Step 2: Check individual API
+            individual_data = self.get_mexc_price_data_working(symbol)
+            individual_works = individual_data is not None
+            individual_price = individual_data.get('price') if individual_data else None
+            
+            # Step 3: Check get_all_mexc_prices
+            all_prices = self.get_all_mexc_prices()
+            in_all_prices = symbol in all_prices
+            all_price_value = all_prices.get(symbol, {}).get('price') if in_all_prices else None
+            
+            # Step 4: Check analyzed_prices
+            analyzed_prices = self.analyze_price_movements(all_prices)
+            in_analyzed = any(p['symbol'] == symbol for p in analyzed_prices)
+            analyzed_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
+            analyzed_price = analyzed_info.get('price') if analyzed_info else None
+            
+            message = (
+                f"🔍 <b>Data Flow Debug: {symbol}</b>\n\n"
+                f"📊 <b>Step 1 - Batch API:</b>\n"
+                f"• Present: {'✅ YES' if in_batch else '❌ NO'}\n"
+                f"• Price: ${batch_price if batch_price else 'N/A'}\n\n"
+                
+                f"📊 <b>Step 2 - Individual API:</b>\n"
+                f"• Works: {'✅ YES' if individual_works else '❌ NO'}\n"
+                f"• Price: ${individual_price if individual_price else 'N/A'}\n\n"
+                
+                f"📊 <b>Step 3 - get_all_mexc_prices:</b>\n"
+                f"• Present: {'✅ YES' if in_all_prices else '❌ NO'}\n"
+                f"• Price: ${all_price_value if all_price_value else 'N/A'}\n\n"
+                
+                f"📊 <b>Step 4 - analyze_price_movements:</b>\n"
+                f"• Present: {'✅ YES' if in_analyzed else '❌ NO'}\n"
+                f"• Price: ${analyzed_price if analyzed_price else 'N/A'}\n\n"
+            )
+            
+            # Identify where the data is lost
+            if in_all_prices and not in_analyzed:
+                message += "❌ <b>ISSUE:</b> Data lost in analyze_price_movements()\n"
+            elif in_analyzed and analyzed_price is None:
+                message += "❌ <b>ISSUE:</b> Price is None in analyzed data\n"
+            else:
+                message += "✅ <b>DATA FLOW:</b> All steps working\n"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Data flow debug error: {str(e)}")
+
+
 
     def symbol_debug_command(self, update: Update, context: CallbackContext):
         """Debug why specific symbols don't have price data"""
@@ -2737,6 +2827,7 @@ class MEXCTracker:
             "/symboldebug - Symbol debug\n"
             "/excel - Download excel\n"
             "/analysis - Full analysis\n"
+            "/dataflow - Dataflow SYmbol"
             "/exchanges - Exchange info\n"
             "/stats - Bot statistics\n"
             "/help - Help information\n"
@@ -3309,6 +3400,7 @@ class MEXCTracker:
             "/symboldebug - Symbol debug\n"
             "/excel - Download excel\n"
             "/analysis - Full analysis report\n"
+            "/dataflow - Dataflow SYmbol"
             "/status - Current status\n"
             "/exchanges - Exchange information\n"
             "/stats - Bot statistics\n"
