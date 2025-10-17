@@ -367,57 +367,77 @@ class MEXCTracker:
         return sources
    
     def get_mexc_prices_batch_working(self):
-        """Get prices using working MEXC API endpoint - ACCEPT MICRO-CAP"""
+        """Get prices using working MEXC API endpoint - WITH RATE LIMITING & RETRIES"""
         try:
             url = "https://contract.mexc.com/api/v1/contract/ticker"
             
-            response = requests.get(url, timeout=15)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                if data.get('success'):
-                    tickers = data.get('data', [])
-                    price_data = {}
+            # Add retry logic
+            for attempt in range(3):
+                try:
+                    response = requests.get(url, timeout=15)
                     
-                    for ticker in tickers:
-                        try:
-                            symbol = ticker.get('symbol')
-                            price_str = ticker.get('lastPrice')
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if data.get('success'):
+                            tickers = data.get('data', [])
+                            price_data = {}
                             
-                            if symbol and price_str:
-                                price = float(price_str)
-                                
-                                # FIX: ACCEPT ALL VALID PRICES, EVEN VERY SMALL ONES
-                                # Only skip negative prices
-                                if price < 0:
-                                    continue
+                            for ticker in tickers:
+                                try:
+                                    symbol = ticker.get('symbol')
+                                    price_str = ticker.get('lastPrice')
                                     
-                                change_rate = float(ticker.get('riseFallRate', 0)) * 100
-                                
-                                price_data[symbol] = {
-                                    'symbol': symbol,
-                                    'price': price,
-                                    'changes': {
-                                        '5m': change_rate,
-                                        '60m': change_rate,
-                                        '240m': change_rate
-                                    },
-                                    'timestamp': datetime.now(),
-                                    'source': 'batch_ticker'
-                                }
-                        except (ValueError, TypeError) as e:
-                            continue
+                                    if symbol and price_str:
+                                        price = float(price_str)
+                                        
+                                        # FIX: ACCEPT ALL VALID PRICES, EVEN VERY SMALL ONES
+                                        # Only skip negative prices
+                                        if price < 0:
+                                            continue
+                                            
+                                        change_rate = float(ticker.get('riseFallRate', 0)) * 100
+                                        
+                                        price_data[symbol] = {
+                                            'symbol': symbol,
+                                            'price': price,
+                                            'changes': {
+                                                '5m': change_rate,
+                                                '60m': change_rate,
+                                                '240m': change_rate
+                                            },
+                                            'timestamp': datetime.now(),
+                                            'source': 'batch_ticker'
+                                        }
+                                except (ValueError, TypeError) as e:
+                                    continue
+                            
+                            logger.info(f"✅ Batch prices: {len(price_data)} symbols (attempt {attempt + 1})")
+                            return price_data
                     
-                    logger.info(f"✅ Batch prices: {len(price_data)} symbols (including micro-cap)")
-                    return price_data
+                    # If we get here, the request failed
+                    if attempt < 2:  # Don't sleep on last attempt
+                        time.sleep(1)  # Wait 1 second before retry
+                        
+                except requests.exceptions.Timeout:
+                    logger.warning(f"⚠️ Batch API timeout on attempt {attempt + 1}")
+                    if attempt < 2:
+                        time.sleep(2)
+                except requests.exceptions.ConnectionError:
+                    logger.warning(f"⚠️ Batch API connection error on attempt {attempt + 1}")
+                    if attempt < 2:
+                        time.sleep(2)
+                except Exception as e:
+                    logger.warning(f"⚠️ Batch API error on attempt {attempt + 1}: {e}")
+                    if attempt < 2:
+                        time.sleep(1)
             
             return {}
             
         except Exception as e:
             logger.error(f"Batch price error: {e}")
             return {}
-
+    
     def get_mexc_price_data_working(self, symbol):
         """Get individual price data - ACCEPT MICRO-CAP PRICES"""
         try:
@@ -514,48 +534,77 @@ class MEXCTracker:
 
 
 
-
-
-
-    def get_all_mexc_prices(self):
-        """Get price data for all MEXC futures"""
+    def get_consistent_price_data(self):
+        """Get consistent price data with caching to avoid rate limiting issues"""
         try:
-            symbols = self.get_mexc_futures()
-            price_data = {}
-            
-            logger.info(f"🔄 Getting price data for {len(symbols)} MEXC futures...")
-            
-            for symbol in list(symbols)[:50]:  # Limit to first 50 to avoid rate limits
-                try:
-                    price_info = self.get_mexc_price_data(symbol)
-                    if price_info:
-                        price_data[symbol] = price_info
-                    time.sleep(0.1)  # Rate limiting
-                except Exception as e:
-                    logger.error(f"Error getting price for {symbol}: {e}")
-                    continue
-            
-            # Store price history
+            # Use a simple cache to avoid multiple API calls in quick succession
             current_time = datetime.now()
-            for symbol, data in price_data.items():
-                if symbol not in self.price_history:
-                    self.price_history[symbol] = {}
-                self.price_history[symbol][current_time] = data['price']
+            cache_key = "price_data_cache"
+            cache_duration = 30  # seconds
             
-            # Keep only last 24 hours of history
-            cutoff_time = current_time - timedelta(hours=24)
-            for symbol in self.price_history:
-                self.price_history[symbol] = {
-                    ts: price for ts, price in self.price_history[symbol].items() 
-                    if ts > cutoff_time
-                }
+            # Check if we have recent cached data
+            if hasattr(self, '_price_data_cache') and hasattr(self, '_price_cache_time'):
+                if (current_time - self._price_cache_time).seconds < cache_duration:
+                    logger.info("🔄 Using cached price data")
+                    return self._price_data_cache.copy()
             
-            logger.info(f"✅ Got price data for {len(price_data)} symbols")
+            # Get fresh data from batch API
+            batch_data = self.get_mexc_prices_batch_working()
+            logger.info(f"📊 Fresh batch data: {len(batch_data)} symbols")
+            
+            # Get unique futures
+            unique_futures, _ = self.find_unique_futures_robust()
+            
+            # Apply matching logic
+            price_data = {}
+            matched_symbols = 0
+            
+            for symbol in unique_futures:
+                # Try exact match first
+                if symbol in batch_data:
+                    price_data[symbol] = batch_data[symbol]
+                    matched_symbols += 1
+                else:
+                    # Try alternative formats
+                    alt_formats = [
+                        symbol.replace('_', ''),
+                        symbol.replace('_', '-'), 
+                        symbol.replace('_', '/'),
+                    ]
+                    
+                    found = False
+                    for alt_format in alt_formats:
+                        if alt_format in batch_data:
+                            price_data[symbol] = batch_data[alt_format].copy()
+                            price_data[symbol]['symbol'] = symbol
+                            matched_symbols += 1
+                            found = True
+                            break
+                    
+                    if not found:
+                        price_data[symbol] = {
+                            'symbol': symbol,
+                            'price': None,
+                            'changes': {},
+                            'timestamp': current_time,
+                            'source': 'not_found'
+                        }
+            
+            # Cache the results
+            self._price_data_cache = price_data.copy()
+            self._price_cache_time = current_time
+            
+            logger.info(f"💰 Consistent price data: {matched_symbols}/{len(unique_futures)} matched")
             return price_data
             
         except Exception as e:
-            logger.error(f"Error getting all MEXC prices: {e}")
+            logger.error(f"Consistent price data error: {e}")
             return {}
+
+
+    def get_all_mexc_prices(self):
+        """Get price data for MEXC futures - USE CONSISTENT APPROACH"""
+        return self.get_consistent_price_data()
 
     def analyze_price_movements(self, price_data):
         """Analyze price movements with debugging"""
@@ -852,7 +901,7 @@ class MEXCTracker:
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             
             # FIX: Use the EXACT SAME approach as check command
-            batch_data = self.get_mexc_prices_batch_working()
+            batch_data = self.get_consistent_price_data()
             logger.info(f"📊 Excel - Batch data: {len(batch_data)} symbols")
             
             # Create price_data by matching unique symbols with batch data (SAME AS CHECK)
@@ -940,7 +989,7 @@ class MEXCTracker:
             logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
             
             # FIX: Use the EXACT SAME approach as check command
-            batch_data = self.get_mexc_prices_batch_working()
+            batch_data = self.get_consistent_price_data()
             logger.info(f"📊 Google Sheets - Batch data: {len(batch_data)} symbols")
             
             # Create price_data by matching unique symbols with batch data (SAME AS CHECK)
@@ -3427,7 +3476,7 @@ class MEXCTracker:
                     elif step_name == "Collecting price data":
                         # CRITICAL FIX: Use the EXACT SAME method as symbolsearch
                         # Get batch data directly (what symbolsearch uses)
-                        batch_data = self.get_mexc_prices_batch_working()
+                        batch_data = self.get_consistent_price_data()
                         logger.info(f"📊 Batch data collected: {len(batch_data)} symbols")
                         
                         # Create price_data by matching unique symbols with batch data
