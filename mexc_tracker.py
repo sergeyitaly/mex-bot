@@ -367,10 +367,9 @@ class MEXCTracker:
             return {}
             
     def get_mexc_prices_batch_working(self):
-        """Get prices using working MEXC API endpoint with validation"""
+        """Get prices using working MEXC API endpoint - ACCEPT MICRO-CAP"""
         try:
             url = "https://contract.mexc.com/api/v1/contract/ticker"
-            logger.info("📡 Calling MEXC batch price API...")
             
             response = requests.get(url, timeout=15)
             
@@ -380,7 +379,6 @@ class MEXCTracker:
                 if data.get('success'):
                     tickers = data.get('data', [])
                     price_data = {}
-                    skipped_zero = 0
                     
                     for ticker in tickers:
                         try:
@@ -390,9 +388,9 @@ class MEXCTracker:
                             if symbol and price_str:
                                 price = float(price_str)
                                 
-                                # VALIDATION: Skip zero or invalid prices
-                                if price <= 0:
-                                    skipped_zero += 1
+                                # FIX: ACCEPT ALL VALID PRICES, EVEN VERY SMALL ONES
+                                # Only skip negative prices
+                                if price < 0:
                                     continue
                                     
                                 change_rate = float(ticker.get('riseFallRate', 0)) * 100
@@ -411,7 +409,7 @@ class MEXCTracker:
                         except (ValueError, TypeError) as e:
                             continue
                     
-                    logger.info(f"✅ Batch prices: {len(price_data)} valid, {skipped_zero} zero prices skipped")
+                    logger.info(f"✅ Batch prices: {len(price_data)} symbols (including micro-cap)")
                     return price_data
             
             return {}
@@ -419,21 +417,19 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Batch price error: {e}")
             return {}
-    
-    def get_mexc_price_data_working(self, symbol):
-        """Get individual price data with validation"""
-        try:
-            # Try multiple endpoints
-            endpoints = [
-                f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
-                f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
-                f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
 
-            ]
+    def get_mexc_price_data_working(self, symbol):
+        """Get individual price data - ACCEPT MICRO-CAP PRICES"""
+        try:
+            endpoints = [
+            f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
+            f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
+            f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
+
+        ]
             
             for url in endpoints:
                 try:
-                    logger.debug(f"🔍 Trying endpoint: {url}")
                     response = requests.get(url, timeout=10)
                     
                     if response.status_code == 200:
@@ -441,16 +437,16 @@ class MEXCTracker:
                         if data.get('success', False):
                             ticker_data = data.get('data', {})
                             
-                            # Handle different response formats
                             if isinstance(ticker_data, list) and ticker_data:
-                                ticker_data = ticker_data[0]  # Take first item if list
+                                ticker_data = ticker_data[0]
                             
                             price_str = ticker_data.get('lastPrice') or ticker_data.get('price')
                             if price_str:
                                 price = float(price_str)
                                 
-                                # VALIDATION: Skip zero or invalid prices
-                                if price <= 0:
+                                # FIX: ACCEPT ALL PRICES, EVEN MICRO-CAP
+                                # Only filter out truly invalid prices (negative or None)
+                                if price is None or price < 0:
                                     logger.debug(f"⚠️ Skipping {symbol} - invalid price: {price}")
                                     continue
                                     
@@ -468,16 +464,13 @@ class MEXCTracker:
                                     'source': 'individual'
                                 }
                 except Exception as endpoint_error:
-                    logger.debug(f"Endpoint {url} failed: {endpoint_error}")
                     continue
             
-            logger.debug(f"❌ No valid price data found for {symbol}")
             return None
             
         except Exception as e:
             logger.debug(f"Individual price error for {symbol}: {e}")
             return None
-    
     
     def get_mexc_price_data(self, symbol):
         """Main price data method - use the working version"""
@@ -1312,21 +1305,21 @@ class MEXCTracker:
             return set(), {}
         
     def send_new_unique_notification(self, new_futures, all_unique):
-        """Send notification about new unique futures - WITH VALIDATION"""
+        """Send notification about new unique futures - PROPER MICRO-CAP FORMATTING"""
         try:
             display_futures = list(new_futures)[:10]
             
             message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
             
-            # Get ALL prices using batch method first
+            # Get ALL prices
             all_price_data = self.get_all_mexc_prices()
             
             valid_count = 0
             for symbol in display_futures:
                 price_info = all_price_data.get(symbol)
                 
-                if price_info and price_info.get('price') and price_info['price'] > 0:
-                    # VALID PRICE
+                if price_info and price_info.get('price') is not None and price_info['price'] >= 0:
+                    # VALID PRICE (including micro-cap)
                     changes = price_info.get('changes', {})
                     change_5m = changes.get('5m', 0)
                     change_1h = changes.get('60m', 0)
@@ -1334,13 +1327,20 @@ class MEXCTracker:
                     
                     message += f"✅ <b>{symbol}</b>\n"
                     
-                    # Format price appropriately based on value
-                    if price >= 1:
+                    # IMPROVED PRICE FORMATTING FOR ALL RANGES
+                    if price >= 1000:
+                        message += f"   Price: ${price:,.2f}\n"
+                    elif price >= 1:
                         message += f"   Price: ${price:.2f}\n"
-                    elif price >= 0.01:
+                    elif price >= 0.1:
                         message += f"   Price: ${price:.4f}\n"
-                    else:
+                    elif price >= 0.001:
                         message += f"   Price: ${price:.6f}\n"
+                    elif price >= 0.000001:
+                        message += f"   Price: ${price:.8f}\n"
+                    else:
+                        # For extremely small prices (like 3e-08)
+                        message += f"   Price: ${price:.2e}\n"
                     
                     message += f"   5m: {self.format_change(change_5m)}\n"
                     
@@ -1352,44 +1352,20 @@ class MEXCTracker:
                     valid_count += 1
                     
                 else:
-                    # INVALID OR MISSING PRICE
-                    message += f"✅ <b>{symbol}</b>\n"
-                    
-                    if price_info and price_info.get('price') == 0:
-                        message += f"   Price: $0.00 (invalid)\n\n"
-                    else:
-                        # Try individual fetch as last resort
-                        try:
-                            individual_price = self.get_mexc_price_data_working(symbol)
-                            if individual_price and individual_price.get('price') and individual_price['price'] > 0:
-                                price = individual_price['price']
-                                changes = individual_price.get('changes', {})
-                                change_5m = changes.get('5m', 0)
-                                
-                                if price >= 1:
-                                    message += f"   Price: ${price:.2f}\n"
-                                elif price >= 0.01:
-                                    message += f"   Price: ${price:.4f}\n"
-                                else:
-                                    message += f"   Price: ${price:.6f}\n"
-                                
-                                message += f"   5m: {self.format_change(change_5m)}\n\n"
-                                valid_count += 1
-                            else:
-                                message += f"   Price data unavailable\n\n"
-                        except:
-                            message += f"   Price data unavailable\n\n"
+                    # TRULY MISSING PRICE
+                    message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
             
             if len(new_futures) > len(display_futures):
                 message += f"... and {len(new_futures) - len(display_futures)} more symbols\n\n"
             
             message += f"📊 Total unique: <b>{len(all_unique)}</b>"
-            message += f"\n💰 Valid prices: <b>{valid_count}/{len(display_futures)}</b> shown symbols"
+            message += f"\n💰 With prices: <b>{valid_count}/{len(display_futures)}</b> shown symbols"
             
             self.send_broadcast_message(message)
             
         except Exception as e:
             logger.error(f"Error sending new unique notification: {e}")
+
 
     def send_lost_unique_notification(self, lost_futures, remaining_unique):
         """Send notification about lost unique futures - OPTIMIZED"""
@@ -2302,60 +2278,65 @@ class MEXCTracker:
 
 
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with price information"""
+        """Update Unique Futures sheet - PROPER MICRO-CAP FORMATTING"""
         try:
             worksheet = self.spreadsheet.worksheet('Unique Futures')
+            worksheet.clear()
             
-            # Clear existing data
-            if worksheet.row_count > 1:
-                worksheet.clear()
-            
-            # Enhanced headers with price changes
             headers = [
                 'Symbol', 'Current Price', '5m Change %', '15m Change %', 
                 '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
             ]
-            worksheet.update('A1', [headers])
+            worksheet.update([headers], 'A1')
             
-            # Prepare data
             sheet_data = []
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Create mapping for quick price lookup
             price_map = {item['symbol']: item for item in analyzed_prices}
             
             for symbol in sorted(unique_futures):
                 price_info = price_map.get(symbol, {})
                 changes = price_info.get('changes', {})
+                price = price_info.get('price')
+                
+                # IMPROVED PRICE FORMATTING FOR ALL RANGES
+                if price is not None and price >= 0:
+                    if price >= 1000:
+                        price_display = f"${price:,.2f}"
+                    elif price >= 1:
+                        price_display = f"${price:.2f}"
+                    elif price >= 0.1:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.001:
+                        price_display = f"${price:.6f}"
+                    elif price >= 0.000001:
+                        price_display = f"${price:.8f}"
+                    else:
+                        price_display = f"${price:.2e}"  # Scientific notation for extremely small
+                else:
+                    price_display = 'N/A'
                 
                 row = [
                     symbol,
-                    price_info.get('price', 'N/A'),
+                    price_display,
                     self.format_change_for_sheet(changes.get('5m')),
                     self.format_change_for_sheet(changes.get('15m')),
                     self.format_change_for_sheet(changes.get('30m')),
                     self.format_change_for_sheet(changes.get('60m')),
                     self.format_change_for_sheet(changes.get('240m')),
-                    f"{price_info.get('score', 0):.2f}",
+                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
                     'UNIQUE',
                     current_time
                 ]
                 sheet_data.append(row)
             
-            # Update sheet in batches
             if sheet_data:
-                batch_size = 100
-                for i in range(0, len(sheet_data), batch_size):
-                    batch = sheet_data[i:i + batch_size]
-                    worksheet.update(f'A{i+2}', batch)
-                
+                worksheet.update(sheet_data, 'A2')
                 logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
-            else:
-                logger.warning("No unique futures data to update")
                 
         except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
-
+            logger.error(f"Error updating Unique Futures sheet: {e}")
+            
     def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
         """Update MEXC Analysis sheet with price data"""
         try:
