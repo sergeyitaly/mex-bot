@@ -807,22 +807,82 @@ class MEXCTracker:
             return set()
 
     def get_binance_futures(self):
-        """Get Binance perpetual futures"""
+        """Get Binance futures with proxy support"""
         try:
-            url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-            response = requests.get(url, timeout=10)
-            data = response.json()
+            logger.info("🔄 Fetching Binance futures...")
             
             futures = set()
-            for symbol in data.get('symbols', []):
-                if (symbol.get('contractType') == 'PERPETUAL' and 
-                    symbol.get('status') == 'TRADING'):
-                    futures.add(symbol.get('symbol'))
             
-            logger.info(f"Binance: {len(futures)} futures")
+            # USDⓈ-M Futures - try multiple endpoints
+            endpoints = [
+                "https://fapi.binance.com/fapi/v1/exchangeInfo",
+                "https://testnet.binancefuture.com/fapi/v1/exchangeInfo"  # Fallback testnet
+            ]
+            
+            for url in endpoints:
+                logger.info(f"📡 Trying Binance URL: {url}")
+                response = self._make_request_with_retry(url)
+                
+                if response and response.status_code == 200:
+                    data = response.json()
+                    symbols = data.get('symbols', [])
+                    
+                    usdt_futures = set()
+                    for symbol in symbols:
+                        if (symbol.get('contractType') == 'PERPETUAL' and 
+                            symbol.get('status') == 'TRADING'):
+                            usdt_futures.add(symbol.get('symbol'))
+                    
+                    futures.update(usdt_futures)
+                    logger.info(f"✅ Binance USDⓈ-M perpetuals found: {len(usdt_futures)}")
+                    break  # Success, no need to try other endpoints
+                else:
+                    logger.warning(f"❌ Failed to fetch from {url}")
+            
+            # If still no data, try alternative approach
+            if not futures:
+                logger.info("🔄 Trying alternative Binance endpoint...")
+                alt_response = self._make_request_with_retry("https://api.binance.com/api/v3/exchangeInfo")
+                if alt_response and alt_response.status_code == 200:
+                    # This gives spot symbols, but we can use it as fallback
+                    data = alt_response.json()
+                    symbols = data.get('symbols', [])
+                    spot_symbols = {s['symbol'] for s in symbols if s.get('status') == 'TRADING'}
+                    # Filter for common futures symbols pattern
+                    futures = {s for s in spot_symbols if s.endswith('USDT')}
+                    logger.info(f"🔄 Using spot symbols as fallback: {len(futures)}")
+            
+            logger.info(f"🎯 Binance TOTAL: {len(futures)} futures")
             return futures
+            
         except Exception as e:
-            logger.error(f"Binance error: {e}")
+            logger.error(f"❌ Binance error: {e}")
+            return set()
+
+    def get_binance_futures_fallback(self):
+        """Alternative Binance implementation using different approach"""
+        try:
+            logger.info("🔄 Using Binance fallback method...")
+            
+            futures = set()
+            
+            # Method 1: Use price tickers (often less restricted)
+            url = "https://fapi.binance.com/fapi/v1/ticker/price"
+            response = self._make_request_with_retry(url)
+            
+            if response and response.status_code == 200:
+                data = response.json()
+                for item in data:
+                    symbol = item.get('symbol', '')
+                    # Filter for USDT pairs (common futures pattern)
+                    if symbol.endswith('USDT'):
+                        futures.add(symbol)
+                logger.info(f"✅ Binance ticker fallback found: {len(futures)} symbols")
+            
+            return futures
+            
+        except Exception as e:
+            logger.error(f"❌ Binance fallback error: {e}")
             return set()
 
     def get_bybit_futures(self):
