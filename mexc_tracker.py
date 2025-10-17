@@ -783,55 +783,6 @@ class MEXCTracker:
 
     # ==================== ENHANCED GOOGLE SHEETS ====================
 
-    def update_google_sheet_with_prices(self):
-        """Update Google Sheet with price data - FIXED DATA FLOW"""
-        if not self.gs_client or not self.spreadsheet:
-            return
-        
-        try:
-            logger.info("🔄 Starting enhanced Google Sheet update...")
-            
-            # Get unique futures
-            unique_futures, exchange_stats = self.find_unique_futures_robust()
-            logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
-            
-            # FIX: Use the SAME price collection method as check command
-            price_data = self.get_mexc_prices_batch_working()
-            
-            # DEBUG: Check specific symbols
-            debug_symbols = ['TRY_USDT', 'QKC_USDT', 'WIN_USDT']
-            logger.info("🔍 DEBUG - Checking price_data content:")
-            for symbol in debug_symbols:
-                if symbol in price_data:
-                    price_info = price_data[symbol]
-                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')} (source: {price_info.get('source')})")
-                else:
-                    logger.info(f"  ❌ {symbol}: NOT in price_data")
-            
-            analyzed_prices = self.analyze_price_movements(price_data)
-            
-            # Calculate coverage statistics
-            unique_with_prices = len([s for s in unique_futures if s in price_data and price_data[s].get('price')])
-            coverage_percent = (unique_with_prices / len(unique_futures)) * 100 if unique_futures else 0
-            
-            logger.info(f"💰 Price coverage: {unique_with_prices}/{len(unique_futures)} ({coverage_percent:.1f}%)")
-            
-            # Update sheets
-            self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
-            self.update_price_analysis_sheet(analyzed_prices)
-            
-            # Update dashboard with enhanced stats
-            self.update_dashboard_with_comprehensive_stats(
-                exchange_stats, 
-                len(unique_futures),
-                len(unique_futures), 
-                analyzed_prices
-            )
-            
-            logger.info("✅ Google Sheet updated with enhanced price coverage")
-            
-        except Exception as e:
-            logger.error(f"Error updating Google Sheet with prices: {e}")              
 
 
     def update_price_analysis_sheet(self, analyzed_prices):
@@ -903,7 +854,7 @@ class MEXCTracker:
         return f"{change:+.2f}%"
 
     def create_and_send_excel(self, update: Update, context: CallbackContext):
-        """Create and send Excel file via Telegram - FIXED PRICE DATA"""
+        """Create and send Excel file via Telegram - FIXED PRICE DATA (same as check command)"""
         try:
             update.message.reply_html("📊 <b>Creating comprehensive Excel report...</b>")
             
@@ -946,18 +897,56 @@ class MEXCTracker:
             # Get unique futures
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             
-            # FIX: Use the SAME price collection method as check command
-            price_data = self.get_mexc_prices_batch_working()
+            # FIX: Use the EXACT SAME price collection as check command
+            batch_data = self.get_mexc_prices_batch_working()
+            logger.info(f"📊 Batch data collected: {len(batch_data)} symbols")
+            
+            # Create price_data by matching unique symbols with batch data (same as check command)
+            price_data = {}
+            matched_symbols = 0
+            
+            for symbol in unique_futures:
+                # Try exact match first
+                if symbol in batch_data:
+                    price_data[symbol] = batch_data[symbol]
+                    matched_symbols += 1
+                else:
+                    # Try alternative formats (same as check command)
+                    alt_formats = [
+                        symbol.replace('_', ''),
+                        symbol.replace('_', '-'), 
+                        symbol.replace('_', '/'),
+                    ]
+                    
+                    found = False
+                    for alt_format in alt_formats:
+                        if alt_format in batch_data:
+                            price_data[symbol] = batch_data[alt_format].copy()
+                            price_data[symbol]['symbol'] = symbol  # Fix symbol name
+                            matched_symbols += 1
+                            found = True
+                            break
+                    
+                    if not found:
+                        # Symbol not found in batch, add with None price
+                        price_data[symbol] = {
+                            'symbol': symbol,
+                            'price': None,
+                            'changes': {},
+                            'timestamp': datetime.now(),
+                            'source': 'not_found'
+                        }
+            
             analyzed_prices = self.analyze_price_movements(price_data)
             
             # DEBUG: Log what we're sending to Excel
-            logger.info(f"🔍 Excel Data - Unique: {len(unique_futures)}, Prices: {len(analyzed_prices)}")
-            for symbol in ['TRY_USDT', 'QKC_USDT']:
-                price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
-                if price_info:
-                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')}")
+            logger.info(f"🔍 Excel Data - Unique: {len(unique_futures)}, Prices: {matched_symbols}/{len(unique_futures)}")
+            for symbol in ['METASTOCK_USDT', 'TRY_USDT', 'BOBBSC_USDT']:
+                if symbol in price_data:
+                    price_info = price_data[symbol]
+                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')} (source: {price_info.get('source')})")
                 else:
-                    logger.info(f"  ❌ {symbol}: Not in analyzed_prices")
+                    logger.info(f"  ❌ {symbol}: NOT in price_data")
             
             # Create Excel file
             excel_content = self.create_mexc_analysis_excel(all_futures_data, symbol_coverage, analyzed_prices)
@@ -977,7 +966,7 @@ class MEXCTracker:
                     f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                     f"🎯 Unique Futures: {len(unique_futures)}\n"
                     f"🏢 Exchanges: 8\n"
-                    f"💰 Price Data: {len([p for p in analyzed_prices if p.get('price')])} symbols\n\n"
+                    f"💰 Price Data: {matched_symbols}/{len(unique_futures)} symbols\n\n"
                     f"<i>Sheets included: Dashboard, Unique Futures, All Futures, MEXC Analysis, Price Analysis, Exchange Stats</i>"
                 ),
                 parse_mode='HTML'
@@ -989,6 +978,96 @@ class MEXCTracker:
             error_msg = f"❌ <b>Error creating Excel file:</b>\n<code>{str(e)}</code>"
             update.message.reply_html(error_msg)
             logger.error(f"Excel creation error: {e}")
+
+    def update_google_sheet_with_prices(self):
+        """Update Google Sheet with price data - FIXED DATA FLOW (same as check command)"""
+        if not self.gs_client or not self.spreadsheet:
+            return
+        
+        try:
+            logger.info("🔄 Starting enhanced Google Sheet update...")
+            
+            # Get unique futures
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
+            
+            # FIX: Use the EXACT SAME price collection as check command
+            batch_data = self.get_mexc_prices_batch_working()
+            logger.info(f"📊 Batch data collected: {len(batch_data)} symbols")
+            
+            # Create price_data by matching unique symbols with batch data (same as check command)
+            price_data = {}
+            matched_symbols = 0
+            
+            for symbol in unique_futures:
+                # Try exact match first
+                if symbol in batch_data:
+                    price_data[symbol] = batch_data[symbol]
+                    matched_symbols += 1
+                else:
+                    # Try alternative formats (same as check command)
+                    alt_formats = [
+                        symbol.replace('_', ''),
+                        symbol.replace('_', '-'), 
+                        symbol.replace('_', '/'),
+                    ]
+                    
+                    found = False
+                    for alt_format in alt_formats:
+                        if alt_format in batch_data:
+                            price_data[symbol] = batch_data[alt_format].copy()
+                            price_data[symbol]['symbol'] = symbol  # Fix symbol name
+                            matched_symbols += 1
+                            found = True
+                            break
+                    
+                    if not found:
+                        # Symbol not found in batch, add with None price
+                        price_data[symbol] = {
+                            'symbol': symbol,
+                            'price': None,
+                            'changes': {},
+                            'timestamp': datetime.now(),
+                            'source': 'not_found'
+                        }
+            
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # DEBUG: Check specific symbols
+            debug_symbols = ['METASTOCK_USDT', 'TRY_USDT', 'BOBBSC_USDT']
+            logger.info("🔍 DEBUG - Checking price_data content:")
+            for symbol in debug_symbols:
+                if symbol in price_data:
+                    price_info = price_data[symbol]
+                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')} (source: {price_info.get('source')})")
+                else:
+                    logger.info(f"  ❌ {symbol}: NOT in price_data")
+            
+            # Calculate coverage statistics
+            unique_with_prices = len([s for s in unique_futures if s in price_data and price_data[s].get('price')])
+            coverage_percent = (unique_with_prices / len(unique_futures)) * 100 if unique_futures else 0
+            
+            logger.info(f"💰 Price coverage: {unique_with_prices}/{len(unique_futures)} ({coverage_percent:.1f}%)")
+            
+            # Update sheets
+            self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
+            self.update_price_analysis_sheet(analyzed_prices)
+            
+            # Update dashboard with enhanced stats
+            self.update_dashboard_with_comprehensive_stats(
+                exchange_stats, 
+                len(unique_futures),
+                len(unique_futures), 
+                analyzed_prices
+            )
+            
+            logger.info("✅ Google Sheet updated with enhanced price coverage")
+            
+        except Exception as e:
+            logger.error(f"Error updating Google Sheet with prices: {e}")
+
+
+
 
     def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
         """Create Unique Futures sheet"""
