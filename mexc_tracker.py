@@ -89,121 +89,122 @@ class MEXCTracker:
         return [{}]  # Empty dict means no proxy
 
     def setup_google_sheets(self):
-        """Setup Google Sheets connection using email instead of sheet ID"""
+        """Setup Google Sheets connection with spreadsheet discovery"""
         try:
+            logger.info("🔧 Starting Google Sheets setup...")
+            
             creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
             sheet_email = os.getenv('GOOGLE_SHEET_EMAIL')
             
+            logger.info(f"📝 Environment check - CREDENTIALS_JSON: {'✅ Set' if creds_json else '❌ Missing'}")
+            logger.info(f"📝 Environment check - SHEET_EMAIL: {'✅ ' + sheet_email if sheet_email else '❌ Missing'}")
+            
             if not creds_json:
-                logger.warning("❌ Google Sheets not configured - no credentials found")
-                self.gs_client = None
-                self.spreadsheet = None
+                logger.error("❌ GOOGLE_CREDENTIALS_JSON is missing")
                 return False
 
             if not sheet_email:
-                logger.warning("❌ GOOGLE_SHEET_EMAIL not configured")
-                self.gs_client = None
-                self.spreadsheet = None
+                logger.error("❌ GOOGLE_SHEET_EMAIL is missing")
                 return False
 
+            # Parse credentials
             try:
-                # Parse the credentials JSON
                 creds_dict = json.loads(creds_json)
-                logger.info(f"✅ Google Sheets credentials loaded for: {creds_dict.get('client_email')}")
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Failed to parse GOOGLE_CREDENTIALS_JSON as JSON: {e}")
-                self.gs_client = None
-                self.spreadsheet = None
-                return False
+                service_email = creds_dict.get('client_email', 'Unknown')
+                logger.info(f"✅ Credentials parsed - Service account: {service_email}")
             except Exception as e:
                 logger.error(f"❌ Error parsing credentials: {e}")
-                self.gs_client = None
-                self.spreadsheet = None
                 return False
 
-            # Define the required scope
-            scope = [
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ]
-            
+            # Setup authentication
             try:
-                # Create credentials and authorize
+                scope = [
+                    'https://www.googleapis.com/auth/spreadsheets',
+                    'https://www.googleapis.com/auth/drive'
+                ]
                 self.creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
                 self.gs_client = gspread.authorize(self.creds)
                 logger.info("✅ Google Sheets client authorized successfully")
-                
-                # Find spreadsheet by title using the email as the spreadsheet name/title
-                try:
-                    # Method 1: Try to open by title (using the email as the spreadsheet title)
-                    logger.info(f"🔍 Looking for spreadsheet with title containing: {sheet_email}")
-                    self.spreadsheet = self.gs_client.open(sheet_email)
-                    logger.info(f"✅ Found spreadsheet by title: {self.spreadsheet.title}")
-                    
-                except gspread.SpreadsheetNotFound:
-                    # Method 2: Try to list all spreadsheets and find by title
-                    logger.info("📋 Listing all available spreadsheets...")
-                    try:
-                        all_spreadsheets = self.gs_client.list_spreadsheet_files()
-                        logger.info(f"🔍 Found {len(all_spreadsheets)} spreadsheets")
-                        
-                        # Look for spreadsheet with email in title
-                        matching_spreadsheets = [s for s in all_spreadsheets if sheet_email.lower() in s['name'].lower()]
-                        
-                        if matching_spreadsheets:
-                            spreadsheet_id = matching_spreadsheets[0]['id']
-                            self.spreadsheet = self.gs_client.open_by_key(spreadsheet_id)
-                            logger.info(f"✅ Found spreadsheet by search: {self.spreadsheet.title}")
-                        else:
-                            # Method 3: Create a new spreadsheet
-                            logger.info("🆕 Creating new spreadsheet...")
-                            self.spreadsheet = self.gs_client.create(sheet_email)
-                            logger.info(f"✅ Created new spreadsheet: {self.spreadsheet.title}")
-                            
-                            # Share with the service account email if needed
-                            try:
-                                self.spreadsheet.share(creds_dict['client_email'], perm_type='user', role='writer')
-                                logger.info(f"✅ Shared spreadsheet with {creds_dict['client_email']}")
-                            except Exception as share_error:
-                                logger.warning(f"⚠️ Could not share spreadsheet: {share_error}")
-                            
-                    except Exception as list_error:
-                        logger.error(f"❌ Error listing spreadsheets: {list_error}")
-                        # Method 4: Try using the email as spreadsheet ID (in case it actually is an ID)
-                        try:
-                            self.spreadsheet = self.gs_client.open_by_key(sheet_email)
-                            logger.info(f"✅ Opened spreadsheet using email as ID: {self.spreadsheet.title}")
-                        except:
-                            logger.error("❌ Could not find or create spreadsheet")
-                            self.spreadsheet = None
-                            return False
-                
-                except Exception as e:
-                    logger.error(f"❌ Error finding spreadsheet: {e}")
-                    self.spreadsheet = None
-                    return False
-                
-                # Test the connection
-                try:
-                    worksheet = self.spreadsheet.sheet1
-                    logger.info("✅ Sheet connection test successful")
-                    return True
-                except Exception as test_error:
-                    logger.error(f"❌ Failed to access worksheet: {test_error}")
-                    return False
-                    
             except Exception as e:
-                logger.error(f"❌ Google Sheets authorization failed: {e}")
-                self.gs_client = None
-                self.spreadsheet = None
+                logger.error(f"❌ Authentication failed: {e}")
                 return False
 
+            # Discover available spreadsheets
+            logger.info("🔍 Discovering available spreadsheets...")
+            try:
+                all_spreadsheets = self.gs_client.list_spreadsheet_files()
+                logger.info(f"📋 Found {len(all_spreadsheets)} spreadsheets accessible by the service account")
+                
+                if not all_spreadsheets:
+                    logger.error("❌ No spreadsheets found. The service account has no access to any spreadsheets.")
+                    return False
+                
+                # Log all available spreadsheets for debugging
+                logger.info("📝 Available spreadsheets:")
+                for i, spreadsheet in enumerate(all_spreadsheets[:10]):  # Show first 10
+                    logger.info(f"   {i+1}. '{spreadsheet['name']}' (ID: {spreadsheet['id']})")
+                
+                if len(all_spreadsheets) > 10:
+                    logger.info(f"   ... and {len(all_spreadsheets) - 10} more")
+                
+                # Try to find matching spreadsheet
+                matching_spreadsheets = [
+                    s for s in all_spreadsheets 
+                    if sheet_email.lower() in s['name'].lower()
+                ]
+                
+                if matching_spreadsheets:
+                    if len(matching_spreadsheets) > 1:
+                        logger.info(f"🔍 Found {len(matching_spreadsheets)} matching spreadsheets:")
+                        for match in matching_spreadsheets:
+                            logger.info(f"   - '{match['name']}' (ID: {match['id']})")
+                    
+                    # Use the first match
+                    spreadsheet_info = matching_spreadsheets[0]
+                    logger.info(f"✅ Selecting spreadsheet: '{spreadsheet_info['name']}'")
+                    self.spreadsheet = self.gs_client.open_by_key(spreadsheet_info['id'])
+                    logger.info(f"✅ Connected to: {self.spreadsheet.title}")
+                    
+                else:
+                    logger.error(f"❌ No spreadsheet found with name containing: '{sheet_email}'")
+                    logger.info("💡 Available spreadsheet names:")
+                    for s in all_spreadsheets[:5]:
+                        logger.info(f"   - '{s['name']}'")
+                    
+                    # Let's try to create one
+                    logger.info(f"🆕 Creating new spreadsheet: '{sheet_email}'")
+                    try:
+                        self.spreadsheet = self.gs_client.create(sheet_email)
+                        logger.info(f"✅ Created new spreadsheet: {self.spreadsheet.title}")
+                        
+                        # Share with the service account
+                        try:
+                            self.spreadsheet.share(service_email, perm_type='user', role='writer')
+                            logger.info(f"✅ Shared with service account: {service_email}")
+                        except Exception as share_error:
+                            logger.warning(f"⚠️ Could not share spreadsheet: {share_error}")
+                            
+                    except Exception as create_error:
+                        logger.error(f"❌ Failed to create spreadsheet: {create_error}")
+                        return False
+                        
+            except Exception as e:
+                logger.error(f"❌ Error discovering spreadsheets: {e}")
+                return False
+
+            # Test connection
+            try:
+                worksheet = self.spreadsheet.sheet1
+                logger.info("✅ Sheet connection test successful")
+                return True
+            except Exception as test_error:
+                logger.error(f"❌ Failed to access worksheet: {test_error}")
+                return False
+                
         except Exception as e:
             logger.error(f"❌ Google Sheets setup error: {e}")
-            self.gs_client = None
-            self.spreadsheet = None
             return False
-
+        
     # ==================== PRICE MONITORING ====================
 
     def get_all_mexc_prices(self):
