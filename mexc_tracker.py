@@ -735,7 +735,7 @@ class MEXCTracker:
     # ==================== ENHANCED GOOGLE SHEETS ====================
 
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with price data - ENHANCED COVERAGE"""
+        """Update Google Sheet with price data - FIXED DATA FLOW"""
         if not self.gs_client or not self.spreadsheet:
             return
         
@@ -746,13 +746,24 @@ class MEXCTracker:
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
             
-            # Get price data with enhanced coverage for unique symbols
+            # FIX: Use the SAME price collection method as check command
             price_data = self.get_all_mexc_prices()
+            
+            # DEBUG: Check specific symbols
+            debug_symbols = ['TRY_USDT', 'QKC_USDT', 'WIN_USDT']
+            logger.info("🔍 DEBUG - Checking price_data content:")
+            for symbol in debug_symbols:
+                if symbol in price_data:
+                    price_info = price_data[symbol]
+                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')} (source: {price_info.get('source')})")
+                else:
+                    logger.info(f"  ❌ {symbol}: NOT in price_data")
+            
             analyzed_prices = self.analyze_price_movements(price_data)
             
             # Calculate coverage statistics
-            unique_with_prices = len([s for s in unique_futures if s in price_data])
-            coverage_percent = (unique_with_prices / len(unique_futures)) * 100
+            unique_with_prices = len([s for s in unique_futures if s in price_data and price_data[s].get('price')])
+            coverage_percent = (unique_with_prices / len(unique_futures)) * 100 if unique_futures else 0
             
             logger.info(f"💰 Price coverage: {unique_with_prices}/{len(unique_futures)} ({coverage_percent:.1f}%)")
             
@@ -763,7 +774,7 @@ class MEXCTracker:
             # Update dashboard with enhanced stats
             self.update_dashboard_with_comprehensive_stats(
                 exchange_stats, 
-                len(set(self.normalize_symbol_for_comparison(s) for s in price_data.keys())),
+                len(unique_futures),
                 len(unique_futures), 
                 analyzed_prices
             )
@@ -771,8 +782,7 @@ class MEXCTracker:
             logger.info("✅ Google Sheet updated with enhanced price coverage")
             
         except Exception as e:
-            logger.error(f"Error updating Google Sheet with prices: {e}")
-                
+            logger.error(f"Error updating Google Sheet with prices: {e}")              
 
 
     def update_price_analysis_sheet(self, analyzed_prices):
@@ -844,7 +854,7 @@ class MEXCTracker:
         return f"{change:+.2f}%"
 
     def create_and_send_excel(self, update: Update, context: CallbackContext):
-        """Create and send Excel file via Telegram"""
+        """Create and send Excel file via Telegram - FIXED PRICE DATA"""
         try:
             update.message.reply_html("📊 <b>Creating comprehensive Excel report...</b>")
             
@@ -887,9 +897,18 @@ class MEXCTracker:
             # Get unique futures
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             
-            # Get price data
+            # FIX: Use the SAME price collection method as check command
             price_data = self.get_all_mexc_prices()
             analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # DEBUG: Log what we're sending to Excel
+            logger.info(f"🔍 Excel Data - Unique: {len(unique_futures)}, Prices: {len(analyzed_prices)}")
+            for symbol in ['TRY_USDT', 'QKC_USDT']:
+                price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
+                if price_info:
+                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')}")
+                else:
+                    logger.info(f"  ❌ {symbol}: Not in analyzed_prices")
             
             # Create Excel file
             excel_content = self.create_mexc_analysis_excel(all_futures_data, symbol_coverage, analyzed_prices)
@@ -909,7 +928,7 @@ class MEXCTracker:
                     f"📅 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
                     f"🎯 Unique Futures: {len(unique_futures)}\n"
                     f"🏢 Exchanges: 8\n"
-                    f"💰 Price Data: {len(analyzed_prices)} symbols\n\n"
+                    f"💰 Price Data: {len([p for p in analyzed_prices if p.get('price')])} symbols\n\n"
                     f"<i>Sheets included: Dashboard, Unique Futures, All Futures, MEXC Analysis, Price Analysis, Exchange Stats</i>"
                 ),
                 parse_mode='HTML'
