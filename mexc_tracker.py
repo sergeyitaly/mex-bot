@@ -1235,6 +1235,116 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"❌ Google Sheet update error: {e}")
 
+    def update_all_futures_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
+        """Update All Futures sheet"""
+        try:
+            worksheet = spreadsheet.worksheet('All Futures')
+            
+            # Clear existing data (keep headers)
+            if worksheet.row_count > 1:
+                worksheet.clear()
+                # Re-add headers
+                worksheet.update('A1', [[
+                    'Symbol', 'Exchange', 'Normalized', 'Available On', 
+                    'Coverage', 'Timestamp', 'Unique', 'Current Price'
+                ]])
+            
+            all_data = []
+            for future in all_futures_data:
+                normalized = self.normalize_symbol_for_comparison(future['symbol'])
+                exchanges_list = symbol_coverage.get(normalized, set())
+                available_on = ", ".join(sorted(exchanges_list))
+                coverage = f"{len(exchanges_list)} exchanges"
+                is_unique = "✅" if len(exchanges_list) == 1 else ""
+                
+                all_data.append([
+                    future['symbol'],
+                    future['exchange'],
+                    normalized,
+                    available_on,
+                    coverage,
+                    timestamp,
+                    is_unique,
+                    'N/A'  # Price would be added separately
+                ])
+            
+            # Write in batches
+            if all_data:
+                batch_size = 100
+                for i in range(0, len(all_data), batch_size):
+                    batch = all_data[i:i + batch_size]
+                    worksheet.update(f'A{i+2}', batch)
+                
+                logger.info(f"Updated All Futures with {len(all_data)} records")
+            
+        except Exception as e:
+            logger.error(f"Error updating All Futures sheet: {e}")
+
+    def update_exchange_stats_sheet(self, spreadsheet, exchange_stats, timestamp):
+        """Update Exchange Stats sheet"""
+        try:
+            worksheet = spreadsheet.worksheet('Exchange Stats')
+            
+            # Clear existing data (keep headers)
+            if worksheet.row_count > 1:
+                worksheet.clear()
+                # Re-add headers
+                worksheet.update('A1', [[
+                    'Exchange', 'Futures Count', 'Status', 'Last Updated', 
+                    'Success Rate', 'Price Data Available'
+                ]])
+            
+            stats_data = []
+            for exchange, count in exchange_stats.items():
+                status = "✅ WORKING" if count > 0 else "❌ FAILED"
+                stats_data.append([
+                    exchange,
+                    count,
+                    status,
+                    timestamp,
+                    "100%",  # Placeholder
+                    "✅" if count > 0 else "❌"
+                ])
+            
+            if stats_data:
+                worksheet.update('A2', stats_data)
+                logger.info(f"Updated Exchange Stats with {len(stats_data)} records")
+            
+        except Exception as e:
+            logger.error(f"Error updating Exchange Stats sheet: {e}")
+
+    def update_dashboard_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
+        """Update dashboard statistics - simplified version"""
+        if not self.spreadsheet:
+            return
+        
+        try:
+            worksheet = self.spreadsheet.worksheet("Dashboard")
+            
+            # Count working exchanges
+            working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+            total_exchanges = len(exchange_stats)
+            
+            # Get current time for next update
+            next_update = (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')
+            
+            # Update only the statistics section (rows 23-27)
+            stats_update = [
+                ["Next Data Update", next_update],
+                ["Next Price Update", (datetime.now() + timedelta(minutes=self.price_check_interval)).strftime('%H:%M:%S')],
+                ["Unique Futures Count", unique_futures_count],
+                ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+                ["Total Symbols", unique_symbols_count]
+            ]
+            
+            # Update stats section (starting at row 23)
+            for i, (label, value) in enumerate(stats_update):
+                worksheet.update(f'A{23+i}:B{23+i}', [[label, value]])
+                    
+        except Exception as e:
+            logger.error(f"Error updating dashboard stats: {e}")
+
+
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
         """Update Unique Futures sheet with price information"""
         try:
@@ -1776,7 +1886,38 @@ class MEXCTracker:
         except Exception as e:
             update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
 
-            
+    def format_start_time(self, start_time):
+        """Format start time for display"""
+        if start_time:
+            try:
+                # Handle both string and datetime objects
+                if isinstance(start_time, str):
+                    dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                else:
+                    dt = start_time
+                return dt.strftime("%Y-%m-%d %H:%M")
+            except:
+                pass
+        return "Unknown"
+    
+    def get_uptime(self):
+        """Calculate bot uptime"""
+        data = self.load_data()
+        start_time = data.get('statistics', {}).get('start_time')
+        if start_time:
+            try:
+                if isinstance(start_time, str):
+                    start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                else:
+                    start_dt = start_time
+                uptime = datetime.now() - start_dt
+                days = uptime.days
+                hours = uptime.seconds // 3600
+                minutes = (uptime.seconds % 3600) // 60
+                return f"{days}d {hours}h {minutes}m"
+            except:
+                pass
+        return "Unknown"            
 
     def start_command(self, update: Update, context: CallbackContext):
         """Send welcome message"""
