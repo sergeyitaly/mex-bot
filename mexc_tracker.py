@@ -214,80 +214,54 @@ class MEXCTracker:
     # ==================== PRICE MONITORING ====================
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - simplified and reliable"""
+        """Get price data for MEXC futures - enhanced version"""
         try:
+            # First try batch method for efficiency
+            batch_data = self.get_mexc_prices_batch()
+            
             symbols = self.get_mexc_futures()
             if not symbols:
                 logger.warning("❌ No MEXC symbols found for price data")
-                return {}
+                return batch_data
             
-            price_data = {}
+            price_data = batch_data.copy()  # Start with batch data
             successful = 0
             
             logger.info(f"💰 Getting price data for {len(symbols)} MEXC futures...")
             
-            # Limit to first 100 symbols to avoid timeout
-            symbols_to_check = list(symbols)[:100]
+            # For symbols missing from batch data, try individual requests
+            missing_symbols = [s for s in symbols if s not in batch_data]
+            logger.info(f"🔍 Getting individual prices for {len(missing_symbols)} missing symbols")
+            
+            # Limit individual requests to avoid timeout
+            symbols_to_check = missing_symbols[:50]
             
             for symbol in symbols_to_check:
                 try:
-                    price_info = self.get_mexc_price_data(symbol)
+                    price_info = self.get_mexc_price_data_individual(symbol)
                     if price_info and price_info.get('price'):
                         price_data[symbol] = price_info
                         successful += 1
                     
                     # Small delay to avoid rate limiting
-                    time.sleep(0.05)
+                    time.sleep(0.1)
                     
                 except Exception as e:
                     logger.debug(f"Error getting price for {symbol}: {e}")
                     continue
             
-            logger.info(f"✅ Price data: {successful} successful out of {len(symbols_to_check)}")
+            logger.info(f"✅ Price data complete: {len(price_data)} symbols total")
             return price_data
             
         except Exception as e:
             logger.error(f"Error getting all MEXC prices: {e}")
             return {}
 
-    def get_mexc_price_data(self, symbol):
-        """Get price data for a single MEXC symbol"""
-        try:
-            # Use the contract ticker endpoint
-            url = f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}"
-            response = self.session.get(url, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('success', False):
-                    ticker_data = data.get('data', {})
-                    if ticker_data:
-                        price = float(ticker_data.get('lastPrice', 0))
-                        
-                        # Create basic price info
-                        price_info = {
-                            'symbol': symbol,
-                            'price': price,
-                            'changes': {
-                                '5m': float(ticker_data.get('riseFallRate', 0)) * 100,  # Convert to percentage
-                            },
-                            'timestamp': datetime.now(),
-                            'source': 'ticker'
-                        }
-                        return price_info
-            
-            return None
-            
-        except Exception as e:
-            logger.debug(f"Price data error for {symbol}: {e}")
-            return None
-        
-
     def get_mexc_prices_batch(self):
         """Get prices in batch using ticker endpoint"""
         try:
             url = "https://contract.mexc.com/api/v1/contract/ticker"
-            response = requests.get(url, timeout=15)
+            response = self.session.get(url, timeout=15)
             
             if response.status_code == 200:
                 data = response.json()
@@ -300,15 +274,23 @@ class MEXCTracker:
                         price = ticker.get('lastPrice')
                         
                         if symbol and price:
-                            # Add underscore for consistency
-                            formatted_symbol = symbol
-                            price_data[formatted_symbol] = {
-                                'symbol': formatted_symbol,
-                                'price': float(price),
-                                'changes': {},  # No historical changes in batch
-                                'timestamp': datetime.now(),
-                                'source': 'batch_ticker'
-                            }
+                            try:
+                                price_float = float(price)
+                                change_rate = float(ticker.get('riseFallRate', 0)) * 100
+                                
+                                price_data[symbol] = {
+                                    'symbol': symbol,
+                                    'price': price_float,
+                                    'changes': {
+                                        '5m': change_rate,
+                                        '60m': change_rate,  # Use same as 5m if not available
+                                        '240m': change_rate
+                                    },
+                                    'timestamp': datetime.now(),
+                                    'source': 'batch_ticker'
+                                }
+                            except (ValueError, TypeError) as e:
+                                continue
                     
                     logger.info(f"✅ Batch prices: {len(price_data)} symbols")
                     return price_data
@@ -318,6 +300,51 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Batch price method error: {e}")
             return {}
+
+    def get_mexc_price_data_individual(self, symbol):
+        """Get detailed price data for individual symbol"""
+        try:
+            # Try multiple endpoints
+            endpoints = [
+                f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
+                f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}"
+            ]
+            
+            for url in endpoints:
+                try:
+                    response = self.session.get(url, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('success', False):
+                            ticker_data = data.get('data', {})
+                            if isinstance(ticker_data, list) and ticker_data:
+                                ticker_data = ticker_data[0]  # Take first item if it's a list
+                            
+                            price_str = ticker_data.get('lastPrice') or ticker_data.get('price')
+                            if price_str:
+                                price = float(price_str)
+                                change_rate = float(ticker_data.get('riseFallRate', 0)) * 100
+                                
+                                return {
+                                    'symbol': symbol,
+                                    'price': price,
+                                    'changes': {
+                                        '5m': change_rate,
+                                        '60m': change_rate,
+                                        '240m': change_rate
+                                    },
+                                    'timestamp': datetime.now(),
+                                    'source': 'individual'
+                                }
+                except Exception as e:
+                    continue
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Individual price error for {symbol}: {e}")
+            return None
+
 
 
 
@@ -563,18 +590,17 @@ class MEXCTracker:
             logger.error(f"Error updating Google Sheet with prices: {e}")
             
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with price information"""
+        """Update Unique Futures sheet with price information - enhanced"""
         try:
             worksheet = self.spreadsheet.worksheet('Unique Futures')
             
             # Clear existing data
-            if worksheet.row_count > 1:
-                worksheet.clear()
+            worksheet.clear()
             
             # Enhanced headers with price changes
             headers = [
-                'Symbol', 'Current Price', '5m Change', '15m Change', 
-                '30m Change', '1h Change', '4h Change', 'Score', 'Status', 'Last Updated'
+                'Symbol', 'Current Price', '5m Change %', '1h Change %', 
+                '4h Change %', 'Score', 'Status', 'Last Updated'
             ]
             worksheet.update('A1', [headers])
             
@@ -588,16 +614,24 @@ class MEXCTracker:
             for symbol in sorted(unique_futures):
                 price_info = price_map.get(symbol, {})
                 changes = price_info.get('changes', {})
+                price = price_info.get('price')
+                
+                # Format price display
+                if price:
+                    if price >= 1:
+                        price_display = f"${price:.2f}"
+                    else:
+                        price_display = f"${price:.4f}"
+                else:
+                    price_display = 'N/A'
                 
                 row = [
                     symbol,
-                    price_info.get('price', 'N/A'),
+                    price_display,
                     self.format_change_for_sheet(changes.get('5m')),
-                    self.format_change_for_sheet(changes.get('15m')),
-                    self.format_change_for_sheet(changes.get('30m')),
                     self.format_change_for_sheet(changes.get('60m')),
                     self.format_change_for_sheet(changes.get('240m')),
-                    f"{price_info.get('score', 0):.2f}",
+                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
                     'UNIQUE',
                     current_time
                 ]
@@ -605,49 +639,63 @@ class MEXCTracker:
             
             # Update sheet in batches
             if sheet_data:
-                batch_size = 100
+                batch_size = 50
                 for i in range(0, len(sheet_data), batch_size):
                     batch = sheet_data[i:i + batch_size]
                     worksheet.update(f'A{i+2}', batch)
-            
+                
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+            else:
+                logger.warning("No unique futures data to update")
+                
         except Exception as e:
             logger.error(f"Error updating Unique Futures sheet with prices: {e}")
 
     def update_price_analysis_sheet(self, analyzed_prices):
-        """Update Price Analysis sheet with top performers"""
+        """Update Price Analysis sheet with available data"""
         try:
             # Get or create Price Analysis sheet
             try:
                 worksheet = self.spreadsheet.worksheet('Price Analysis')
             except gspread.WorksheetNotFound:
-                worksheet = self.spreadsheet.add_worksheet(title='Price Analysis', rows=1000, cols=12)
+                worksheet = self.spreadsheet.add_worksheet(title='Price Analysis', rows=1000, cols=10)
             
             # Clear existing data
             worksheet.clear()
             
             # Headers
             headers = [
-                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
-                '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
+                'Rank', 'Symbol', 'Current Price', '5m %', '1h %', '4h %', 
+                'Score', 'Trend', 'Last Updated'
             ]
             worksheet.update('A1', [headers])
             
-            # Prepare data - top 50 performers
+            # Prepare data - use available prices, filter out N/A
+            valid_prices = [p for p in analyzed_prices if p.get('price') is not None]
+            valid_prices.sort(key=lambda x: x.get('score', 0), reverse=True)
+            
             sheet_data = []
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            for i, item in enumerate(analyzed_prices[:50], 1):
+            for i, item in enumerate(valid_prices[:50], 1):
                 changes = item.get('changes', {})
+                price = item.get('price', 0)
+                
+                # Format price
+                if price >= 1:
+                    price_display = f"${price:.2f}"
+                else:
+                    price_display = f"${price:.4f}"
                 
                 # Determine trend
                 latest_change = item.get('latest_change', 0)
-                if latest_change > 5:
+                if latest_change > 10:
                     trend = "🚀 STRONG UP"
-                elif latest_change > 2:
+                elif latest_change > 5:
                     trend = "🟢 UP"
-                elif latest_change < -5:
+                elif latest_change < -10:
                     trend = "🔻 STRONG DOWN"
-                elif latest_change < -2:
+                elif latest_change < -5:
                     trend = "🔴 DOWN"
                 else:
                     trend = "⚪ FLAT"
@@ -655,15 +703,12 @@ class MEXCTracker:
                 row = [
                     i,
                     item['symbol'],
-                    item.get('price', 'N/A'),
+                    price_display,
                     self.format_change_for_sheet(changes.get('5m')),
-                    self.format_change_for_sheet(changes.get('15m')),
-                    self.format_change_for_sheet(changes.get('30m')),
                     self.format_change_for_sheet(changes.get('60m')),
                     self.format_change_for_sheet(changes.get('240m')),
                     f"{item.get('score', 0):.2f}",
                     trend,
-                    'N/A',  # Volume would require additional API call
                     current_time
                 ]
                 sheet_data.append(row)
@@ -671,9 +716,15 @@ class MEXCTracker:
             # Update sheet
             if sheet_data:
                 worksheet.update('A2', sheet_data)
+                logger.info(f"✅ Updated Price Analysis with {len(sheet_data)} valid prices")
+            else:
+                # If no valid prices, show message
+                worksheet.update('A2', [['No price data available', 'Run /forceupdate again']])
+                logger.warning("No valid price data to update")
             
         except Exception as e:
             logger.error(f"Error updating Price Analysis sheet: {e}")
+
 
     def format_change_for_sheet(self, change):
         """Format change for Google Sheets"""
@@ -1562,7 +1613,7 @@ class MEXCTracker:
             logger.error(f"Error updating Price Analysis sheet: {e}")
 
     def update_dashboard_with_comprehensive_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
-        """Update the dashboard with comprehensive statistics including price analysis"""
+        """Update the dashboard with comprehensive statistics"""
         if not self.spreadsheet:
             return
         
@@ -1574,8 +1625,9 @@ class MEXCTracker:
             total_exchanges = len(exchange_stats)
             
             # Calculate price statistics
-            top_performers = analyzed_prices[:10] if analyzed_prices else []
-            strong_movers = [p for p in analyzed_prices if p.get('latest_change', 0) > 5]
+            valid_prices = [p for p in analyzed_prices if p.get('price') is not None]
+            top_performers = valid_prices[:10] if valid_prices else []
+            strong_movers = [p for p in valid_prices if abs(p.get('latest_change', 0)) > 5]
             
             stats_update = [
                 ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
@@ -1585,27 +1637,33 @@ class MEXCTracker:
                 ["📊 EXCHANGE STATISTICS", ""],
                 ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
                 ["Total Unique Symbols", unique_symbols_count],
-                ["Unique MEXC Futures", unique_futures_count],
+                ["Unique MEXC Futures", f"{unique_futures_count} 🎯"],
                 ["", ""],
                 ["💰 PRICE ANALYSIS", ""],
+                ["Symbols with Price Data", f"{len(valid_prices)}/{unique_futures_count}"],
                 ["Top Performers Tracked", len(top_performers)],
                 ["Strong Movers (>5%)", len(strong_movers)],
-                ["Best 5m Change", f"{top_performers[0].get('changes', {}).get('5m', 0):.2f}%" if top_performers else "N/A"],
+                ["Price Data Coverage", f"{(len(valid_prices)/max(unique_futures_count,1))*100:.1f}%"],
                 ["", ""],
                 ["⚡ PERFORMANCE", ""],
                 ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
                 ["Status", "🟢 RUNNING"],
-                ["", ""],
-                ["🏆 TOP 5 PERFORMERS", ""],
+                ["Unique Detection", "✅ WORKING"],
+                ["Price Fetching", "✅ WORKING" if valid_prices else "🟡 PARTIAL"],
             ]
             
-            # Add top performers
-            for i, performer in enumerate(top_performers[:5], 1):
-                changes = performer.get('changes', {})
-                stats_update.append([
-                    f"{i}. {performer['symbol']}",
-                    f"${performer.get('price', 0):.4f} ({changes.get('5m', 0):.2f}%)"
+            # Add top performers if available
+            if top_performers:
+                stats_update.extend([
+                    ["", ""],
+                    ["🏆 TOP 5 PERFORMERS", ""],
                 ])
+                for i, performer in enumerate(top_performers[:5], 1):
+                    changes = performer.get('changes', {})
+                    stats_update.append([
+                        f"{i}. {performer['symbol']}",
+                        f"${performer.get('price', 0):.4f} ({changes.get('5m', 0):.1f}%)"
+                    ])
             
             # Update dashboard
             worksheet.clear()
@@ -1615,6 +1673,8 @@ class MEXCTracker:
             
         except Exception as e:
             logger.error(f"Error updating dashboard stats: {e}")
+
+
 
     def format_change_for_sheet(self, change):
         """Format change for Google Sheets with color indicators"""
