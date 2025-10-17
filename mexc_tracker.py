@@ -760,6 +760,217 @@ class MEXCTracker:
             update.message.reply_html(error_msg)
             logger.error(f"Excel creation error: {e}")
 
+    def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
+        """Create Unique Futures sheet"""
+        ws = wb.create_sheet("Unique Futures")
+        
+        # Headers
+        headers = ['Symbol', 'Current Price', '5m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Get unique futures
+        unique_futures, _ = self.find_unique_futures_robust()
+        
+        # Create price mapping
+        price_map = {item['symbol']: item for item in analyzed_prices} if analyzed_prices else {}
+        
+        # Add data
+        row = 2
+        for symbol in sorted(unique_futures):
+            price_info = price_map.get(symbol, {})
+            changes = price_info.get('changes', {})
+            
+            ws.cell(row=row, column=1).value = symbol
+            ws.cell(row=row, column=2).value = price_info.get('price', 'N/A')
+            ws.cell(row=row, column=3).value = self.format_change_for_excel(changes.get('5m'))
+            ws.cell(row=row, column=4).value = self.format_change_for_excel(changes.get('60m'))
+            ws.cell(row=row, column=5).value = self.format_change_for_excel(changes.get('240m'))
+            ws.cell(row=row, column=6).value = price_info.get('score', 0)
+            ws.cell(row=row, column=7).value = 'UNIQUE'
+            ws.cell(row=row, column=8).value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+            ws.column_dimensions[col].width = 15
+
+    def create_all_futures_sheet(self, wb, all_futures_data, symbol_coverage):
+        """Create All Futures sheet"""
+        ws = wb.create_sheet("All Futures")
+        
+        # Headers
+        headers = ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Add data
+        row = 2
+        for future in all_futures_data:
+            normalized = self.normalize_symbol_for_comparison(future['symbol'])
+            exchanges_list = symbol_coverage.get(normalized, set())
+            available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+            coverage = f"{len(exchanges_list)} exchanges"
+            is_unique = "✅" if len(exchanges_list) == 1 else ""
+            
+            ws.cell(row=row, column=1).value = future['symbol']
+            ws.cell(row=row, column=2).value = future['exchange']
+            ws.cell(row=row, column=3).value = normalized
+            ws.cell(row=row, column=4).value = available_on
+            ws.cell(row=row, column=5).value = coverage
+            ws.cell(row=row, column=6).value = future['timestamp']
+            ws.cell(row=row, column=7).value = is_unique
+            row += 1
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 25
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 25
+        ws.column_dimensions['D'].width = 40
+        ws.column_dimensions['E'].width = 15
+        ws.column_dimensions['F'].width = 20
+        ws.column_dimensions['G'].width = 10
+
+    def create_mexc_analysis_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
+        """Create MEXC Analysis sheet"""
+        ws = wb.create_sheet("MEXC Analysis")
+        
+        # Headers
+        headers = ['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 'Current Price', '5m Change %', '1h Change %', '4h Change %', 'Status', 'Unique']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Get MEXC futures and price mapping
+        mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+        price_map = {item['symbol']: item for item in analyzed_prices} if analyzed_prices else {}
+        
+        # Add data
+        row = 2
+        for future in mexc_futures:
+            symbol = future['symbol']
+            normalized = self.normalize_symbol_for_comparison(symbol)
+            exchanges_list = symbol_coverage.get(normalized, set())
+            available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+            exchange_count = len(exchanges_list)
+            status = "Unique" if exchange_count == 1 else "Multi-exchange"
+            unique_flag = "✅" if exchange_count == 1 else "🔸"
+            
+            price_info = price_map.get(symbol, {})
+            changes = price_info.get('changes', {})
+            
+            ws.cell(row=row, column=1).value = symbol
+            ws.cell(row=row, column=2).value = normalized
+            ws.cell(row=row, column=3).value = available_on
+            ws.cell(row=row, column=4).value = exchange_count
+            ws.cell(row=row, column=5).value = price_info.get('price', 'N/A')
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(changes.get('5m'))
+            ws.cell(row=row, column=7).value = self.format_change_for_excel(changes.get('60m'))
+            ws.cell(row=row, column=8).value = self.format_change_for_excel(changes.get('240m'))
+            ws.cell(row=row, column=9).value = status
+            ws.cell(row=row, column=10).value = unique_flag
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
+            ws.column_dimensions[col].width = 15
+
+    def create_price_analysis_sheet(self, wb, analyzed_prices):
+        """Create Price Analysis sheet"""
+        ws = wb.create_sheet("Price Analysis")
+        
+        # Headers
+        headers = ['Rank', 'Symbol', 'Current Price', '5m %', '1h %', '4h %', 'Score', 'Trend', 'Last Updated']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Add data - top performers
+        row = 2
+        valid_prices = [p for p in analyzed_prices if p.get('price') is not None] if analyzed_prices else []
+        valid_prices.sort(key=lambda x: x.get('score', 0), reverse=True)
+        
+        for i, item in enumerate(valid_prices[:50], 1):
+            changes = item.get('changes', {})
+            
+            # Determine trend
+            latest_change = item.get('latest_change', 0)
+            if latest_change > 5:
+                trend = "STRONG UP"
+            elif latest_change > 2:
+                trend = "UP"
+            elif latest_change < -5:
+                trend = "STRONG DOWN"
+            elif latest_change < -2:
+                trend = "DOWN"
+            else:
+                trend = "FLAT"
+            
+            ws.cell(row=row, column=1).value = i
+            ws.cell(row=row, column=2).value = item['symbol']
+            ws.cell(row=row, column=3).value = item.get('price', 'N/A')
+            ws.cell(row=row, column=4).value = self.format_change_for_excel(changes.get('5m'))
+            ws.cell(row=row, column=5).value = self.format_change_for_excel(changes.get('60m'))
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(changes.get('240m'))
+            ws.cell(row=row, column=7).value = item.get('score', 0)
+            ws.cell(row=row, column=8).value = trend
+            ws.cell(row=row, column=9).value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']:
+            ws.column_dimensions[col].width = 12
+
+    def create_exchange_stats_sheet(self, wb, all_futures_data):
+        """Create Exchange Stats sheet"""
+        ws = wb.create_sheet("Exchange Stats")
+        
+        # Headers
+        headers = ['Exchange', 'Futures Count', 'Status', 'Last Updated']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Count futures by exchange
+        exchange_counts = {}
+        for future in all_futures_data:
+            exchange = future['exchange']
+            exchange_counts[exchange] = exchange_counts.get(exchange, 0) + 1
+        
+        # Add data
+        row = 2
+        for exchange in sorted(exchange_counts.keys()):
+            count = exchange_counts[exchange]
+            status = "WORKING" if count > 0 else "FAILED"
+            
+            ws.cell(row=row, column=1).value = exchange
+            ws.cell(row=row, column=2).value = count
+            ws.cell(row=row, column=3).value = status
+            ws.cell(row=row, column=4).value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D']:
+            ws.column_dimensions[col].width = 20
+
+    def format_change_for_excel(self, change):
+        """Format change for Excel"""
+        if change is None:
+            return 'N/A'
+        return f"{change:+.2f}%"
+        
     def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage, analyzed_prices=None):
         """Create comprehensive Excel file matching Google Sheets content"""
         try:
@@ -788,7 +999,6 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error creating Excel file: {e}")
             return None
-
 
     # ==================== CORE UNIQUE FUTURES LOGIC ====================
 
@@ -1270,6 +1480,10 @@ class MEXCTracker:
 
     # ==================== TELEGRAM COMMANDS ====================
 
+    def excel_command(self, update: Update, context: CallbackContext):
+        """Download comprehensive Excel report"""
+        self.create_and_send_excel(update, context)
+
     def setup_handlers(self):
         """Setup command handlers"""
         self.dispatcher.add_handler(CommandHandler("start", self.start_command))
@@ -1284,6 +1498,8 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("prices", self.prices_command))
         self.dispatcher.add_handler(CommandHandler("toppers", self.top_performers_command))
         self.dispatcher.add_handler(CommandHandler("forceupdate", self.force_update_command))
+        self.dispatcher.add_handler(CommandHandler("excel", self.excel_command))
+        self.dispatcher.add_handler(CommandHandler("download", self.excel_command))
 
     def update_google_sheet(self):
         """Update the Google Sheet with fresh data including price analysis"""
@@ -2100,6 +2316,7 @@ class MEXCTracker:
             "/start - Welcome message\n"
             "/status - Current status\n"
             "/check - Immediate check\n"
+            "/excel - Download excel\n"
             "/analysis - Full analysis\n"
             "/exchanges - Exchange info\n"
             "/stats - Bot statistics\n"
@@ -2571,7 +2788,8 @@ class MEXCTracker:
                        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 parse_mode='HTML'
             )
-            self.create_and_send_excel()
+
+            self.create_and_send_excel(update, context)
             
         except Exception as e:
             update.message.reply_html(f"❌ <b>Analysis error:</b>\n{str(e)}")
@@ -2662,6 +2880,7 @@ class MEXCTracker:
             "Gate.io, KuCoin, BingX, BitGet\n\n"
             "<b>Main commands:</b>\n"
             "/check - Quick check for unique futures\n"
+            "/excel - Download excel\n"
             "/analysis - Full analysis report\n"
             "/status - Current status\n"
             "/exchanges - Exchange information\n"
