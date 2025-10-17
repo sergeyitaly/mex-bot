@@ -1820,7 +1820,14 @@ class MEXCTracker:
             if not self.gs_client or not self.spreadsheet:
                 update.message.reply_html("🔄 Reinitializing Google Sheets connection...")
                 if not self.setup_google_sheets():
-                    update.message.reply_html("❌ <b>Failed to initialize Google Sheets.</b>\n\nPlease check:\n1. GOOGLE_CREDENTIALS_JSON environment variable\n2. GOOGLE_SHEET_ID environment variable\n3. Spreadsheet sharing permissions")
+                    update.message.reply_html(
+                        "❌ <b>Failed to initialize Google Sheets.</b>\n\n"
+                        "Please check:\n"
+                        "1. GOOGLE_CREDENTIALS_JSON environment variable\n"
+                        "2. GOOGLE_SHEET_EMAIL environment variable\n"  # CHANGED: ID → EMAIL
+                        "3. Spreadsheet sharing permissions\n"
+                        "4. Service account has editor access to the spreadsheet"
+                    )
                     return False
             
             # Step 2: Ensure sheets are initialized
@@ -1856,15 +1863,14 @@ class MEXCTracker:
                 f"<b>Error:</b> {str(e)}\n\n"
                 f"<b>Debugging steps:</b>\n"
                 f"1. Check GOOGLE_CREDENTIALS_JSON is valid JSON\n"
-                f"2. Verify GOOGLE_SHEET_ID is correct\n"
+                f"2. Verify GOOGLE_SHEET_EMAIL is correct\n"  # CHANGED: ID → EMAIL
                 f"3. Ensure service account has edit permissions\n"
                 f"4. Check if spreadsheet exists and is accessible"
             )
             update.message.reply_html(error_msg)
             logger.error(f"Force update command error: {e}")
             return False
-
-
+        
     def _make_request_with_retry(self, url: str, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
         """Make request with retry logic and proxy rotation"""
         for attempt in range(max_retries):
