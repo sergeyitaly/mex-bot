@@ -409,7 +409,7 @@ class MEXCTracker:
             new_futures = current_unique_set - previous_unique
             lost_futures = previous_unique - current_unique_set
             
-            # Send notifications
+            # Send notifications only if there are changes
             if new_futures:
                 self.send_new_unique_notification(new_futures, current_unique_set)
             
@@ -424,16 +424,14 @@ class MEXCTracker:
             
             self.last_unique_futures = current_unique_set
             
-            # Update Google Sheets if configured
-            if self.gs_client and self.spreadsheet:
-                self.update_google_sheet_with_prices()
-            
+            # ALWAYS return both values, even if empty
             return new_futures, lost_futures
             
         except Exception as e:
             logger.error(f"Error monitoring unique futures: {e}")
+            # Return empty sets on error
             return set(), set()
-
+    
     def send_new_unique_notification(self, new_futures, all_unique):
         """Send notification about new unique futures"""
         try:
@@ -1945,23 +1943,236 @@ class MEXCTracker:
             update.message.reply_html(f"❌ Error analyzing performers: {str(e)}")
 
     def check_command(self, update: Update, context: CallbackContext):
-        """Perform immediate check with price analysis"""
-        update.message.reply_html("🔍 <b>Checking all exchanges with price analysis...</b>")
-        
+        """Perform immediate check with colorful visual progress bar"""
         try:
-            new_futures, lost_futures = self.monitor_unique_futures_changes()
+            # Send initial message
+            progress_message = update.message.reply_html(
+                "🚀 <b>Starting Comprehensive Exchange Analysis</b>\n\n"
+                "⚡ Initializing tracking systems...\n"
+                "▰▱▱▱▱▱▱▱▱▱ 10%"
+            )
             
-            if not new_futures and not lost_futures:
-                unique_futures, _ = self.find_unique_futures_robust()
-                message = "✅ <b>Check Complete!</b>\n\n"
-                message += f"🎯 No changes detected\n"
-                message += f"📊 Current unique: <b>{len(unique_futures)}</b>"
-                update.message.reply_html(message)
-            
-        except Exception as e:
-            error_msg = f"❌ <b>Check failed:</b>\n{str(e)}"
-            update.message.reply_html(error_msg)
+            def update_progress(step, total_steps, status, current_exchange=None, count=None):
+                """Update progress bar with colors"""
+                try:
+                    # Calculate progress
+                    progress_percent = (step / total_steps) * 100
+                    filled_blocks = int(progress_percent / 10)
+                    empty_blocks = 10 - filled_blocks
+                    
+                    # Colorful progress bar based on completion
+                    if progress_percent < 30:
+                        progress_bar = "🟦" * filled_blocks + "⬜" * empty_blocks
+                    elif progress_percent < 70:
+                        progress_bar = "🟨" * filled_blocks + "⬜" * empty_blocks
+                    else:
+                        progress_bar = "🟩" * filled_blocks + "⬜" * empty_blocks
+                    
+                    # Build animated status
+                    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][step % 10]
+                    
+                    message = f"🚀 <b>Comprehensive Exchange Analysis</b>\n\n"
+                    message += f"{spinner} <b>Progress:</b> {progress_bar} {progress_percent:.0f}%\n"
+                    message += f"📝 <b>Status:</b> {status}\n"
+                    
+                    if current_exchange and count is not None:
+                        if count > 0:
+                            message += f"✅ <b>{current_exchange}:</b> {count} futures found\n"
+                        else:
+                            message += f"❌ <b>{current_exchange}:</b> Failed\n"
+                    
+                    message += f"\n⏰ Step {step+1} of {total_steps}"
+                    
+                    # Update the message
+                    context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=progress_message.message_id,
+                        text=message,
+                        parse_mode='HTML'
+                    )
+                except Exception as e:
+                    logger.debug(f"Progress update failed: {e}")
 
+            # Define check steps with more detail
+            steps = [
+                ("Initializing systems", "⚡ Starting tracking systems..."),
+                ("Checking MEXC", "🔍 Scanning MEXC futures database..."),
+                ("Checking Binance", "🌐 Connecting to Binance API..."),
+                ("Checking Bybit", "🔄 Accessing Bybit perpetuals..."),
+                ("Checking OKX", "📊 Analyzing OKX swap contracts..."),
+                ("Checking Gate.io", "🔍 Scanning Gate.io futures..."),
+                ("Checking KuCoin", "📈 Checking KuCoin derivatives..."),
+                ("Checking BingX", "🔄 Accessing BingX futures..."),
+                ("Checking BitGet", "🔍 Analyzing BitGet perpetuals..."),
+                ("Finding unique symbols", "🎯 Calculating unique futures..."),
+                ("Analyzing results", "📊 Compiling comprehensive report..."),
+                ("Finalizing", "✅ Completing analysis...")
+            ]
+
+            exchange_results = {}
+            data_before = self.load_data()
+            unique_before = set(data_before.get('unique_futures', []))
+            
+            # Execute each step with progress updates
+            for i, (step_name, status_text) in enumerate(steps):
+                try:
+                    current_count = 0
+                    current_exchange = None
+                    
+                    if step_name.startswith("Checking "):
+                        current_exchange = step_name.replace("Checking ", "")
+                    
+                    # Update progress
+                    update_progress(i, len(steps), status_text, current_exchange, current_count)
+                    time.sleep(0.8)  # Smooth animation
+                    
+                    # Execute the actual step
+                    if step_name == "Checking MEXC":
+                        mexc_futures = self.get_mexc_futures()
+                        exchange_results['MEXC'] = len(mexc_futures)
+                        current_count = len(mexc_futures)
+                        
+                    elif step_name == "Checking Binance":
+                        binance_futures = self.get_binance_futures()
+                        exchange_results['Binance'] = len(binance_futures)
+                        current_count = len(binance_futures)
+                        
+                    elif step_name == "Checking Bybit":
+                        bybit_futures = self.get_bybit_futures()
+                        exchange_results['Bybit'] = len(bybit_futures)
+                        current_count = len(bybit_futures)
+                        
+                    elif step_name == "Checking OKX":
+                        okx_futures = self.get_okx_futures()
+                        exchange_results['OKX'] = len(okx_futures)
+                        current_count = len(okx_futures)
+                        
+                    elif step_name == "Checking Gate.io":
+                        gate_futures = self.get_gate_futures()
+                        exchange_results['Gate.io'] = len(gate_futures)
+                        current_count = len(gate_futures)
+                        
+                    elif step_name == "Checking KuCoin":
+                        kucoin_futures = self.get_kucoin_futures()
+                        exchange_results['KuCoin'] = len(kucoin_futures)
+                        current_count = len(kucoin_futures)
+                        
+                    elif step_name == "Checking BingX":
+                        bingx_futures = self.get_bingx_futures()
+                        exchange_results['BingX'] = len(bingx_futures)
+                        current_count = len(bingx_futures)
+                        
+                    elif step_name == "Checking BitGet":
+                        bitget_futures = self.get_bitget_futures()
+                        exchange_results['BitGet'] = len(bitget_futures)
+                        current_count = len(bitget_futures)
+                        
+                    elif step_name == "Finding unique symbols":
+                        new_futures, lost_futures = self.monitor_unique_futures_changes()
+                        
+                    elif step_name == "Analyzing results":
+                        data_after = self.load_data()
+                        unique_after = set(data_after.get('unique_futures', []))
+                        
+                    # Update progress with results
+                    update_progress(i, len(steps), status_text, current_exchange, current_count)
+                        
+                except Exception as e:
+                    logger.error(f"Step {step_name} failed: {e}")
+                    if step_name.startswith("Checking "):
+                        exchange_name = step_name.replace("Checking ", "")
+                        exchange_results[exchange_name] = 0
+                        update_progress(i, len(steps), f"❌ {status_text}", exchange_name, 0)
+
+            # Final progress update
+            update_progress(len(steps), len(steps), "✅ Check complete!", exchange_results)
+            time.sleep(1)
+
+            # Build final results message
+            working_exchanges = [name for name, count in exchange_results.items() if count > 0]
+            total_futures = sum(exchange_results.values())
+            
+            # Get unique futures count
+            data_after = self.load_data()
+            unique_after = set(data_after.get('unique_futures', []))
+            unique_before = set(data_before.get('unique_futures', []))
+            
+            new_futures = unique_after - unique_before
+            lost_futures = unique_before - unique_after
+
+            # Create final report
+            final_message = "🎯 <b>COMPREHENSIVE CHECK COMPLETE</b>\n\n"
+            
+            # Exchange Statistics
+            final_message += "📊 <b>EXCHANGE STATISTICS</b>\n"
+            final_message += f"✅ Working: {len(working_exchanges)}/{len(exchange_results)} exchanges\n"
+            final_message += f"📈 Total Futures: {total_futures}\n"
+            final_message += f"🎯 MEXC Unique: {len(unique_after)}\n\n"
+            
+            # Detailed Exchange Results
+            final_message += "🔍 <b>DETAILED RESULTS</b>\n"
+            for exchange in ['MEXC', 'Binance', 'Bybit', 'OKX', 'Gate.io', 'KuCoin', 'BingX', 'BitGet']:
+                count = exchange_results.get(exchange, 0)
+                status = "✅" if count > 0 else "❌"
+                final_message += f"{status} {exchange}: {count} futures\n"
+            
+            # Changes detected
+            final_message += f"\n🔄 <b>CHANGES DETECTED</b>\n"
+            if new_futures:
+                final_message += f"🆕 New Unique: {len(new_futures)}\n"
+                # Show first 3 new symbols
+                for i, symbol in enumerate(list(new_futures)[:3], 1):
+                    final_message += f"   {i}. {symbol}\n"
+                if len(new_futures) > 3:
+                    final_message += f"   ... and {len(new_futures) - 3} more\n"
+            else:
+                final_message += "🆕 New Unique: None\n"
+                
+            if lost_futures:
+                final_message += f"📉 Lost Unique: {len(lost_futures)}\n"
+            else:
+                final_message += "📉 Lost Unique: None\n"
+            
+            # Performance summary
+            final_message += f"\n⚡ <b>SUMMARY</b>\n"
+            final_message += f"📊 MEXC Coverage: {len(unique_after)}/{exchange_results.get('MEXC', 0)} unique\n"
+            final_message += f"🔄 Unique Ratio: {(len(unique_after)/exchange_results.get('MEXC', 1)*100):.1f}%\n"
+            final_message += f"⏰ Next Auto-check: {self.update_interval} minutes\n\n"
+            
+            final_message += "✅ <i>Check completed successfully!</i>"
+
+            # Send final message
+            context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=progress_message.message_id,
+                text=final_message,
+                parse_mode='HTML'
+            )
+
+        except Exception as e:
+            # Error handling
+            error_message = (
+                "❌ <b>CHECK FAILED</b>\n\n"
+                f"<b>Error:</b> {str(e)}\n\n"
+                "🔧 <i>The check encountered an unexpected error. "
+                "This might be due to network issues or exchange API problems. "
+                "Try again in a few moments.</i>"
+            )
+            
+            try:
+                context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=progress_message.message_id,
+                    text=error_message,
+                    parse_mode='HTML'
+                )
+            except:
+                # If we can't edit, send new message
+                update.message.reply_html(error_message)
+            
+            logger.error(f"Check command failed: {e}")
+
+            
     def find_unique_command(self, update: Update, context: CallbackContext):
         """Find and display currently unique symbols with prices"""
         update.message.reply_html("🔍 Scanning for unique MEXC symbols with prices...")
