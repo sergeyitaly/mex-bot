@@ -1754,33 +1754,33 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("qkctest", self.qkc_test_command))
 
 
-def qkc_test_command(self, update: Update, context: CallbackContext):
-    """Test QKC_USDT specifically"""
-    try:
-        update.message.reply_html("🔍 <b>Testing QKC_USDT data flow...</b>")
-        
-        # Test each step
-        batch_data = self.get_mexc_prices_batch_working()
-        unique_futures, _ = self.find_unique_futures_robust()
-        all_prices = self.get_all_mexc_prices()
-        
-        message = (
-            f"🔍 <b>QKC_USDT Test Results</b>\n\n"
-            f"📊 <b>Batch API:</b> {'✅ PRESENT' if 'QKC_USDT' in batch_data else '❌ MISSING'}\n"
-            f"🎯 <b>Unique Futures:</b> {'✅ PRESENT' if 'QKC_USDT' in unique_futures else '❌ MISSING'}\n"
-            f"💰 <b>Final Prices:</b> {'✅ PRESENT' if 'QKC_USDT' in all_prices else '❌ MISSING'}\n\n"
-        )
-        
-        if 'QKC_USDT' in batch_data:
-            message += f"• Batch Price: ${batch_data['QKC_USDT'].get('price')}\n"
-        if 'QKC_USDT' in all_prices:
-            message += f"• Final Price: ${all_prices['QKC_USDT'].get('price')}\n"
-        
-        update.message.reply_html(message)
-        
-    except Exception as e:
-        update.message.reply_html(f"❌ Test error: {str(e)}")
-        
+    def qkc_test_command(self, update: Update, context: CallbackContext):
+        """Test QKC_USDT specifically"""
+        try:
+            update.message.reply_html("🔍 <b>Testing QKC_USDT data flow...</b>")
+            
+            # Test each step
+            batch_data = self.get_mexc_prices_batch_working()
+            unique_futures, _ = self.find_unique_futures_robust()
+            all_prices = self.get_all_mexc_prices()
+            
+            message = (
+                f"🔍 <b>QKC_USDT Test Results</b>\n\n"
+                f"📊 <b>Batch API:</b> {'✅ PRESENT' if 'QKC_USDT' in batch_data else '❌ MISSING'}\n"
+                f"🎯 <b>Unique Futures:</b> {'✅ PRESENT' if 'QKC_USDT' in unique_futures else '❌ MISSING'}\n"
+                f"💰 <b>Final Prices:</b> {'✅ PRESENT' if 'QKC_USDT' in all_prices else '❌ MISSING'}\n\n"
+            )
+            
+            if 'QKC_USDT' in batch_data:
+                message += f"• Batch Price: ${batch_data['QKC_USDT'].get('price')}\n"
+            if 'QKC_USDT' in all_prices:
+                message += f"• Final Price: ${all_prices['QKC_USDT'].get('price')}\n"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Test error: {str(e)}")
+
 
     def data_flow_debug_command(self, update: Update, context: CallbackContext):
         """Debug the complete data flow for a symbol"""
