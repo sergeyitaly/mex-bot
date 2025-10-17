@@ -422,10 +422,9 @@ class MEXCTracker:
         """Get individual price data - ACCEPT MICRO-CAP PRICES"""
         try:
             endpoints = [
-            #f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
+            f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
             #f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
-            f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
-
+            #f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
         ]
             
             for url in endpoints:
