@@ -89,48 +89,83 @@ class MEXCTracker:
         return [{}]  # Empty dict means no proxy
 
     def setup_google_sheets(self):
-        """Setup Google Sheets connection"""
+        """Setup Google Sheets connection with proper error handling"""
         try:
             creds_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
             if not creds_json:
-                logger.info("Google Sheets not configured - no credentials found")
+                logger.warning("❌ Google Sheets not configured - no credentials found")
                 self.gs_client = None
                 self.spreadsheet = None
-                return
+                return False
 
             try:
+                # Parse the credentials JSON
                 creds_dict = json.loads(creds_json)
-                logger.info(f"Google Sheets credentials loaded for: {creds_dict.get('client_email')}")
-            except Exception as e:
-                logger.error(f"Failed to parse GOOGLE_CREDENTIALS_JSON: {e}")
+                logger.info(f"✅ Google Sheets credentials loaded for: {creds_dict.get('client_email')}")
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Failed to parse GOOGLE_CREDENTIALS_JSON as JSON: {e}")
                 self.gs_client = None
                 self.spreadsheet = None
-                return
+                return False
+            except Exception as e:
+                logger.error(f"❌ Error parsing credentials: {e}")
+                self.gs_client = None
+                self.spreadsheet = None
+                return False
 
-            scope = ['https://www.googleapis.com/auth/spreadsheets']
+            # Define the required scope
+            scope = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive'
+            ]
             
             try:
+                # Create credentials and authorize
                 self.creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
                 self.gs_client = gspread.authorize(self.creds)
+                logger.info("✅ Google Sheets client authorized successfully")
                 
-                # Connect to existing spreadsheet
+                # Connect to spreadsheet
                 spreadsheet_id = os.getenv('GOOGLE_SHEET_ID')
-                if spreadsheet_id:
+                if not spreadsheet_id:
+                    logger.warning("⚠️ No Google Sheet ID configured")
+                    self.spreadsheet = None
+                    return False
+                
+                try:
                     self.spreadsheet = self.gs_client.open_by_key(spreadsheet_id)
                     logger.info(f"✅ Connected to existing spreadsheet: {self.spreadsheet.title}")
-                else:
+                    
+                    # Test the connection by accessing a sheet
+                    try:
+                        worksheet = self.spreadsheet.sheet1
+                        logger.info("✅ Sheet connection test successful")
+                        return True
+                    except Exception as test_error:
+                        logger.error(f"❌ Failed to access worksheet: {test_error}")
+                        return False
+                        
+                except gspread.SpreadsheetNotFound:
+                    logger.error(f"❌ Spreadsheet not found with ID: {spreadsheet_id}")
                     self.spreadsheet = None
-                    logger.info("No Google Sheet ID configured")
-                
+                    return False
+                except Exception as e:
+                    logger.error(f"❌ Failed to open spreadsheet: {e}")
+                    self.spreadsheet = None
+                    return False
+                    
             except Exception as e:
-                logger.error(f"Failed to connect to spreadsheet: {e}")
+                logger.error(f"❌ Google Sheets authorization failed: {e}")
                 self.gs_client = None
                 self.spreadsheet = None
+                return False
 
         except Exception as e:
-            logger.error(f"Google Sheets setup error: {e}")
+            logger.error(f"❌ Google Sheets setup error: {e}")
             self.gs_client = None
             self.spreadsheet = None
+            return False
+
 
     # ==================== PRICE MONITORING ====================
 
@@ -1524,118 +1559,115 @@ class MEXCTracker:
 
     # Also update the forceupdate command to use the new method
     def ensure_sheets_initialized(self):
-        """Ensure all required sheets exist with proper error handling"""
-        if not self.spreadsheet:
-            logger.error("❌ No spreadsheet available - check GOOGLE_SHEET_ID")
-            return False
-        
+        """Ensure all required sheets exist with comprehensive error handling"""
         try:
-            # Get existing sheets with better error handling
+            # First, check if Google Sheets is properly configured
+            if not self.gs_client or not self.spreadsheet:
+                logger.error("❌ Google Sheets not properly configured")
+                # Try to reinitialize
+                if not self.setup_google_sheets():
+                    logger.error("❌ Failed to reinitialize Google Sheets")
+                    return False
+            
+            # Test connection by getting spreadsheet info
             try:
-                existing_sheets = self.spreadsheet.worksheets()
-                existing_sheet_names = [sheet.title for sheet in existing_sheets]
-                logger.info(f"📊 Found {len(existing_sheets)} existing sheets: {existing_sheet_names}")
+                spreadsheet_title = self.spreadsheet.title
+                logger.info(f"📊 Working with spreadsheet: {spreadsheet_title}")
+            except Exception as e:
+                logger.error(f"❌ Cannot access spreadsheet: {e}")
+                return False
+
+            # Define required sheets
+            required_sheets = [
+                'Dashboard',
+                'Unique Futures', 
+                'All Futures',
+                'MEXC Analysis',
+                'Price Analysis',
+                'Exchange Stats'
+            ]
+
+            # Get existing sheets
+            try:
+                existing_worksheets = self.spreadsheet.worksheets()
+                existing_sheet_names = [sheet.title for sheet in existing_worksheets]
+                logger.info(f"📋 Found {len(existing_worksheets)} existing sheets: {existing_sheet_names}")
             except Exception as e:
                 logger.error(f"❌ Failed to get existing sheets: {e}")
                 return False
 
-            # Define sheets configuration
-            sheets_config = {
-                'Dashboard': {
-                    'rows': 50,
-                    'cols': 10,
-                    'headers': ['Section', 'Value']
-                },
-                'Unique Futures': {
-                    'rows': 1000,
-                    'cols': 11,
-                    'headers': [
-                        'Symbol', 'Current Price', '5m Change %', '15m Change %', 
-                        '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
-                    ]
-                },
-                'All Futures': {
-                    'rows': 3000,
-                    'cols': 8,
-                    'headers': [
-                        'Symbol', 'Exchange', 'Normalized', 'Available On', 
-                        'Coverage', 'Timestamp', 'Unique', 'Current Price'
-                    ]
-                },
-                'MEXC Analysis': {
-                    'rows': 1000,
-                    'cols': 12,
-                    'headers': [
-                        'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
-                        'Current Price', '5m Change %', '1h Change %', '4h Change %', 
-                        'Status', 'Unique', 'Timestamp', 'Price Source'
-                    ]
-                },
-                'Price Analysis': {
-                    'rows': 1000,
-                    'cols': 12,
-                    'headers': [
-                        'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
-                        '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
-                    ]
-                },
-                'Exchange Stats': {
-                    'rows': 20,
-                    'cols': 6,
-                    'headers': [
-                        'Exchange', 'Futures Count', 'Status', 'Last Updated', 
-                        'Success Rate', 'Price Data Available'
-                    ]
-                }
-            }
-
-            # Create or update each sheet
-            for sheet_name, config in sheets_config.items():
+            # Create missing sheets
+            sheets_created = 0
+            for sheet_name in required_sheets:
                 try:
                     if sheet_name in existing_sheet_names:
-                        # Sheet exists - just clear and update headers
-                        worksheet = self.spreadsheet.worksheet(sheet_name)
-                        worksheet.clear()
-                        worksheet.update('A1', [config['headers']])
-                        logger.info(f"✅ Updated existing sheet: {sheet_name}")
-                    else:
-                        # Create new sheet
-                        worksheet = self.spreadsheet.add_worksheet(
-                            title=sheet_name, 
-                            rows=config['rows'],
-                            cols=config['cols']
-                        )
-                        worksheet.update('A1', [config['headers']])
-                        logger.info(f"✅ Created new sheet: {sheet_name}")
+                        logger.info(f"✅ Sheet exists: {sheet_name}")
+                        continue
                     
-                    # Apply basic formatting
-                    try:
-                        worksheet.format('A1:Z1', {
-                            'textFormat': {'bold': True},
-                            'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 0.9}
-                        })
-                        worksheet.freeze(rows=1)
-                    except Exception as format_error:
-                        logger.warning(f"⚠️ Could not format sheet {sheet_name}: {format_error}")
-                        
+                    # Create new sheet
+                    logger.info(f"🆕 Creating new sheet: {sheet_name}")
+                    new_sheet = self.spreadsheet.add_worksheet(
+                        title=sheet_name, 
+                        rows="1000", 
+                        cols="20"
+                    )
+                    
+                    # Set basic headers based on sheet type
+                    headers = self.get_sheet_headers(sheet_name)
+                    if headers:
+                        new_sheet.update('A1', [headers])
+                        logger.info(f"✅ Added headers to {sheet_name}")
+                    
+                    sheets_created += 1
+                    time.sleep(1)  # Rate limiting
+                    
                 except Exception as e:
-                    logger.error(f"❌ Failed to process sheet {sheet_name}: {e}")
-                    # Continue with other sheets even if one fails
+                    logger.error(f"❌ Failed to create sheet {sheet_name}: {e}")
+                    continue
 
-            # Setup Dashboard with content
+            # Setup Dashboard content
             try:
-                dashboard_worksheet = self.spreadsheet.worksheet('Dashboard')
-                self.setup_dashboard_sheet(dashboard_worksheet)
+                dashboard = self.spreadsheet.worksheet('Dashboard')
+                self.setup_dashboard_sheet(dashboard)
                 logger.info("✅ Dashboard setup completed")
             except Exception as e:
                 logger.error(f"❌ Failed to setup dashboard: {e}")
 
-            logger.info("✅ All sheets initialized successfully")
+            logger.info(f"✅ Sheet initialization complete. Created {sheets_created} new sheets.")
             return True
             
         except Exception as e:
             logger.error(f"❌ Critical error in sheet initialization: {e}")
             return False
+
+    def get_sheet_headers(self, sheet_name):
+        """Get appropriate headers for each sheet type"""
+        headers_map = {
+            'Dashboard': ['Section', 'Value'],
+            'Unique Futures': [
+                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+            ],
+            'All Futures': [
+                'Symbol', 'Exchange', 'Normalized', 'Available On', 
+                'Coverage', 'Timestamp', 'Unique', 'Current Price'
+            ],
+            'MEXC Analysis': [
+                'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
+                'Current Price', '5m Change %', '1h Change %', '4h Change %', 
+                'Status', 'Unique', 'Timestamp'
+            ],
+            'Price Analysis': [
+                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+                '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
+            ],
+            'Exchange Stats': [
+                'Exchange', 'Futures Count', 'Status', 'Last Updated', 
+                'Success Rate', 'Price Data Available'
+            ]
+        }
+        return headers_map.get(sheet_name, [])
+
 
 
 
@@ -1739,47 +1771,62 @@ class MEXCTracker:
             raise
 
             
-            
+
     def force_update_command(self, update: Update, context: CallbackContext):
         """Force immediate Google Sheet update with comprehensive data"""
-        if not self.gs_client:
-            update.message.reply_html("❌ Google Sheets not configured.")
-            return
-        
         try:
             update.message.reply_html("🔄 <b>Force updating Google Sheet with comprehensive data...</b>")
             
-            # Ensure sheets are properly initialized with new structure
-            if not self.ensure_sheets_initialized():
-                update.message.reply_html("❌ Failed to initialize sheets.")
-                return
+            # Step 1: Initialize Google Sheets connection
+            update.message.reply_html("🔧 <b>Step 1:</b> Initializing Google Sheets connection...")
             
-            # Run the comprehensive update
+            if not self.gs_client or not self.spreadsheet:
+                update.message.reply_html("🔄 Reinitializing Google Sheets connection...")
+                if not self.setup_google_sheets():
+                    update.message.reply_html("❌ <b>Failed to initialize Google Sheets.</b>\n\nPlease check:\n1. GOOGLE_CREDENTIALS_JSON environment variable\n2. GOOGLE_SHEET_ID environment variable\n3. Spreadsheet sharing permissions")
+                    return False
+            
+            # Step 2: Ensure sheets are initialized
+            update.message.reply_html("📋 <b>Step 2:</b> Ensuring all sheets are initialized...")
+            if not self.ensure_sheets_initialized():
+                update.message.reply_html("❌ <b>Failed to initialize sheets.</b>\n\nPlease check if the Google Sheet exists and is accessible.")
+                return False
+            
+            # Step 3: Run the comprehensive update
+            update.message.reply_html("📊 <b>Step 3:</b> Running comprehensive data update...")
             self.update_google_sheet()
             
-            # Get the spreadsheet URL for the message
-            data = self.load_data()
-            sheet_url = data.get('google_sheet_url') or (self.spreadsheet.url if self.spreadsheet else 'N/A')
+            # Get spreadsheet URL for the message
+            sheet_url = self.spreadsheet.url if self.spreadsheet else 'Not available'
             
             update.message.reply_html(
                 f"✅ <b>Google Sheet updated successfully!</b>\n\n"
                 f"📊 <a href='{sheet_url}'>Open Your Sheet</a>\n\n"
-                f"<b>Updated Sheets:</b>\n"
-                f"• 📈 <b>Dashboard</b> - Overview and stats\n"
-                f"• 🎯 <b>Unique Futures</b> - MEXC-only with price changes\n"
-                f"• 📋 <b>All Futures</b> - All symbols from all exchanges\n"
-                f"• 🔍 <b>MEXC Analysis</b> - Detailed coverage with prices\n"
-                f"• 💰 <b>Price Analysis</b> - Top 50 performers\n"
-                f"• 📊 <b>Exchange Stats</b> - Performance metrics\n\n"
-                f"<b>Price Features:</b>\n"
-                f"• 5m, 15m, 30m, 1h, 4h changes\n"
-                f"• 🚀 Trend indicators\n"
-                f"• 📈 Performance scoring\n"
-                f"• 🔄 Auto-updates every {self.update_interval}min",
+                f"<b>Sheets Updated:</b>\n"
+                f"• 📈 Dashboard - Overview and stats\n"
+                f"• 🎯 Unique Futures - MEXC-only symbols\n"
+                f"• 📋 All Futures - All exchange data\n"
+                f"• 🔍 MEXC Analysis - Detailed coverage\n"
+                f"• 💰 Price Analysis - Top performers\n"
+                f"• 📊 Exchange Stats - Performance metrics",
                 reply_markup=ReplyKeyboardRemove()
             )
+            return True
+            
         except Exception as e:
-            update.message.reply_html(f"❌ <b>Force update error:</b>\n{str(e)}")
+            error_msg = (
+                f"❌ <b>Force update failed:</b>\n\n"
+                f"<b>Error:</b> {str(e)}\n\n"
+                f"<b>Debugging steps:</b>\n"
+                f"1. Check GOOGLE_CREDENTIALS_JSON is valid JSON\n"
+                f"2. Verify GOOGLE_SHEET_ID is correct\n"
+                f"3. Ensure service account has edit permissions\n"
+                f"4. Check if spreadsheet exists and is accessible"
+            )
+            update.message.reply_html(error_msg)
+            logger.error(f"Force update command error: {e}")
+            return False
+
 
     def _make_request_with_retry(self, url: str, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
         """Make request with retry logic and proxy rotation"""
