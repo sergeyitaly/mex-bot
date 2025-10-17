@@ -826,207 +826,65 @@ class MEXCTracker:
             return set()
 
     def get_bybit_futures(self):
-        """Get Bybit perpetual futures with robust error handling"""
+        """Extremely simple Bybit implementation with caching to avoid 403 loops"""
         try:
-            url = "https://api.bybit.com/v5/market/instruments-info?category=linear"
+            # Check cache first to avoid repeated failed requests
+            cache_key = "bybit_futures_cache"
+            cache_timeout = 300  # 5 minutes
             
-            # Add headers to mimic browser request
+            if hasattr(self, '_bybit_cache') and hasattr(self, '_bybit_cache_time'):
+                if (datetime.now() - self._bybit_cache_time).seconds < cache_timeout:
+                    logger.info("🔄 Using cached Bybit data")
+                    return self._bybit_cache
+            
+            logger.info("🔄 Trying simplified Bybit request...")
+            
+            # Try the most basic endpoint with minimal headers
+            url = "https://api.bybit.com/v5/market/tickers?category=linear"
+            
+            # Use minimal headers to avoid detection
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'application/json',
-                'Accept-Language': 'en-US,en;q=0.9',
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': '*/*',
             }
             
-            response = requests.get(url, headers=headers, timeout=15)
-            
-            # Log response details for debugging
-            logger.info(f"Bybit response status: {response.status_code}")
-            logger.info(f"Bybit response headers: {dict(response.headers)}")
-            
-            if response.status_code != 200:
-                logger.error(f"Bybit HTTP error: {response.status_code} - {response.text[:200]}")
-                return self.get_bybit_futures_fallback()
-            
-            # Check if response is actually JSON
-            if not response.text.strip().startswith('{'):
-                logger.error(f"Bybit returned non-JSON response: {response.text[:200]}")
-                return self.get_bybit_futures_fallback()
-            
-            try:
-                data = response.json()
-            except json.JSONDecodeError as e:
-                logger.error(f"Bybit JSON decode error: {e} - Response: {response.text[:200]}")
-                return self.get_bybit_futures_fallback()
-            
-            futures = set()
-            
-            # Check API response code
-            if data.get('retCode') == 0:
-                items = data.get('result', {}).get('list', [])
-                logger.info(f"Bybit found {len(items)} instruments")
-                
-                for item in items:
-                    symbol = item.get('symbol', '')
-                    status = item.get('status', '')
-                    
-                    if symbol and status == 'Trading':
-                        futures.add(symbol)
-                
-                logger.info(f"✅ Bybit: {len(futures)} trading futures")
-            else:
-                error_msg = data.get('retMsg', 'Unknown error')
-                logger.error(f"Bybit API error: {error_msg}")
-                return self.get_bybit_futures_fallback()
-            
-            return futures
-            
-        except requests.exceptions.Timeout:
-            logger.error("Bybit request timeout")
-            return self.get_bybit_futures_fallback()
-        except requests.exceptions.ConnectionError:
-            logger.error("Bybit connection error")
-            return self.get_bybit_futures_fallback()
-        except Exception as e:
-            logger.error(f"Bybit unexpected error: {e}")
-            return self.get_bybit_futures_fallback()
-
-    def get_bybit_futures_fallback(self):
-        """Fallback methods for Bybit when main API fails"""
-        try:
-            logger.info("🔄 Trying Bybit fallback methods...")
-            futures = set()
-            
-            # Method 1: Try inverse perpetuals
-            try:
-                url_inverse = "https://api.bybit.com/v5/market/instruments-info?category=inverse"
-                response = requests.get(url_inverse, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('retCode') == 0:
-                        for item in data.get('result', {}).get('list', []):
-                            symbol = item.get('symbol', '')
-                            if symbol and item.get('status') == 'Trading':
-                                futures.add(symbol)
-                        logger.info(f"✅ Bybit inverse: {len(futures)} futures")
-            except Exception as e:
-                logger.error(f"Bybit inverse fallback error: {e}")
-            
-            # Method 2: Try public tickers endpoint
-            if not futures:
-                try:
-                    url_tickers = "https://api.bybit.com/v5/market/tickers?category=linear"
-                    response = requests.get(url_tickers, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get('retCode') == 0:
-                            for item in data.get('result', {}).get('list', []):
-                                symbol = item.get('symbol', '')
-                                if symbol:
-                                    futures.add(symbol)
-                            logger.info(f"✅ Bybit tickers: {len(futures)} symbols")
-                except Exception as e:
-                    logger.error(f"Bybit tickers fallback error: {e}")
-            
-            # Method 3: Try spot symbols as last resort
-            if not futures:
-                try:
-                    url_spot = "https://api.bybit.com/v5/market/tickers?category=spot"
-                    response = requests.get(url_spot, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get('retCode') == 0:
-                            for item in data.get('result', {}).get('list', []):
-                                symbol = item.get('symbol', '')
-                                if symbol and symbol.endswith('USDT'):
-                                    # Convert spot to futures symbol pattern
-                                    futures.add(symbol)
-                            logger.info(f"🔄 Bybit spot fallback: {len(futures)} symbols")
-                except Exception as e:
-                    logger.error(f"Bybit spot fallback error: {e}")
-            
-            if futures:
-                logger.info(f"🎯 Bybit fallback TOTAL: {len(futures)} futures")
-                # Log sample for verification
-                sample = list(futures)[:3]
-                logger.info(f"🔍 Bybit fallback sample: {sample}")
-            else:
-                logger.error("❌ All Bybit fallback methods failed")
-                
-            return futures
-            
-        except Exception as e:
-            logger.error(f"❌ Bybit fallback system error: {e}")
-            return set()
-
-    def get_bybit_futures_alternative(self):
-        """Alternative Bybit implementation using different approach"""
-        try:
-            logger.info("🔄 Trying Bybit alternative method...")
-            
-            # Try different API endpoint structure
-            url = "https://api.bybit.com/derivatives/v3/public/instruments-info"
-            params = {
-                'category': 'linear',
-                'limit': '1000'
-            }
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/json',
-            }
-            
-            response = requests.get(url, params=params, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=10)
             
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    futures = set()
-                    
-                    # Try different response structure
                     if data.get('retCode') == 0:
-                        items = data.get('result', {}).get('list', [])
-                    elif data.get('result'):
-                        items = data.get('result', {}).get('symbols', [])
-                    else:
-                        items = data.get('list', [])
-                    
-                    for item in items:
-                        symbol = item.get('symbol') or item.get('symbolName')
-                        if symbol:
-                            futures.add(symbol)
-                    
-                    logger.info(f"✅ Bybit alternative: {len(futures)} futures")
-                    return futures
-                    
-                except json.JSONDecodeError:
-                    logger.error("Bybit alternative JSON decode failed")
+                        futures = set()
+                        for item in data.get('result', {}).get('list', []):
+                            symbol = item.get('symbol')
+                            if symbol:
+                                futures.add(symbol)
+                        
+                        # Cache successful result
+                        self._bybit_cache = futures
+                        self._bybit_cache_time = datetime.now()
+                        
+                        logger.info(f"✅ Bybit simple: {len(futures)} symbols")
+                        return futures
+                except:
+                    pass
+            
+            # If we get here, the request failed
+            logger.warning("⚠️ Bybit simple method failed, using empty set")
+            
+            # Cache empty result to avoid repeated attempts
+            self._bybit_cache = set()
+            self._bybit_cache_time = datetime.now()
             
             return set()
             
         except Exception as e:
-            logger.error(f"Bybit alternative error: {e}")
+            logger.error(f"Bybit simple error: {e}")
+            # Cache empty result on error too
+            self._bybit_cache = set()
+            self._bybit_cache_time = datetime.now()
             return set()
-    
-
-    def get_bybit_futures_robust(self):
-        """Robust Bybit futures getter with multiple fallbacks"""
-        # Try main method first
-        futures = self.get_bybit_futures()
         
-        # If main method fails, try alternative
-        if not futures:
-            futures = self.get_bybit_futures_alternative()
-        
-        # If still no data, use fallback
-        if not futures:
-            futures = self.get_bybit_futures_fallback()
-        
-        # Final fallback - return empty set but log warning
-        if not futures:
-            logger.warning("⚠️ Bybit: No futures data available from any method")
-        
-        return futures
-
     def get_okx_futures(self):
         """Get ALL futures from OKX"""
         try:
