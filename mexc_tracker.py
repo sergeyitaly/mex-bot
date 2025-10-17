@@ -367,23 +367,20 @@ class MEXCTracker:
             return {}
             
     def get_mexc_prices_batch_working(self):
-        """Get prices using working MEXC API endpoint"""
+        """Get prices using working MEXC API endpoint with validation"""
         try:
-            # Use the main futures API endpoint
             url = "https://contract.mexc.com/api/v1/contract/ticker"
             logger.info("📡 Calling MEXC batch price API...")
             
             response = requests.get(url, timeout=15)
-            logger.info(f"📊 Batch API response: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
-                logger.info(f"📋 Batch API success: {data.get('success')}")
-                logger.info(f"📋 Batch API data count: {len(data.get('data', []))}")
                 
                 if data.get('success'):
                     tickers = data.get('data', [])
                     price_data = {}
+                    skipped_zero = 0
                     
                     for ticker in tickers:
                         try:
@@ -392,6 +389,12 @@ class MEXCTracker:
                             
                             if symbol and price_str:
                                 price = float(price_str)
+                                
+                                # VALIDATION: Skip zero or invalid prices
+                                if price <= 0:
+                                    skipped_zero += 1
+                                    continue
+                                    
                                 change_rate = float(ticker.get('riseFallRate', 0)) * 100
                                 
                                 price_data[symbol] = {
@@ -408,25 +411,24 @@ class MEXCTracker:
                         except (ValueError, TypeError) as e:
                             continue
                     
-                    logger.info(f"✅ Batch prices found: {len(price_data)} symbols")
+                    logger.info(f"✅ Batch prices: {len(price_data)} valid, {skipped_zero} zero prices skipped")
                     return price_data
-            else:
-                logger.error(f"❌ Batch API HTTP {response.status_code}")
-                
+            
             return {}
             
         except Exception as e:
             logger.error(f"Batch price error: {e}")
             return {}
-
+    
     def get_mexc_price_data_working(self, symbol):
-        """Get individual price data using working endpoint"""
+        """Get individual price data with validation"""
         try:
             # Try multiple endpoints
             endpoints = [
                 f"https://contract.mexc.com/api/v1/contract/ticker?symbol={symbol}",
                 f"https://contract.mexc.com/api/v1/contract/detail?symbol={symbol}",
                 f"https://futures.mexc.com/api/v1/contract/ticker?symbol={symbol}"  # Alternative domain
+
             ]
             
             for url in endpoints:
@@ -446,6 +448,12 @@ class MEXCTracker:
                             price_str = ticker_data.get('lastPrice') or ticker_data.get('price')
                             if price_str:
                                 price = float(price_str)
+                                
+                                # VALIDATION: Skip zero or invalid prices
+                                if price <= 0:
+                                    logger.debug(f"⚠️ Skipping {symbol} - invalid price: {price}")
+                                    continue
+                                    
                                 change_rate = float(ticker_data.get('riseFallRate', 0)) * 100
                                 
                                 return {
@@ -463,12 +471,13 @@ class MEXCTracker:
                     logger.debug(f"Endpoint {url} failed: {endpoint_error}")
                     continue
             
-            logger.debug(f"❌ No price data found for {symbol}")
+            logger.debug(f"❌ No valid price data found for {symbol}")
             return None
             
         except Exception as e:
             logger.debug(f"Individual price error for {symbol}: {e}")
             return None
+    
     
     def get_mexc_price_data(self, symbol):
         """Main price data method - use the working version"""
@@ -1303,51 +1312,84 @@ class MEXCTracker:
             return set(), {}
         
     def send_new_unique_notification(self, new_futures, all_unique):
-        """Send notification about new unique futures - FIXED VERSION"""
+        """Send notification about new unique futures - WITH VALIDATION"""
         try:
-            display_futures = list(new_futures)[:10]  # Show max 10 symbols
+            display_futures = list(new_futures)[:10]
             
             message = "🚀 <b>NEW UNIQUE FUTURES FOUND!</b>\n\n"
             
-            # Get ALL prices using batch method first (much faster)
+            # Get ALL prices using batch method first
             all_price_data = self.get_all_mexc_prices()
             
+            valid_count = 0
             for symbol in display_futures:
                 price_info = all_price_data.get(symbol)
-                if price_info and price_info.get('price'):
+                
+                if price_info and price_info.get('price') and price_info['price'] > 0:
+                    # VALID PRICE
                     changes = price_info.get('changes', {})
                     change_5m = changes.get('5m', 0)
                     change_1h = changes.get('60m', 0)
+                    price = price_info['price']
                     
                     message += f"✅ <b>{symbol}</b>\n"
-                    message += f"   Price: ${price_info['price']:.6f}\n"  # More decimal places for small prices
+                    
+                    # Format price appropriately based on value
+                    if price >= 1:
+                        message += f"   Price: ${price:.2f}\n"
+                    elif price >= 0.01:
+                        message += f"   Price: ${price:.4f}\n"
+                    else:
+                        message += f"   Price: ${price:.6f}\n"
+                    
                     message += f"   5m: {self.format_change(change_5m)}\n"
-                    message += f"   1h: {self.format_change(change_1h)}\n\n"
+                    
+                    # Only show 1h if it's different from 5m
+                    if change_1h != change_5m:
+                        message += f"   1h: {self.format_change(change_1h)}\n"
+                    
+                    message += "\n"
+                    valid_count += 1
+                    
                 else:
-                    # If batch didn't have it, try individual request
-                    try:
-                        price_info = self.get_mexc_price_data_working(symbol)
-                        if price_info and price_info.get('price'):
-                            changes = price_info.get('changes', {})
-                            change_5m = changes.get('5m', 0)
-                            message += f"✅ <b>{symbol}</b>\n"
-                            message += f"   Price: ${price_info['price']:.6f}\n"
-                            message += f"   5m: {self.format_change(change_5m)}\n\n"
-                        else:
-                            message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
-                    except:
-                        message += f"✅ <b>{symbol}</b> (price data unavailable)\n\n"
+                    # INVALID OR MISSING PRICE
+                    message += f"✅ <b>{symbol}</b>\n"
+                    
+                    if price_info and price_info.get('price') == 0:
+                        message += f"   Price: $0.00 (invalid)\n\n"
+                    else:
+                        # Try individual fetch as last resort
+                        try:
+                            individual_price = self.get_mexc_price_data_working(symbol)
+                            if individual_price and individual_price.get('price') and individual_price['price'] > 0:
+                                price = individual_price['price']
+                                changes = individual_price.get('changes', {})
+                                change_5m = changes.get('5m', 0)
+                                
+                                if price >= 1:
+                                    message += f"   Price: ${price:.2f}\n"
+                                elif price >= 0.01:
+                                    message += f"   Price: ${price:.4f}\n"
+                                else:
+                                    message += f"   Price: ${price:.6f}\n"
+                                
+                                message += f"   5m: {self.format_change(change_5m)}\n\n"
+                                valid_count += 1
+                            else:
+                                message += f"   Price data unavailable\n\n"
+                        except:
+                            message += f"   Price data unavailable\n\n"
             
             if len(new_futures) > len(display_futures):
                 message += f"... and {len(new_futures) - len(display_futures)} more symbols\n\n"
             
             message += f"📊 Total unique: <b>{len(all_unique)}</b>"
+            message += f"\n💰 Valid prices: <b>{valid_count}/{len(display_futures)}</b> shown symbols"
             
             self.send_broadcast_message(message)
             
         except Exception as e:
             logger.error(f"Error sending new unique notification: {e}")
-
 
     def send_lost_unique_notification(self, lost_futures, remaining_unique):
         """Send notification about lost unique futures - OPTIMIZED"""
@@ -1722,7 +1764,48 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("symboldebug", self.symbol_debug_command))
         self.dispatcher.add_handler(CommandHandler("dataflow", self.data_flow_debug_command))
         self.dispatcher.add_handler(CommandHandler("qkctest", self.qkc_test_command))
+        self.dispatcher.add_handler(CommandHandler("validateprices", self.validate_prices_command))
 
+    def validate_prices_command(self, update: Update, context: CallbackContext):
+        """Validate prices for symbols with issues"""
+        try:
+            update.message.reply_html("🔍 <b>Validating price data quality...</b>")
+            
+            # Test problematic symbols
+            test_symbols = [
+                'BOBBSC_USDT',  # Shows $0.000000
+                'MANYU_USDT',   # Shows $0.000000  
+                'RVV_USDT',     # Shows unavailable
+                'AAPLSTOCK_USDT', # Shows valid price
+                'LAZIO_USDT'    # Shows valid price
+            ]
+            
+            results = []
+            all_price_data = self.get_all_mexc_prices()
+            
+            for symbol in test_symbols:
+                price_info = all_price_data.get(symbol)
+                
+                if not price_info:
+                    results.append(f"❌ {symbol}: NOT IN PRICE DATA")
+                    continue
+                    
+                price = price_info.get('price')
+                source = price_info.get('source', 'unknown')
+                
+                if price is None:
+                    results.append(f"❌ {symbol}: PRICE IS NONE")
+                elif price <= 0:
+                    results.append(f"⚠️ {symbol}: ZERO/INVALID PRICE (${price}) - {source}")
+                else:
+                    results.append(f"✅ {symbol}: VALID ${price:.6f} - {source}")
+            
+            message = "🔍 <b>Price Validation Results</b>\n\n" + "\n".join(results)
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Validation error: {str(e)}")
+            
 
     def qkc_test_command(self, update: Update, context: CallbackContext):
         """Test QKC_USDT specifically"""
