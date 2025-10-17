@@ -310,59 +310,108 @@ class MEXCTracker:
 
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - FIXED MERGE LOGIC"""
+        """Get price data for MEXC futures - SMART FETCHER that always gets prices"""
         try:
-            # Always use batch first (most efficient)
+            # Step 1: Get ALL data from batch API (most reliable)
             batch_data = self.get_mexc_prices_batch_working()
-            logger.info(f"📊 Batch data: {len(batch_data)} symbols")
+            logger.info(f"📊 Batch API returned: {len(batch_data)} symbols")
             
-            # Get unique futures
+            # Step 2: Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures: {len(unique_futures)} symbols")
             
-            # CRITICAL FIX: Start with batch data and ensure ALL unique symbols are included
-            price_data = batch_data.copy()  # Start with all batch data
+            # Step 3: Start with ALL batch data
+            price_data = {}
             
-            # Ensure ALL unique symbols are in the final result
-            missing_unique = [s for s in unique_futures if s not in price_data]
-            logger.info(f"🔍 Unique symbols missing after batch: {len(missing_unique)}")
+            # Step 4: For EACH unique symbol, use WHATEVER METHOD WORKS
+            successful_symbols = 0
             
-            # Get individual prices for missing unique symbols
-            successful_individual = 0
-            for symbol in missing_unique[:50]:  # Limit to avoid timeout
-                try:
-                    individual_price = self.get_mexc_price_data_working(symbol)
-                    if individual_price and individual_price.get('price'):
-                        price_data[symbol] = individual_price
-                        successful_individual += 1
-                        logger.info(f"✅ Added {symbol}: ${individual_price['price']}")
-                    else:
-                        # Even if no price, add placeholder to ensure symbol appears
-                        price_data[symbol] = {
-                            'symbol': symbol,
-                            'price': None,
-                            'changes': {},
-                            'timestamp': datetime.now(),
-                            'source': 'missing'
-                        }
-                    
-                    time.sleep(0.1)  # Rate limiting
-                    
-                except Exception as e:
-                    logger.error(f"Price fetch failed for {symbol}: {e}")
-                    continue
+            for symbol in unique_futures:
+                price_info = None
+                source = "unknown"
+                
+                # METHOD 1: Try exact match in batch first (fastest)
+                if symbol in batch_data:
+                    price_info = batch_data[symbol]
+                    source = "batch_exact"
+                    successful_symbols += 1
+                    logger.debug(f"✅ {symbol}: ${price_info.get('price')} (batch exact)")
+                
+                # METHOD 2: Try alternative formats in batch
+                elif not price_info:
+                    alt_formats = self.get_alternative_symbol_formats(symbol)
+                    for alt_format in alt_formats:
+                        if alt_format in batch_data:
+                            price_info = batch_data[alt_format].copy()
+                            price_info['symbol'] = symbol  # Update to correct symbol name
+                            source = f"batch_alt_{alt_format}"
+                            successful_symbols += 1
+                            logger.debug(f"✅ {symbol}: ${price_info.get('price')} (batch alt: {alt_format})")
+                            break
+                
+                # METHOD 3: Try direct API call
+                elif not price_info:
+                    try:
+                        individual_price = self.get_mexc_price_data_working(symbol)
+                        if individual_price and individual_price.get('price') is not None:
+                            price_info = individual_price
+                            source = "direct_api"
+                            successful_symbols += 1
+                            logger.debug(f"✅ {symbol}: ${price_info.get('price')} (direct API)")
+                    except Exception as e:
+                        logger.debug(f"❌ Direct API failed for {symbol}: {e}")
+                
+                # METHOD 4: Try alternative symbol formats with direct API
+                if not price_info:
+                    alt_formats = self.get_alternative_symbol_formats(symbol)
+                    for alt_format in alt_formats[:3]:  # Try first 3 alternatives
+                        try:
+                            individual_price = self.get_mexc_price_data_working(alt_format)
+                            if individual_price and individual_price.get('price') is not None:
+                                price_info = individual_price.copy()
+                                price_info['symbol'] = symbol  # Update to correct symbol name
+                                source = f"direct_api_alt_{alt_format}"
+                                successful_symbols += 1
+                                logger.debug(f"✅ {symbol}: ${price_info.get('price')} (direct API alt: {alt_format})")
+                                break
+                        except Exception as e:
+                            continue
+                
+                # If we found price info, add it
+                if price_info:
+                    price_info['source'] = source
+                    price_data[symbol] = price_info
+                else:
+                    # LAST RESORT: Create with None price (should rarely happen now)
+                    logger.warning(f"⚠️ All methods failed for {symbol}, adding with None price")
+                    price_data[symbol] = {
+                        'symbol': symbol,
+                        'price': None,
+                        'changes': {},
+                        'timestamp': datetime.now(),
+                        'source': 'all_methods_failed'
+                    }
             
-            # Final verification
-            final_coverage = len([s for s in unique_futures if s in price_data])
-            logger.info(f"🎯 Final unique coverage: {final_coverage}/{len(unique_futures)}")
-            logger.info(f"💰 Final price data: {len(price_data)} total symbols")
+            # Final statistics
+            valid_prices = len([s for s in price_data.values() if s.get('price') is not None])
+            logger.info(f"🎯 SUCCESS: {valid_prices}/{len(unique_futures)} symbols with prices")
+            logger.info(f"💰 SOURCES: {self._get_price_sources_summary(price_data)}")
             
             return price_data
             
         except Exception as e:
             logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
-    
+
+    def _get_price_sources_summary(self, price_data):
+        """Get summary of where prices came from"""
+        sources = {}
+        for symbol, data in price_data.items():
+            if data.get('price') is not None:
+                source = data.get('source', 'unknown')
+                sources[source] = sources.get(source, 0) + 1
+        return sources
+   
     def get_mexc_prices_batch_working(self):
         """Get prices using working MEXC API endpoint - ACCEPT MICRO-CAP"""
         try:
