@@ -310,92 +310,62 @@ class MEXCTracker:
 
 
     def get_all_mexc_prices(self):
-        """Get price data for MEXC futures - FOCUSED DEBUG"""
+        """Get price data for MEXC futures - FIXED MERGE LOGIC"""
         try:
             # Always use batch first (most efficient)
             batch_data = self.get_mexc_prices_batch_working()
             logger.info(f"📊 Batch data: {len(batch_data)} symbols")
             
-            # CRITICAL DEBUG: Check QKC_USDT in batch
-            if 'QKC_USDT' in batch_data:
-                logger.info(f"🎯 QKC_USDT IN BATCH: ${batch_data['QKC_USDT'].get('price')}")
-            else:
-                logger.info("❌ QKC_USDT NOT in batch - checking similar symbols")
-                qkc_variants = [s for s in batch_data.keys() if 'QKC' in s]
-                logger.info(f"🔍 QKC variants in batch: {qkc_variants}")
-            
-            symbols = self.get_mexc_futures()
-            price_data = batch_data.copy()  # Start with batch data
-            
             # Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures: {len(unique_futures)} symbols")
             
-            # CRITICAL DEBUG: Confirm QKC_USDT in unique
-            if 'QKC_USDT' in unique_futures:
-                logger.info("✅ QKC_USDT CONFIRMED in unique futures")
-            else:
-                logger.info("❌ QKC_USDT NOT in unique futures - THIS IS WRONG!")
-                return price_data
+            # CRITICAL FIX: Start with empty dict and add ALL symbols we care about
+            price_data = {}
             
-            # Find missing unique symbols from batch
-            missing_unique = [s for s in unique_futures if s not in batch_data]
-            logger.info(f"🔍 Missing from batch: {len(missing_unique)} symbols")
+            # Step 1: Add all batch data
+            price_data.update(batch_data)
+            logger.info(f"✅ Added {len(batch_data)} symbols from batch")
             
-            # CRITICAL DEBUG: Check if QKC_USDT is in missing_unique
-            if 'QKC_USDT' in missing_unique:
-                logger.info("✅ QKC_USDT IS in missing_unique - will fetch individually")
-            else:
-                logger.info("❌ QKC_USDT NOT in missing_unique - ALREADY IN BATCH?")
-                # If it's not missing, it should already be in price_data!
-                if 'QKC_USDT' in price_data:
-                    logger.info("🎉 QKC_USDT ALREADY IN price_data - SUCCESS!")
-                else:
-                    logger.info("💥 QKC_USDT NOT in missing_unique AND NOT in price_data - BUG!")
+            # Step 2: Ensure ALL unique symbols are included
+            missing_unique = [s for s in unique_futures if s not in price_data]
+            logger.info(f"🔍 Unique symbols missing after batch: {len(missing_unique)}")
             
-            # Get individual prices for missing symbols
+            # Step 3: Get individual prices for missing unique symbols
             successful_individual = 0
-            for symbol in missing_unique[:50]:
+            for symbol in missing_unique[:80]:  # Increased limit
                 try:
-                    if symbol not in price_data:
-                        # SPECIAL DEBUG for QKC_USDT
-                        if symbol == 'QKC_USDT':
-                            logger.info("🚨 FETCHING QKC_USDT INDIVIDUALLY...")
-                        
-                        price_info = self.get_mexc_price_data_working(symbol)
-                        if price_info:
-                            price_data[symbol] = price_info
-                            successful_individual += 1
-                            
-                            # SPECIAL DEBUG for QKC_USDT
-                            if symbol == 'QKC_USDT':
-                                logger.info(f"🎉 QKC_USDT ADDED: ${price_info.get('price')}")
-                        
-                        time.sleep(0.15)
+                    logger.info(f"🔍 Fetching individual price for: {symbol}")
+                    price_info = self.get_mexc_price_data_working(symbol)
+                    if price_info and price_info.get('price'):
+                        price_data[symbol] = price_info
+                        successful_individual += 1
+                        logger.info(f"✅ Added {symbol}: ${price_info['price']}")
+                    else:
+                        logger.info(f"❌ No price data for {symbol}")
+                    
+                    time.sleep(0.1)  # Reduced delay
+                    
                 except Exception as e:
-                    logger.debug(f"Price fetch failed for {symbol}: {e}")
+                    logger.error(f"Price fetch failed for {symbol}: {e}")
+                    continue
             
-            # FINAL VERIFICATION
-            logger.info(f"✅ Individual fetches: {successful_individual} successful")
+            # Step 4: VERIFICATION - Check if all unique symbols are now in price_data
+            final_unique_coverage = len([s for s in unique_futures if s in price_data])
+            logger.info(f"🎯 Final unique coverage: {final_unique_coverage}/{len(unique_futures)}")
             
-            if 'QKC_USDT' in price_data:
-                logger.info(f"🎉 FINAL SUCCESS: QKC_USDT in price_data: ${price_data['QKC_USDT'].get('price')}")
-            else:
-                logger.info("💥 FINAL FAILURE: QKC_USDT NOT in price_data")
-                # Let's check what happened
-                logger.info(f"🔍 QKC_USDT in batch_data: {'QKC_USDT' in batch_data}")
-                logger.info(f"🔍 QKC_USDT in missing_unique: {'QKC_USDT' in missing_unique}")
-                logger.info(f"🔍 QKC_USDT in unique_futures: {'QKC_USDT' in unique_futures}")
+            # CRITICAL: Log specific missing symbols for debugging
+            still_missing = [s for s in unique_futures if s not in price_data]
+            if still_missing:
+                logger.info(f"⚠️ Still missing {len(still_missing)} unique symbols: {still_missing[:10]}")
             
-            final_coverage = len([s for s in unique_futures if s in price_data])
-            logger.info(f"📈 Final coverage: {final_coverage}/{len(unique_futures)} unique symbols")
-            
+            logger.info(f"💰 Final price data: {len(price_data)} total symbols")
             return price_data
             
         except Exception as e:
             logger.error(f"Error in get_all_mexc_prices: {e}")
             return {}
-        
+            
     def get_mexc_prices_batch_working(self):
         """Get prices using working MEXC API endpoint"""
         try:
