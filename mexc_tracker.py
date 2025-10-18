@@ -2573,6 +2573,7 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("growthreport", self.send_detailed_growth_report))
         self.dispatcher.add_handler(CommandHandler("4hchart", self.send_quick_growth_chart))
         self.dispatcher.add_handler(CommandHandler("trends", self.send_trend_analysis_command))
+        self.dispatcher.add_handler(CommandHandler("datastatus", self.data_status_command))
 
     def symbol_search_command(self, update: Update, context: CallbackContext):
         """Search for symbols in MEXC API - CORRECTED"""
@@ -3900,6 +3901,7 @@ class MEXCTracker:
             "/pricedebug - Price debug\n"
             "/symboldebug - Symbol debug\n"
             "/excel - Download excel\n"
+            "/datastatus - Data status"
             "/analysis - Full analysis\n"
             "/growth - Grouwth chart\n"
             "/rowthreport - Growthreport chart\n"
@@ -4558,6 +4560,7 @@ class MEXCTracker:
             "/pricedebug - Price debug\n"
             "/symboldebug - Symbol debug\n"
             "/excel - Download excel\n"
+            "/datastatus - Data status"
             "/analysis - Full analysis report\n"
             "/growth - Grouwth chart\n"
             "/rowthreport - Growthreport chart\n"
@@ -4862,71 +4865,6 @@ class MEXCTracker:
             update.message.reply_html(f"❌ Error generating quick growth chart: {str(e)}")
 
 
-    def analyze_growth_trends(self, historical_data):
-        """Analyze growth trends from historical Google Sheets data"""
-        try:
-            growth_analysis = {}
-            
-            for symbol, data in historical_data.items():
-                current_price = data.get('current_price')
-                change_4h = data.get('change_4h')
-                change_1h = data.get('change_1h')
-                change_30m = data.get('change_30m')
-                change_15m = data.get('change_15m')
-                change_5m = data.get('change_5m')
-                score = data.get('score', 0)
-                
-                if current_price is None or change_4h is None:
-                    continue
-                
-                # Calculate trend consistency
-                changes = [change_5m, change_15m, change_30m, change_1h, change_4h]
-                valid_changes = [ch for ch in changes if ch is not None]
-                
-                if len(valid_changes) < 3:  # Need at least 3 timeframes for trend analysis
-                    continue
-                
-                # Calculate trend metrics
-                avg_growth = sum(valid_changes) / len(valid_changes)
-                max_growth = max(valid_changes)
-                min_growth = min(valid_changes)
-                volatility = max_growth - min_growth
-                
-                # Trend direction analysis
-                positive_changes = len([ch for ch in valid_changes if ch > 0])
-                negative_changes = len([ch for ch in valid_changes if ch < 0])
-                trend_consistency = positive_changes / len(valid_changes) * 100
-                
-                # Momentum analysis (recent vs older changes)
-                recent_changes = [ch for ch in [change_5m, change_15m, change_30m] if ch is not None]
-                older_changes = [ch for ch in [change_1h, change_4h] if ch is not None]
-                
-                recent_avg = sum(recent_changes) / len(recent_changes) if recent_changes else 0
-                older_avg = sum(older_changes) / len(older_changes) if older_changes else 0
-                momentum = recent_avg - older_avg  # Positive = accelerating growth
-                
-                growth_analysis[symbol] = {
-                    'symbol': symbol,
-                    'current_price': current_price,
-                    'change_4h': change_4h,
-                    'change_1h': change_1h,
-                    'change_30m': change_30m,
-                    'change_15m': change_15m,
-                    'change_5m': change_5m,
-                    'avg_growth': avg_growth,
-                    'max_growth': max_growth,
-                    'volatility': volatility,
-                    'trend_consistency': trend_consistency,
-                    'momentum': momentum,
-                    'score': score,
-                    'timeframes_available': len(valid_changes)
-                }
-            
-            return growth_analysis
-            
-        except Exception as e:
-            logger.error(f"Error analyzing growth trends: {e}")
-            return {}
 
     def create_historical_growth_chart(self, growth_analysis):
         """Create growth chart with historical trend analysis"""
@@ -5077,9 +5015,241 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error creating growth summary: {e}")
             return ""
+    def analyze_consistency_leaders(self, historical_data):
+        """Analyze symbols with most consistent trends"""
+        growth_analysis = self.analyze_growth_trends(historical_data)
+        if not growth_analysis:
+            return None
+        
+        consistency_leaders = sorted(
+            [item for item in growth_analysis.values() if item['trend_consistency'] is not None],
+            key=lambda x: x['trend_consistency'],
+            reverse=True
+        )[:5]
+        
+        if not consistency_leaders:
+            return None
+        
+        message = "🎯 <b>MOST CONSISTENT TRENDS</b>\n\n"
+        message += "<i>Symbols with stable directional movement</i>\n\n"
+        
+        for i, item in enumerate(consistency_leaders, 1):
+            # Determine consistency level
+            if item['trend_consistency'] >= 80:
+                consistency_level = "🟢 VERY CONSISTENT"
+            elif item['trend_consistency'] >= 60:
+                consistency_level = "🟡 CONSISTENT"
+            else:
+                consistency_level = "🔴 MIXED"
+            
+            message += f"{i}. <b>{item['symbol']}</b>\n"
+            message += f"   {consistency_level} ({item['trend_consistency']:.0f}%)\n"
+            message += f"   4h: {item['change_4h']:+.1f}% | Volatility: {item['volatility']:.1f}%\n"
+            message += f"   Timeframes: {item['timeframes_available']}/5 available\n\n"
+        
+        return message
+
+    def analyze_volatility_leaders(self, historical_data):
+        """Analyze symbols with highest volatility"""
+        growth_analysis = self.analyze_growth_trends(historical_data)
+        if not growth_analysis:
+            return None
+        
+        volatility_leaders = sorted(
+            [item for item in growth_analysis.values() if item['volatility'] is not None],
+            key=lambda x: x['volatility'],
+            reverse=True
+        )[:5]
+        
+        if not volatility_leaders:
+            return None
+        
+        message = "🌊 <b>HIGH VOLATILITY SYMBOLS</b>\n\n"
+        message += "<i>Symbols with largest price swings</i>\n\n"
+        
+        for i, item in enumerate(volatility_leaders, 1):
+            # Determine volatility level
+            if item['volatility'] > 30:
+                volatility_level = "🌪️ EXTREME"
+            elif item['volatility'] > 20:
+                volatility_level = "⚡ HIGH"
+            elif item['volatility'] > 10:
+                volatility_level = "📊 MODERATE"
+            else:
+                volatility_level = "💤 LOW"
+            
+            message += f"{i}. <b>{item['symbol']}</b>\n"
+            message += f"   {volatility_level} Volatility: {item['volatility']:.1f}%\n"
+            message += f"   Range: {item['min_growth']:+.1f}% to {item['max_growth']:+.1f}%\n"
+            message += f"   Current 4h: {item['change_4h']:+.1f}%\n\n"
+        
+        return message
+
+    def analyze_reversal_candidates(self, historical_data):
+        """Analyze symbols that might be reversing trends"""
+        growth_analysis = self.analyze_growth_trends(historical_data)
+        if not growth_analysis:
+            return None
+        
+        reversal_candidates = []
+        
+        for symbol, item in growth_analysis.items():
+            # Look for symbols with negative momentum but positive recent changes
+            if (item['momentum'] is not None and item['change_5m'] is not None and 
+                item['change_4h'] is not None):
+                
+                # Potential reversal: negative overall momentum but positive recent movement
+                if (item['momentum'] < -2 and item['change_5m'] > 2 and 
+                    item['change_4h'] < 0):
+                    reversal_candidates.append(item)
+                
+                # Or positive momentum but negative recent movement (potential top)
+                elif (item['momentum'] > 2 and item['change_5m'] < -2 and 
+                    item['change_4h'] > 0):
+                    reversal_candidates.append(item)
+        
+        # Sort by momentum strength (absolute value)
+        reversal_candidates.sort(key=lambda x: abs(x['momentum']), reverse=True)
+        top_reversals = reversal_candidates[:5]
+        
+        if not top_reversals:
+            return None
+        
+        message = "🔄 <b>POTENTIAL REVERSAL CANDIDATES</b>\n\n"
+        message += "<i>Symbols showing trend change signals</i>\n\n"
+        
+        for i, item in enumerate(top_reversals, 1):
+            momentum = item['momentum']
+            
+            if momentum < 0 and item['change_5m'] > 0:
+                signal = "🟢 POTENTIAL BOTTOM"
+                explanation = "Negative momentum but recent buying"
+            else:
+                signal = "🔴 POTENTIAL TOP"
+                explanation = "Positive momentum but recent selling"
+            
+            message += f"{i}. <b>{item['symbol']}</b>\n"
+            message += f"   {signal}\n"
+            message += f"   Momentum: {momentum:+.1f} | 5m: {item['change_5m']:+.1f}%\n"
+            message += f"   4h: {item['change_4h']:+.1f}% | 1h: {item['change_1h']:+.1f}%\n"
+            message += f"   {explanation}\n\n"
+        
+        return message
+
+    def analyze_growth_trends(self, historical_data):
+        """Analyze growth trends from historical Google Sheets data - ENHANCED"""
+        try:
+            growth_analysis = {}
+            
+            for symbol, data in historical_data.items():
+                current_price = data.get('current_price')
+                change_4h = data.get('change_4h')
+                change_1h = data.get('change_1h')
+                change_30m = data.get('change_30m')
+                change_15m = data.get('change_15m')
+                change_5m = data.get('change_5m')
+                score = data.get('score', 0)
+                
+                if current_price is None or change_4h is None:
+                    continue
+                
+                # Calculate trend consistency
+                changes = [change_5m, change_15m, change_30m, change_1h, change_4h]
+                valid_changes = [ch for ch in changes if ch is not None]
+                
+                if len(valid_changes) < 3:  # Need at least 3 timeframes for trend analysis
+                    continue
+                
+                # Calculate trend metrics
+                avg_growth = sum(valid_changes) / len(valid_changes)
+                max_growth = max(valid_changes)
+                min_growth = min(valid_changes)
+                volatility = max_growth - min_growth
+                
+                # Trend direction analysis
+                positive_changes = len([ch for ch in valid_changes if ch > 0])
+                negative_changes = len([ch for ch in valid_changes if ch < 0])
+                trend_consistency = positive_changes / len(valid_changes) * 100
+                
+                # Momentum analysis (recent vs older changes)
+                recent_changes = [ch for ch in [change_5m, change_15m, change_30m] if ch is not None]
+                older_changes = [ch for ch in [change_1h, change_4h] if ch is not None]
+                
+                recent_avg = sum(recent_changes) / len(recent_changes) if recent_changes else 0
+                older_avg = sum(older_changes) / len(older_changes) if older_changes else 0
+                momentum = recent_avg - older_avg  # Positive = accelerating growth
+                
+                growth_analysis[symbol] = {
+                    'symbol': symbol,
+                    'current_price': current_price,
+                    'change_4h': change_4h,
+                    'change_1h': change_1h,
+                    'change_30m': change_30m,
+                    'change_15m': change_15m,
+                    'change_5m': change_5m,
+                    'avg_growth': avg_growth,
+                    'max_growth': max_growth,
+                    'min_growth': min_growth,
+                    'volatility': volatility,
+                    'trend_consistency': trend_consistency,
+                    'momentum': momentum,
+                    'score': score,
+                    'timeframes_available': len(valid_changes)
+                }
+            
+            return growth_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing growth trends: {e}")
+            return {}
+
+    def check_historical_data_availability(self):
+        """Check if we have sufficient historical data for analysis"""
+        try:
+            historical_data = self.get_historical_data_from_sheets()
+            if not historical_data:
+                return False, "No historical data found"
+            
+            # Check if we have data for multiple timeframes
+            symbols_with_multiple_timeframes = 0
+            for symbol, data in historical_data.items():
+                changes = [data.get('change_5m'), data.get('change_15m'), data.get('change_30m'), 
+                        data.get('change_1h'), data.get('change_4h')]
+                valid_changes = len([ch for ch in changes if ch is not None])
+                if valid_changes >= 3:
+                    symbols_with_multiple_timeframes += 1
+            
+            if symbols_with_multiple_timeframes < 5:
+                return False, f"Only {symbols_with_multiple_timeframes} symbols have sufficient data"
+            
+            return True, f"Good data coverage: {symbols_with_multiple_timeframes} symbols"
+            
+        except Exception as e:
+            return False, f"Error checking data: {str(e)}"
+
+    def data_status_command(self, update: Update, context: CallbackContext):
+        """Check historical data status"""
+        try:
+            has_data, message = self.check_historical_data_availability()
+            
+            status_message = "📊 <b>Historical Data Status</b>\n\n"
+            
+            if has_data:
+                status_message += "✅ <b>Status:</b> Data available for analysis\n"
+            else:
+                status_message += "❌ <b>Status:</b> Insufficient data\n"
+            
+            status_message += f"📝 <b>Details:</b> {message}\n\n"
+            status_message += "💡 <i>The bot needs at least 5 symbols with 3+ timeframes of data for proper trend analysis.</i>"
+            
+            update.message.reply_html(status_message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error checking data status: {str(e)}")
+
 
     def send_trend_analysis_command(self, update: Update, context: CallbackContext):
-        """Manual command for detailed trend analysis"""
+        """Manual command for detailed trend analysis - FIXED"""
         try:
             update.message.reply_html("📈 <b>Generating detailed trend analysis...</b>")
             
@@ -5092,21 +5262,29 @@ class MEXCTracker:
             
             # Analyze different aspects
             analyses = [
-                self.analyze_momentum_leaders(historical_data),
-                self.analyze_consistency_leaders(historical_data),
-                self.analyze_volatility_leaders(historical_data),
-                self.analyze_reversal_candidates(historical_data)
+                ("Momentum Leaders", self.analyze_momentum_leaders(historical_data)),
+                ("Consistency Leaders", self.analyze_consistency_leaders(historical_data)),
+                ("Volatility Analysis", self.analyze_volatility_leaders(historical_data)),
+                ("Reversal Candidates", self.analyze_reversal_candidates(historical_data))
             ]
             
-            for analysis in analyses:
-                if analysis:
-                    update.message.reply_html(analysis)
+            analyses_sent = 0
+            for analysis_name, analysis_result in analyses:
+                if analysis_result:
+                    update.message.reply_html(analysis_result)
+                    analyses_sent += 1
                     time.sleep(1)  # Rate limiting
             
-            update.message.reply_html("✅ <b>Trend analysis completed!</b>")
+            if analyses_sent == 0:
+                update.message.reply_html("❌ No trend analysis data available. The bot may need more historical data to generate trends.")
+            else:
+                update.message.reply_html(f"✅ <b>Trend analysis completed! ({analyses_sent}/4 reports generated)</b>")
             
         except Exception as e:
             update.message.reply_html(f"❌ Error in trend analysis: {str(e)}")
+
+
+
 
     def analyze_momentum_leaders(self, historical_data):
         """Analyze symbols with strongest momentum"""
