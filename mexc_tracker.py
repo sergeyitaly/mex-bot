@@ -24,6 +24,7 @@ import re
 from typing import Optional, List, Dict, Set, Any, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from functools import wraps
 
 # Load environment variables
 load_dotenv()
@@ -34,6 +35,54 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+
+def rate_limit_google_sheets(calls_per_minute=60):
+    """Decorator to rate limit Google Sheets API calls"""
+    min_interval = 60.0 / calls_per_minute
+    last_called = [0.0]
+    
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            elapsed = time.time() - last_called[0]
+            left_to_wait = min_interval - elapsed
+            
+            if left_to_wait > 0:
+                time.sleep(left_to_wait)
+            
+            last_called[0] = time.time()
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = 0
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        
+    def can_execute(self):
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                return True
+            return False
+        return True
+    
+    def record_success(self):
+        self.failure_count = 0
+        self.state = "CLOSED"
+        
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
 
 class MEXCTracker:
     def __init__(self):
@@ -59,7 +108,13 @@ class MEXCTracker:
         self.gs_client = None
         self.spreadsheet = None
         self.creds = None
-
+        self.sheets_circuit_breaker = CircuitBreaker()
+        
+        self.last_sheets_update = 0
+        self.sheets_update_interval = 60  # seconds
+        self.sheets_batch_data = {}
+        self.sheets_cache_time = 0
+        self.sheets_cache_duration = 30  # seconds
         # Price tracking
         self.price_history = {}  # symbol: {timestamp: price}
         self.last_price_check = None
@@ -1696,10 +1751,17 @@ class MEXCTracker:
             return f"{change:.2f}%"  # Negative numbers already have -
 
 
-
+    @rate_limit_google_sheets(calls_per_minute=45)
     def update_google_sheet_with_prices(self):
         """Update Google Sheet with prices - FIXED with better logging"""
         try:
+            current_time = time.time()
+            if hasattr(self, '_last_sheets_call'):
+                time_since_last = current_time - self._last_sheets_call
+                if time_since_last < 60:  # Wait at least 60 seconds between calls
+                    logger.info(f"⏸️ Rate limiting Sheets API call ({time_since_last:.1f}s since last)")
+                    return
+        
             if not self.gs_client or not self.spreadsheet:
                 logger.warning("❌ Google Sheets not available")
                 return
@@ -1795,12 +1857,106 @@ class MEXCTracker:
             error_msg = f"❌ <b>Google Sheets Update Failed</b>\n\nError: {str(e)}"
             self.send_broadcast_message(error_msg)
 
+    def get_cached_sheets_data(self):
+        """Get cached Google Sheets data to reduce API calls"""
+        current_time = time.time()
+        
+        if (current_time - self.sheets_cache_time < self.sheets_cache_duration and 
+            self.sheets_batch_data):
+            return self.sheets_batch_data
+            
+        # Fetch fresh data and cache it
+        try:
+            # Your data fetching logic
+            self.sheets_batch_data = self.fetch_all_sheets_data()
+            self.sheets_cache_time = current_time
+            return self.sheets_batch_data
+        except Exception as e:
+            logger.error(f"Failed to cache Sheets data: {e}")
+            return {}
+
+
+    def batch_sheets_operations(self, operations):
+        """Batch multiple Sheets operations into one API call"""
+        try:
+            if not operations:
+                return
+                
+            # Group operations by type and execute in batches
+            batch_size = 10  # Small batches to avoid timeouts
+            for i in range(0, len(operations), batch_size):
+                batch = operations[i:i + batch_size]
+                self.execute_sheets_batch(batch)
+                time.sleep(1)  # Rate limiting between batches
+                
+        except Exception as e:
+            logger.error(f"Batch Sheets operations failed: {e}")
+
+    def execute_sheets_batch(self, batch_operations):
+        """Execute a batch of Sheets operations"""
+        try:
+            if not self.spreadsheet:
+                return
+                
+            # Use batchUpdate for multiple operations
+            requests = []
+            for operation in batch_operations:
+                if operation['type'] == 'update':
+                    requests.append({
+                        'updateCells': {
+                            'range': operation['range'],
+                            'rows': operation['rows'],
+                            'fields': 'userEnteredValue,userEnteredFormat'
+                        }
+                    })
+            
+            if requests:
+                self.spreadsheet.batch_update({'requests': requests})
+                
+        except Exception as e:
+            logger.error(f"Batch execution failed: {e}")
 
 
 
 
+    def handle_sheets_api_error(self, error, operation_name):
+        """Handle Google Sheets API errors with exponential backoff"""
+        if '429' in str(error):
+            logger.warning(f"Google Sheets quota exceeded for {operation_name}")
+            # Implement exponential backoff
+            wait_time = min(300, 2 ** self.retry_count)  # Max 5 minutes
+            logger.info(f"Waiting {wait_time} seconds before retry")
+            time.sleep(wait_time)
+            self.retry_count += 1
+            return True
+        else:
+            logger.error(f"Google Sheets error in {operation_name}: {error}")
+            self.retry_count = 0
+            return False
 
-
+    def optimized_data_flow(self):
+        """Optimized data flow to minimize API calls"""
+        try:
+            # Step 1: Get all data in one go
+            unique_futures, exchange_stats = self.find_unique_futures_robust()
+            price_data = self.get_consistent_price_data()
+            
+            # Step 2: Analyze locally
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # Step 3: Prepare all Sheets data
+            sheets_operations = self.prepare_all_sheets_operations(
+                unique_futures, exchange_stats, analyzed_prices
+            )
+            
+            # Step 4: Execute in one batch (with rate limiting)
+            self.batch_sheets_operations(sheets_operations)
+            
+            # Step 5: Store historical data (with caching)
+            self.store_historical_data_with_cache(analyzed_prices)
+            
+        except Exception as e:
+            logger.error(f"Optimized data flow failed: {e}")
 
     def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices=None, historical_data=None):
         """Create Unique Futures sheet with historical data"""
@@ -4999,46 +5155,58 @@ class MEXCTracker:
     # ==================== SCHEDULER ====================
 
     def setup_scheduler(self):
-        """Setup scheduled tasks - FIXED"""
+        """Setup scheduled tasks with rate limiting and error handling"""
         try:
             # Clear any existing schedules
             schedule.clear()
             
-            # Unique futures monitoring
+            # Initialize rate limiting attributes
+            self.last_sheets_update = 0
+            self.sheets_update_interval = 300  # 5 minutes minimum between Sheets updates
+            self.sheets_retry_count = 0
+            self.sheets_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=300)
+            
+            # Unique futures monitoring (less frequent to reduce API calls)
             schedule.every(self.update_interval).minutes.do(
-                self.monitor_unique_futures_changes
+                self.safe_monitor_unique_futures_changes
             )
             
-            # Price monitoring (more frequent)
+            # Price monitoring (more frequent but doesn't use Sheets API)
             schedule.every(self.price_check_interval).minutes.do(
-                self.run_price_monitoring
+                self.safe_run_price_monitoring
             )
             
-            # Google Sheets update every 5 minutes
-            schedule.every(5).minutes.do(
-                self.update_google_sheet_with_prices
+            # Google Sheets update with rate limiting (increased to 10 minutes)
+            schedule.every(10).minutes.do(
+                self.safe_update_google_sheet_with_prices
             )
             
             # 4-hour chart reporting
             schedule.every(4).hours.do(
-                self.send_4h_growth_chart
+                self.safe_send_4h_growth_chart
             )
             
             # Data cleanup (once per day)
             schedule.every().day.at("02:00").do(
-                self.cleanup_old_price_data
+                self.safe_cleanup_old_price_data
             )
             
-            logger.info(f"✅ Scheduler setup complete:")
+            # Health check every 30 minutes
+            schedule.every(30).minutes.do(
+                self.health_check
+            )
+            
+            logger.info(f"✅ Optimized scheduler setup complete:")
             logger.info(f"   - Unique check: every {self.update_interval} minutes")
             logger.info(f"   - Price check: every {self.price_check_interval} minutes") 
-            logger.info(f"   - Google Sheets: every 5 minutes")
+            logger.info(f"   - Google Sheets: every 10 minutes (rate limited)")
             logger.info(f"   - 4h charts: every 4 hours")
             logger.info(f"   - Cleanup: daily at 02:00")
+            logger.info(f"   - Health check: every 30 minutes")
             
         except Exception as e:
             logger.error(f"Error setting up scheduler: {e}")
-
+            # Don't raise the exception, just log it so the bot can continue
     def run_scheduler(self):
         """Run the scheduler with better error handling"""
         while True:
