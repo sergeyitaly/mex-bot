@@ -215,97 +215,6 @@ class MEXCTracker:
 
 
 
-    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with price information - DEBUG VERSION"""
-        try:
-            worksheet = self.spreadsheet.worksheet('Unique Futures')
-            
-            # Clear existing data
-            worksheet.clear()
-            
-            # Enhanced headers with price changes
-            headers = [
-                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
-                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
-            ]
-            worksheet.update([headers], 'A1')
-            
-            # Prepare data
-            sheet_data = []
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # DEBUG: Check what's in analyzed_prices
-            debug_symbols = ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']  # Test symbols
-            logger.info("🔍 DEBUG - Checking analyzed_prices content:")
-            for symbol in debug_symbols:
-                price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
-                if price_info:
-                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')}")
-                else:
-                    logger.info(f"  ❌ {symbol}: Not in analyzed_prices")
-            
-            # Create mapping for quick price lookup
-            price_map = {item['symbol']: item for item in analyzed_prices}
-            logger.info(f"🔍 Price map size: {len(price_map)} symbols")
-            
-            # Check specific symbol in price_map
-            if 'QKC_USDT' in price_map:
-                qkc_info = price_map['QKC_USDT']
-                logger.info(f"🔍 QKC_USDT in price_map: ${qkc_info.get('price')}")
-            else:
-                logger.info("❌ QKC_USDT NOT in price_map")
-            
-            for symbol in sorted(unique_futures):
-                price_info = price_map.get(symbol)
-                changes = price_info.get('changes', {}) if price_info else {}
-                price = price_info.get('price') if price_info else None
-                
-                # DEBUG specific symbol
-                if symbol == 'QKC_USDT':
-                    logger.info(f"🔍 Processing QKC_USDT - price_info: {price_info is not None}, price: {price}")
-                
-                # Format price display
-                if price:
-                    if price >= 1:
-                        price_display = f"${price:.4f}"
-                    elif price >= 0.01:
-                        price_display = f"${price:.6f}"
-                    else:
-                        price_display = f"${price:.8f}"
-                else:
-                    price_display = 'N/A'
-                    # DEBUG: Log why specific symbols are N/A
-                    if symbol in ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']:
-                        logger.info(f"🔍 {symbol} marked as N/A - price: {price}, price_info: {price_info is not None}")
-                
-                row = [
-                    symbol,
-                    price_display,
-                    self.format_change_for_sheet(changes.get('5m')),
-                    self.format_change_for_sheet(changes.get('15m')),
-                    self.format_change_for_sheet(changes.get('30m')),
-                    self.format_change_for_sheet(changes.get('60m')),
-                    self.format_change_for_sheet(changes.get('240m')),
-                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
-                    'UNIQUE',
-                    current_time
-                ]
-                sheet_data.append(row)
-            
-            # Update sheet in batches
-            if sheet_data:
-                batch_size = 100
-                for i in range(0, len(sheet_data), batch_size):
-                    batch = sheet_data[i:i + batch_size]
-                    worksheet.update(batch, f'A{i+2}')
-                
-                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
-            else:
-                logger.warning("No unique futures data to update")
-                
-        except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
-
 
 
 
@@ -874,67 +783,6 @@ class MEXCTracker:
 
 
 
-    def update_price_analysis_sheet(self, analyzed_prices):
-        """Update Price Analysis sheet with top performers"""
-        try:
-            # Get or create Price Analysis sheet
-            try:
-                worksheet = self.spreadsheet.worksheet('Price Analysis')
-            except gspread.WorksheetNotFound:
-                worksheet = self.spreadsheet.add_worksheet(title='Price Analysis', rows=1000, cols=12)
-            
-            # Clear existing data
-            worksheet.clear()
-            
-            # Headers
-            headers = [
-                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
-                '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
-            ]
-            worksheet.update('A1', [headers])
-            
-            # Prepare data - top 50 performers
-            sheet_data = []
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            for i, item in enumerate(analyzed_prices[:50], 1):
-                changes = item.get('changes', {})
-                
-                # Determine trend
-                latest_change = item.get('latest_change', 0)
-                if latest_change > 5:
-                    trend = "🚀 STRONG UP"
-                elif latest_change > 2:
-                    trend = "🟢 UP"
-                elif latest_change < -5:
-                    trend = "🔻 STRONG DOWN"
-                elif latest_change < -2:
-                    trend = "🔴 DOWN"
-                else:
-                    trend = "⚪ FLAT"
-                
-                row = [
-                    i,
-                    item['symbol'],
-                    item.get('price', 'N/A'),
-                    self.format_change_for_sheet(changes.get('5m')),
-                    self.format_change_for_sheet(changes.get('15m')),
-                    self.format_change_for_sheet(changes.get('30m')),
-                    self.format_change_for_sheet(changes.get('60m')),
-                    self.format_change_for_sheet(changes.get('240m')),
-                    f"{item.get('score', 0):.2f}",
-                    trend,
-                    'N/A',  # Volume would require additional API call
-                    current_time
-                ]
-                sheet_data.append(row)
-            
-            # Update sheet
-            if sheet_data:
-                worksheet.update('A2', sheet_data)
-            
-        except Exception as e:
-            logger.error(f"Error updating Price Analysis sheet: {e}")
 
     def format_change_for_sheet(self, change):
         """Format change for Google Sheets with proper None handling"""
@@ -1361,42 +1209,722 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error cleaning up old price data: {e}")
 
+    def update_exchange_stats_sheet(self, spreadsheet, exchange_stats, timestamp):
+        """Update Exchange Stats sheet with proper data"""
+        try:
+            worksheet = spreadsheet.worksheet('Exchange Stats')
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            # Headers
+            headers = [
+                'Exchange', 'Futures Count', 'Status', 'Last Updated', 
+                'Success Rate', 'API Health'
+            ]
+            worksheet.update('A1', [headers])
+            
+            # Get actual exchange data
+            actual_stats = self.get_all_exchanges_futures_stats()
+            
+            stats_data = []
+            for exchange, count in actual_stats.items():
+                status = "✅ WORKING" if count > 0 else "❌ FAILED"
+                success_rate = "100%" if count > 0 else "0%"
+                health = "🟢 HEALTHY" if count > 0 else "🔴 OFFLINE"
+                
+                stats_data.append([
+                    exchange,
+                    count,
+                    status,
+                    timestamp,
+                    success_rate,
+                    health
+                ])
+            
+            if stats_data:
+                worksheet.update('A2', stats_data)
+                logger.info(f"✅ Updated Exchange Stats with {len(stats_data)} records")
+            
+            # Apply formatting for better visualization
+            try:
+                # Format status column with colors
+                worksheet.format('C2:C100', {
+                    "backgroundColor": {
+                        "red": 0.9, "green": 0.98, "blue": 0.9
+                    }
+                })
+            except Exception as format_error:
+                logger.warning(f"Could not format Exchange Stats: {format_error}")
+                
+        except Exception as e:
+            logger.error(f"Error updating Exchange Stats sheet: {e}")
+
+    def get_all_exchanges_futures_stats(self):
+        """Get actual futures count from all exchanges"""
+        try:
+            exchange_stats = {}
+            exchanges = {
+                'MEXC': self.get_mexc_futures,
+                'Binance': self.get_binance_futures,
+                'Bybit': self.get_bybit_futures,
+                'OKX': self.get_okx_futures,
+                'Gate.io': self.get_gate_futures,
+                'KuCoin': self.get_kucoin_futures,
+                'BingX': self.get_bingx_futures,
+                'BitGet': self.get_bitget_futures
+            }
+            
+            for name, method in exchanges.items():
+                try:
+                    futures = method()
+                    exchange_stats[name] = len(futures)
+                    logger.info(f"✅ {name}: {len(futures)} futures")
+                except Exception as e:
+                    exchange_stats[name] = 0
+                    logger.error(f"❌ {name} error: {e}")
+            
+            return exchange_stats
+            
+        except Exception as e:
+            logger.error(f"Error getting exchange stats: {e}")
+            return {}
+        
+
+
+    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with proper color formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            # Enhanced headers
+            headers = [
+                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            # Prepare data
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Create mapping for quick price lookup
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol)
+                changes = price_info.get('changes', {}) if price_info else {}
+                price = price_info.get('price') if price_info else None
+                
+                # Format price display
+                if price is not None:
+                    if price >= 1:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.8f}"
+                else:
+                    price_display = 'N/A'
+                
+                row = [
+                    symbol,
+                    price_display,
+                    self.format_change_for_sheets_with_colors(changes.get('5m')),
+                    self.format_change_for_sheets_with_colors(changes.get('15m')),
+                    self.format_change_for_sheets_with_colors(changes.get('30m')),
+                    self.format_change_for_sheets_with_colors(changes.get('60m')),
+                    self.format_change_for_sheets_with_colors(changes.get('240m')),
+                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
+                    'UNIQUE',
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            # Update sheet in batches
+            if sheet_data:
+                batch_size = 100
+                for i in range(0, len(sheet_data), batch_size):
+                    batch = sheet_data[i:i + batch_size]
+                    worksheet.update(batch, f'A{i+2}')
+                
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+                
+                # Apply color formatting after data is inserted
+                self.apply_color_formatting_to_sheets(worksheet, len(sheet_data))
+            else:
+                logger.warning("No unique futures data to update")
+                
+        except Exception as e:
+            logger.error(f"Error updating Unique Futures sheet: {e}")
+
+    def format_change_for_sheets_with_colors(self, change):
+        """Format change for Google Sheets with proper +/- signs"""
+        if change is None:
+            return 'N/A'
+        
+        # Always show + sign for positive changes, - sign for negative
+        if change > 0:
+            return f"+{change:.2f}%"
+        else:
+            return f"{change:.2f}%"  # Negative numbers already have - sign
+
+    def apply_color_formatting_to_sheets(self, worksheet, data_rows_count):
+        """Apply color formatting to Google Sheets for better visualization - FIXED"""
+        try:
+            if data_rows_count == 0:
+                return
+                
+            # Define the range for change columns (C to G for 5m to 4h changes)
+            change_columns = ['C', 'D', 'E', 'F', 'G']
+            
+            # Prepare all format requests
+            format_requests = []
+            
+            for col in change_columns:
+                range_str = f"{col}2:{col}{data_rows_count + 1}"
+                
+                # Positive changes (contains "+")
+                format_requests.append({
+                    'addConditionalFormatRule': {
+                        'rule': {
+                            'ranges': [{'sheetId': worksheet.id, 'startRowIndex': 1, 'endRowIndex': data_rows_count + 1, 
+                                    'startColumnIndex': ord(col) - 65, 'endColumnIndex': ord(col) - 64}],
+                            'booleanRule': {
+                                'condition': {
+                                    'type': 'TEXT_CONTAINS',
+                                    'values': [{'userEnteredValue': '+'}]
+                                },
+                                'format': {
+                                    'backgroundColor': {'red': 0.85, 'green': 0.98, 'blue': 0.85},
+                                    'textFormat': {
+                                        'foregroundColor': {'red': 0.0, 'green': 0.5, 'blue': 0.0},
+                                        'bold': True
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                
+                # Negative changes (contains "-")
+                format_requests.append({
+                    'addConditionalFormatRule': {
+                        'rule': {
+                            'ranges': [{'sheetId': worksheet.id, 'startRowIndex': 1, 'endRowIndex': data_rows_count + 1,
+                                    'startColumnIndex': ord(col) - 65, 'endColumnIndex': ord(col) - 64}],
+                            'booleanRule': {
+                                'condition': {
+                                    'type': 'TEXT_CONTAINS',
+                                    'values': [{'userEnteredValue': '-'}]
+                                },
+                                'format': {
+                                    'backgroundColor': {'red': 1.0, 'green': 0.9, 'blue': 0.9},
+                                    'textFormat': {
+                                        'foregroundColor': {'red': 0.8, 'green': 0.0, 'blue': 0.0},
+                                        'bold': True
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                
+                # Neutral (N/A values)
+                format_requests.append({
+                    'addConditionalFormatRule': {
+                        'rule': {
+                            'ranges': [{'sheetId': worksheet.id, 'startRowIndex': 1, 'endRowIndex': data_rows_count + 1,
+                                    'startColumnIndex': ord(col) - 65, 'endColumnIndex': ord(col) - 64}],
+                            'booleanRule': {
+                                'condition': {
+                                    'type': 'TEXT_CONTAINS',
+                                    'values': [{'userEnteredValue': 'N/A'}]
+                                },
+                                'format': {
+                                    'backgroundColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95},
+                                    'textFormat': {
+                                        'foregroundColor': {'red': 0.3, 'green': 0.3, 'blue': 0.3}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+            
+            # Score column gradient (column H)
+            score_col_index = ord('H') - 65  # H is column 7
+            format_requests.append({
+                'addConditionalFormatRule': {
+                    'rule': {
+                        'ranges': [{'sheetId': worksheet.id, 'startRowIndex': 1, 'endRowIndex': data_rows_count + 1,
+                                'startColumnIndex': score_col_index, 'endColumnIndex': score_col_index + 1}],
+                        'gradientRule': {
+                            'minpoint': {
+                                'color': {'red': 1.0, 'green': 0.9, 'blue': 0.9},  # Light red
+                                'type': 'MIN'
+                            },
+                            'midpoint': {
+                                'color': {'red': 1.0, 'green': 1.0, 'blue': 0.9},  # Light yellow
+                                'type': 'NUMBER',
+                                'value': '0'
+                            },
+                            'maxpoint': {
+                                'color': {'red': 0.85, 'green': 0.98, 'blue': 0.85},  # Light green
+                                'type': 'MAX'
+                            }
+                        }
+                    }
+                }
+            })
+            
+            # Apply all formatting requests
+            if format_requests:
+                worksheet.spreadsheet.batch_update({'requests': format_requests})
+                logger.info(f"🎨 Applied {len(format_requests)} color formatting rules")
+            
+        except Exception as e:
+            logger.error(f"Error applying color formatting: {e}")
+    
+    
+    def update_dashboard_with_comprehensive_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
+        """Update dashboard with comprehensive statistics"""
+        if not self.spreadsheet:
+            return
+        
+        try:
+            worksheet = self.spreadsheet.worksheet("Dashboard")
+            
+            # Get actual exchange statistics
+            actual_exchange_stats = self.get_all_exchanges_futures_stats()
+            working_exchanges = sum(1 for count in actual_exchange_stats.values() if count > 0)
+            total_exchanges = len(actual_exchange_stats)
+            total_futures = sum(actual_exchange_stats.values())
+            
+            # Calculate price statistics
+            valid_prices = len([p for p in analyzed_prices if p.get('price') is not None]) if analyzed_prices else 0
+            price_coverage = (valid_prices / unique_futures_count) * 100 if unique_futures_count > 0 else 0
+            
+            # Get top performers
+            top_performers = []
+            if analyzed_prices:
+                sorted_prices = sorted(analyzed_prices, key=lambda x: x.get('score', 0), reverse=True)
+                top_performers = sorted_prices[:3]
+            
+            stats_update = [
+                ["🤖 MEXC FUTURES AUTO-UPDATE DASHBOARD", ""],
+                ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["Update Interval", f"{self.update_interval} minutes"],
+                ["Price Check Interval", f"{self.price_check_interval} minutes"],
+                ["", ""],
+                ["📊 EXCHANGE STATISTICS", ""],
+                ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+                ["Total Futures", f"{total_futures}"],
+                ["MEXC Futures", f"{actual_exchange_stats.get('MEXC', 0)}"],
+                ["Unique MEXC Futures", f"{unique_futures_count} 🎯"],
+                ["", ""],
+                ["💰 PRICE ANALYSIS", ""],
+                ["Symbols with Price Data", f"{valid_prices}/{unique_futures_count}"],
+                ["Price Data Coverage", f"{price_coverage:.1f}%"],
+                ["Top Performer Score", f"{top_performers[0].get('score', 0):.1f}" if top_performers else "N/A"],
+                ["Market Sentiment", self.get_market_sentiment(analyzed_prices)],
+                ["", ""],
+                ["⚡ PERFORMANCE", ""],
+                ["Next Data Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
+                ["Next Price Update", (datetime.now() + timedelta(minutes=self.price_check_interval)).strftime('%H:%M:%S')],
+                ["Next 4h Chart", (datetime.now() + timedelta(hours=4)).strftime('%H:%M:%S')],
+                ["Status", "🟢 RUNNING"],
+            ]
+            
+            # Update dashboard
+            worksheet.clear()
+            worksheet.update(stats_update, 'A1')
+            
+            # Apply dashboard formatting
+            self.apply_dashboard_formatting(worksheet)
+            
+            logger.info("✅ Dashboard updated with comprehensive stats")
+            
+        except Exception as e:
+            logger.error(f"Error updating dashboard: {e}")
+
+    def apply_dashboard_formatting(self, worksheet):
+        """Apply formatting to dashboard"""
+        try:
+            # Format title row
+            worksheet.format('A1:B1', {
+                'textFormat': {'bold': True, 'fontSize': 14},
+                'backgroundColor': {'red': 0.8, 'green': 0.9, 'blue': 1.0},
+                'horizontalAlignment': 'CENTER'
+            })
+            
+            # Format section headers
+            section_rows = [6, 12, 18]  # Adjust based on your actual row numbers
+            for row in section_rows:
+                worksheet.format(f'A{row}:B{row}', {
+                    'textFormat': {'bold': True},
+                    'backgroundColor': {'red': 0.95, 'green': 0.95, 'blue': 0.95}
+                })
+                
+        except Exception as e:
+            logger.warning(f"Could not format dashboard: {e}")
+
+    def get_market_sentiment(self, analyzed_prices):
+        """Calculate overall market sentiment"""
+        if not analyzed_prices:
+            return "N/A"
+        
+        positive_symbols = 0
+        total_symbols = 0
+        
+        for item in analyzed_prices:
+            changes = item.get('changes', {})
+            # Use 1h change for sentiment
+            change_1h = changes.get('60m')
+            if change_1h is not None:
+                total_symbols += 1
+                if change_1h > 0:
+                    positive_symbols += 1
+        
+        if total_symbols == 0:
+            return "N/A"
+        
+        sentiment_ratio = positive_symbols / total_symbols
+        
+        if sentiment_ratio > 0.7:
+            return "🟢 BULLISH"
+        elif sentiment_ratio > 0.5:
+            return "🟡 NEUTRAL"
+        else:
+            return "🔴 BEARISH"
+
+
+    def apply_color_formatting_to_all_sheets(self):
+        """Apply color formatting to all relevant sheets"""
+        try:
+            if not self.spreadsheet:
+                return
+                
+            sheets_to_format = ['Unique Futures', 'Price Analysis', 'MEXC Analysis']
+            
+            for sheet_name in sheets_to_format:
+                try:
+                    worksheet = self.spreadsheet.worksheet(sheet_name)
+                    data = worksheet.get_all_values()
+                    
+                    if len(data) > 1:  # Has data beyond headers
+                        data_rows_count = len(data) - 1
+                        self.apply_simple_color_formatting(worksheet, data_rows_count)
+                        logger.info(f"🎨 Applied formatting to {sheet_name}")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not format {sheet_name}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"Error applying color formatting to all sheets: {e}")
+
+    def apply_simple_color_formatting(self, worksheet, data_rows_count):
+        """Apply simple color formatting to a worksheet"""
+        try:
+            if data_rows_count == 0:
+                return
+                
+            # Get all data to check values
+            all_data = worksheet.get_all_values()
+            if len(all_data) < 2:
+                return
+                
+            # Define which columns contain percentage changes for each sheet
+            sheet_columns = {
+                'Unique Futures': ['C', 'D', 'E', 'F', 'G'],  # 5m, 15m, 30m, 1h, 4h changes
+                'Price Analysis': ['D', 'E', 'F', 'G', 'H'],  # 5m, 15m, 30m, 1h, 4h changes
+                'MEXC Analysis': ['F', 'G', 'H']  # 5m, 1h, 4h changes
+            }
+            
+            sheet_name = worksheet.title
+            change_columns = sheet_columns.get(sheet_name, [])
+            
+            if not change_columns:
+                return
+                
+            # Format each row
+            for row_idx in range(2, data_rows_count + 2):  # Start from row 2 (after headers)
+                try:
+                    # Check the first change column to determine the trend
+                    first_col = change_columns[0]
+                    cell_value = worksheet.acell(f'{first_col}{row_idx}').value
+                    
+                    if cell_value and cell_value != 'N/A':
+                        # Create range for all change columns in this row
+                        col_range = f'{change_columns[0]}{row_idx}:{change_columns[-1]}{row_idx}'
+                        
+                        if '+' in cell_value:
+                            # Positive - green background
+                            worksheet.format(col_range, {
+                                "backgroundColor": {"red": 0.85, "green": 0.98, "blue": 0.85},
+                                "horizontalAlignment": "CENTER"
+                            })
+                        elif '-' in cell_value:
+                            # Negative - red background
+                            worksheet.format(col_range, {
+                                "backgroundColor": {"red": 1.0, "green": 0.9, "blue": 0.9},
+                                "horizontalAlignment": "CENTER"
+                            })
+                        else:
+                            # Neutral - gray background
+                            worksheet.format(col_range, {
+                                "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95},
+                                "horizontalAlignment": "CENTER"
+                            })
+                            
+                except Exception as row_error:
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error in simple color formatting: {e}")
+
+    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with colorful formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            headers = [
+                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol)
+                changes = price_info.get('changes', {}) if price_info else {}
+                price = price_info.get('price') if price_info else None
+                
+                # Format price
+                if price is not None:
+                    if price >= 1:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.8f}"
+                else:
+                    price_display = 'N/A'
+                
+                # Format changes with clear +/-
+                row = [
+                    symbol,
+                    price_display,
+                    self.format_change_with_sign(changes.get('5m')),
+                    self.format_change_with_sign(changes.get('15m')),
+                    self.format_change_with_sign(changes.get('30m')),
+                    self.format_change_with_sign(changes.get('60m')),
+                    self.format_change_with_sign(changes.get('240m')),
+                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
+                    'UNIQUE',
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:J{len(sheet_data) + 1}', sheet_data)
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+                
+                # Apply color formatting
+                self.apply_simple_color_formatting(worksheet, len(sheet_data))
+                
+        except Exception as e:
+            logger.error(f"Error updating Unique Futures sheet: {e}")
+
+    def update_price_analysis_sheet(self, analyzed_prices):
+        """Update Price Analysis sheet with colorful formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Price Analysis')
+            worksheet.clear()
+            
+            headers = [
+                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+                '1h %', '4h %', 'Score', 'Trend', 'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Take top 50 performers
+            top_performers = analyzed_prices[:50] if analyzed_prices else []
+            
+            for i, item in enumerate(top_performers, 1):
+                changes = item.get('changes', {})
+                
+                # Determine trend
+                score = item.get('score', 0)
+                if score > 5:
+                    trend = "🚀 STRONG UP"
+                elif score > 2:
+                    trend = "🟢 UP"
+                elif score < -5:
+                    trend = "🔻 STRONG DOWN"
+                elif score < -2:
+                    trend = "🔴 DOWN"
+                else:
+                    trend = "⚪ FLAT"
+                
+                # Format price
+                price = item.get('price')
+                if price is not None:
+                    if price >= 1:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.8f}"
+                else:
+                    price_display = 'N/A'
+                
+                row = [
+                    i,
+                    item['symbol'],
+                    price_display,
+                    self.format_change_with_sign(changes.get('5m')),
+                    self.format_change_with_sign(changes.get('15m')),
+                    self.format_change_with_sign(changes.get('30m')),
+                    self.format_change_with_sign(changes.get('60m')),
+                    self.format_change_with_sign(changes.get('240m')),
+                    f"{score:.2f}",
+                    trend,
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
+                
+                # Apply color formatting
+                self.apply_simple_color_formatting(worksheet, len(sheet_data))
+                
+                logger.info(f"✅ Updated Price Analysis with {len(sheet_data)} records")
+                
+        except Exception as e:
+            logger.error(f"Error updating Price Analysis sheet: {e}")
+
+    def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
+        """Update MEXC Analysis sheet with colorful formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('MEXC Analysis')
+            worksheet.clear()
+            
+            headers = [
+                'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
+                'Current Price', '5m Change %', '1h Change %', '4h Change %', 
+                'Status', 'Unique', 'Timestamp'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            # Get only MEXC futures
+            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+            
+            sheet_data = []
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for future in mexc_futures:
+                symbol = future['symbol']
+                normalized = self.normalize_symbol_for_comparison(symbol)
+                exchanges_list = symbol_coverage.get(normalized, set())
+                available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+                exchange_count = len(exchanges_list)
+                status = "Unique" if exchange_count == 1 else "Multi-exchange"
+                unique_flag = "✅" if exchange_count == 1 else "🔸"
+                
+                # Get price info
+                price_info = price_map.get(symbol, {})
+                changes = price_info.get('changes', {})
+                price = price_info.get('price')
+                
+                # Format price
+                if price is not None:
+                    if price >= 1:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.8f}"
+                else:
+                    price_display = 'N/A'
+                
+                row = [
+                    symbol,
+                    normalized,
+                    available_on,
+                    exchange_count,
+                    price_display,
+                    self.format_change_with_sign(changes.get('5m')),
+                    self.format_change_with_sign(changes.get('60m')),
+                    self.format_change_with_sign(changes.get('240m')),
+                    status,
+                    unique_flag,
+                    timestamp
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
+                
+                # Apply color formatting
+                self.apply_simple_color_formatting(worksheet, len(sheet_data))
+                
+                logger.info(f"✅ Updated MEXC Analysis with {len(sheet_data)} records")
+                
+        except Exception as e:
+            logger.error(f"Error updating MEXC Analysis sheet: {e}")
+
+    def format_change_with_sign(self, change):
+        """Format change with clear + sign for positive, - for negative"""
+        if change is None:
+            return 'N/A'
+        
+        # Always show + for positive numbers
+        if change > 0:
+            return f"+{change:.2f}%"
+        else:
+            return f"{change:.2f}%"  # Negative numbers already have -
+
+
+
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with proper historical price changes"""
+        """Update Google Sheet with colorful formatting on all sheets"""
         if not self.gs_client or not self.spreadsheet:
             return
         
         try:
-            logger.info("🔄 Starting Google Sheet update with historical data...")
+            logger.info("🔄 Starting Google Sheet update with colorful formatting...")
             
-            # Get unique futures
-            unique_futures, exchange_stats = self.find_unique_futures_robust()
-            logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
-            
-            # Get current price data
+            # Get data
+            unique_futures, _ = self.find_unique_futures_robust()
             batch_data = self.get_mexc_prices_batch_working()
-            logger.info(f"📊 Batch data collected: {len(batch_data)} symbols")
             
-            # Store price history first
+            # Store price history
             self.store_price_history(batch_data)
             
-            # Create price_data with proper historical changes
+            # Create price_data
             price_data = {}
-            matched_symbols = 0
-            
             for symbol in unique_futures:
                 current_price_info = None
                 
-                # Find current price
                 if symbol in batch_data:
                     current_price_info = batch_data[symbol]
                 else:
-                    # Try alternative formats
-                    alt_formats = [
-                        symbol.replace('_', ''),
-                        symbol.replace('_', '-'), 
-                        symbol.replace('_', '/'),
-                    ]
+                    alt_formats = [symbol.replace('_', ''), symbol.replace('_', '-'), symbol.replace('_', '/')]
                     for alt_format in alt_formats:
                         if alt_format in batch_data:
                             current_price_info = batch_data[alt_format].copy()
@@ -1405,8 +1933,6 @@ class MEXCTracker:
                 
                 if current_price_info and current_price_info.get('price') is not None:
                     current_price = current_price_info['price']
-                    
-                    # Calculate proper historical changes from Google Sheets data
                     historical_changes = self.calculate_historical_changes_from_sheets(symbol, current_price)
                     
                     price_data[symbol] = {
@@ -1416,7 +1942,6 @@ class MEXCTracker:
                         'timestamp': datetime.now(),
                         'source': current_price_info.get('source', 'historical')
                     }
-                    matched_symbols += 1
                 else:
                     price_data[symbol] = {
                         'symbol': symbol,
@@ -1427,32 +1952,29 @@ class MEXCTracker:
                     }
             
             analyzed_prices = self.analyze_price_movements(price_data)
+            exchange_stats = self.get_all_exchanges_futures_stats()
             
-            # Calculate coverage statistics
-            unique_with_prices = len([s for s in unique_futures if s in price_data and price_data[s].get('price') is not None])
-            coverage_percent = (unique_with_prices / len(unique_futures)) * 100 if unique_futures else 0
-            
-            logger.info(f"💰 Price coverage: {unique_with_prices}/{len(unique_futures)} ({coverage_percent:.1f}%)")
-            
-            # Update sheets with proper historical data
+            # Update all sheets
             self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             self.update_price_analysis_sheet(analyzed_prices)
-            
-            # Update dashboard
-            self.update_dashboard_with_comprehensive_stats(
-                exchange_stats, 
-                len(unique_futures),
-                len(unique_futures), 
-                analyzed_prices
+            self.update_mexc_analysis_sheet_with_prices(
+                self.get_all_futures_data(), 
+                self.get_symbol_coverage(),
+                analyzed_prices,
+                datetime.now().isoformat()
             )
+            self.update_exchange_stats_sheet(self.spreadsheet, exchange_stats, datetime.now().isoformat())
             
-            # Store calculated changes to Historical Data sheet
-            self.store_calculated_changes(analyzed_prices)
+            # Apply color formatting to all sheets
+            self.apply_color_formatting_to_all_sheets()
             
-            logger.info("✅ Google Sheet updated with historical price changes")
+            logger.info("✅ Google Sheets updated with colorful formatting")
             
         except Exception as e:
-            logger.error(f"Error updating Google Sheet with historical data: {e}")
+            logger.error(f"Error updating Google Sheets: {e}")
+
+
+
 
 
 
@@ -3057,38 +3579,6 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error updating All Futures sheet: {e}")
 
-    def update_exchange_stats_sheet(self, spreadsheet, exchange_stats, timestamp):
-        """Update Exchange Stats sheet"""
-        try:
-            worksheet = spreadsheet.worksheet('Exchange Stats')
-            
-            # Clear existing data (keep headers)
-            if worksheet.row_count > 1:
-                worksheet.clear()
-                # Re-add headers
-                worksheet.update('A1', [[
-                    'Exchange', 'Futures Count', 'Status', 'Last Updated', 
-                    'Success Rate', 'Price Data Available'
-                ]])
-            
-            stats_data = []
-            for exchange, count in exchange_stats.items():
-                status = "✅ WORKING" if count > 0 else "❌ FAILED"
-                stats_data.append([
-                    exchange,
-                    count,
-                    status,
-                    timestamp,
-                    "100%",  # Placeholder
-                    "✅" if count > 0 else "❌"
-                ])
-            
-            if stats_data:
-                worksheet.update('A2', stats_data)
-                logger.info(f"Updated Exchange Stats with {len(stats_data)} records")
-            
-        except Exception as e:
-            logger.error(f"Error updating Exchange Stats sheet: {e}")
 
     def update_dashboard_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
         """Update dashboard statistics - simplified version"""
@@ -3122,149 +3612,7 @@ class MEXCTracker:
             logger.error(f"Error updating dashboard stats: {e}")
 
 
-    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with proper historical price changes"""
-        try:
-            worksheet = self.spreadsheet.worksheet('Unique Futures')
-            
-            # Clear existing data
-            worksheet.clear()
-            
-            # Enhanced headers with proper timeframes
-            headers = [
-                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
-                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
-            ]
-            worksheet.update([headers], 'A1')
-            
-            # Prepare data
-            sheet_data = []
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Create mapping for quick price lookup
-            price_map = {item['symbol']: item for item in analyzed_prices}
-            
-            for symbol in sorted(unique_futures):
-                price_info = price_map.get(symbol)
-                changes = price_info.get('changes', {}) if price_info else {}
-                price = price_info.get('price') if price_info else None
-                
-                # Format price display
-                if price is not None:
-                    if price >= 1:
-                        price_display = f"${price:.4f}"
-                    elif price >= 0.01:
-                        price_display = f"${price:.6f}"
-                    else:
-                        price_display = f"${price:.8f}"
-                else:
-                    price_display = 'N/A'
-                
-                row = [
-                    symbol,
-                    price_display,
-                    self.format_change_for_sheet(changes.get('5m')),
-                    self.format_change_for_sheet(changes.get('15m')),
-                    self.format_change_for_sheet(changes.get('30m')),
-                    self.format_change_for_sheet(changes.get('60m')),  # 1h
-                    self.format_change_for_sheet(changes.get('240m')), # 4h
-                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
-                    'UNIQUE',
-                    current_time
-                ]
-                sheet_data.append(row)
-            
-            # Update sheet in batches
-            if sheet_data:
-                batch_size = 100
-                for i in range(0, len(sheet_data), batch_size):
-                    batch = sheet_data[i:i + batch_size]
-                    worksheet.update(batch, f'A{i+2}')
-                
-                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
-            else:
-                logger.warning("No unique futures data to update")
-                
-        except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet with prices: {e}")
-                            
-    def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
-        """Update MEXC Analysis sheet with price data"""
-        try:
-            worksheet = self.spreadsheet.worksheet('MEXC Analysis')
-            
-            # Get only MEXC futures
-            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
-            logger.info(f"Updating MEXC Analysis with {len(mexc_futures)} futures")
-            
-            if not mexc_futures:
-                logger.warning("No MEXC futures found to analyze")
-                return
-            
-            # Clear the sheet completely and set up headers
-            worksheet.clear()
-            headers = [
-                'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
-                'Current Price', '5m Change %', '1h Change %', '4h Change %', 
-                'Status', 'Unique', 'Timestamp'
-            ]
-            worksheet.update('A1', [headers])
-            
-            mexc_data = []
-            
-            # Create price mapping
-            price_map = {item['symbol']: item for item in analyzed_prices}
-            
-            for future in mexc_futures:
-                try:
-                    symbol = future['symbol']
-                    normalized = self.normalize_symbol_for_comparison(symbol)
-                    exchanges_list = symbol_coverage.get(normalized, set())
-                    available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
-                    exchange_count = len(exchanges_list)
-                    status = "Unique" if exchange_count == 1 else "Multi-exchange"
-                    unique_flag = "✅" if exchange_count == 1 else "🔸"
-                    
-                    # Get price info
-                    price_info = price_map.get(symbol, {})
-                    changes = price_info.get('changes', {})
-                    
-                    row = [
-                        symbol,
-                        normalized,
-                        available_on,
-                        exchange_count,
-                        price_info.get('price', 'N/A'),
-                        self.format_change_for_sheet(changes.get('5m')),
-                        self.format_change_for_sheet(changes.get('60m')),
-                        self.format_change_for_sheet(changes.get('240m')),
-                        status,
-                        unique_flag,
-                        timestamp
-                    ]
-                    mexc_data.append(row)
-                    
-                except Exception as e:
-                    logger.error(f"Error processing MEXC future {future.get('symbol', 'unknown')}: {e}")
-                    continue
-            
-            logger.info(f"Processed {len(mexc_data)} MEXC futures for analysis")
-            
-            # Write data in batches
-            if mexc_data:
-                batch_size = 100
-                for i in range(0, len(mexc_data), batch_size):
-                    batch = mexc_data[i:i + batch_size]
-                    start_row = i + 2  # +2 because row 1 is headers
-                    range_str = f'A{start_row}'
-                    worksheet.update(range_str, batch)
-                
-                logger.info(f"✅ Successfully updated MEXC Analysis with {len(mexc_data)} records")
-            else:
-                logger.warning("No MEXC data to write to analysis sheet")
-            
-        except Exception as e:
-            logger.error(f"❌ Error updating MEXC Analysis sheet: {e}")
+                          
 
     def update_price_analysis_sheet(self, analyzed_prices):
         """Update Price Analysis sheet with top performers"""
@@ -3904,7 +4252,7 @@ class MEXCTracker:
             "/datastatus - Data status\n"
             "/analysis - Full analysis\n"
             "/growth - Grouwth chart\n"
-            "/rowthreport - Growthreport chart\n"
+            "/growthreport - Growthreport chart\n"
             "/4hchart - 4h chart\n"
             "/trends - Trends chart\n"
             "/dataflow - Dataflow SYmbol"
@@ -4563,7 +4911,7 @@ class MEXCTracker:
             "/datastatus - Data status\n"
             "/analysis - Full analysis report\n"
             "/growth - Grouwth chart\n"
-            "/rowthreport - Growthreport chart\n"
+            "/growthreport - Growthreport chart\n"
             "/4hchart - 4h chart\n"
             "/trends - Trends chart\n"
             "/dataflow - Dataflow SYmbol"
