@@ -24,7 +24,6 @@ import re
 from typing import Optional, List, Dict, Set, Any, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from functools import wraps
 
 # Load environment variables
 load_dotenv()
@@ -37,52 +36,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-
-def rate_limit_google_sheets(calls_per_minute=60):
-    """Decorator to rate limit Google Sheets API calls"""
-    min_interval = 60.0 / calls_per_minute
-    last_called = [0.0]
-    
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            elapsed = time.time() - last_called[0]
-            left_to_wait = min_interval - elapsed
-            
-            if left_to_wait > 0:
-                time.sleep(left_to_wait)
-            
-            last_called[0] = time.time()
-            return func(*args, **kwargs)
-        return wrapper
-    return decorator
-
-
-class CircuitBreaker:
-    def __init__(self, failure_threshold=5, recovery_timeout=60):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.failure_count = 0
-        self.last_failure_time = 0
-        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
-        
-    def can_execute(self):
-        if self.state == "OPEN":
-            if time.time() - self.last_failure_time > self.recovery_timeout:
-                self.state = "HALF_OPEN"
-                return True
-            return False
-        return True
-    
-    def record_success(self):
-        self.failure_count = 0
-        self.state = "CLOSED"
-        
-    def record_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        if self.failure_count >= self.failure_threshold:
-            self.state = "OPEN"
 
 class MEXCTracker:
     def __init__(self):
@@ -108,7 +61,7 @@ class MEXCTracker:
         self.gs_client = None
         self.spreadsheet = None
         self.creds = None
-        self.sheets_circuit_breaker = CircuitBreaker()
+
         
         self.last_sheets_update = 0
         self.sheets_update_interval = 60  # seconds
@@ -1751,7 +1704,6 @@ class MEXCTracker:
             return f"{change:.2f}%"  # Negative numbers already have -
 
 
-    @rate_limit_google_sheets(calls_per_minute=45)
     def update_google_sheet_with_prices(self):
         """Update Google Sheet with prices - FIXED with better logging"""
         try:
@@ -5283,33 +5235,32 @@ class MEXCTracker:
             
             # Initialize rate limiting attributes
             self.last_sheets_update = 0
-            self.sheets_update_interval = 300  # 5 minutes minimum between Sheets updates
+            self.sheets_update_interval = 60  # 1 minute minimum between Sheets updates
             self.sheets_retry_count = 0
-            self.sheets_circuit_breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=300)
             
             # Unique futures monitoring (less frequent to reduce API calls)
             schedule.every(self.update_interval).minutes.do(
-                self.safe_monitor_unique_futures_changes
+                self.monitor_unique_futures_changes
             )
             
             # Price monitoring (more frequent but doesn't use Sheets API)
             schedule.every(self.price_check_interval).minutes.do(
-                self.safe_run_price_monitoring
+                self.run_price_monitoring
             )
             
             # Google Sheets update with rate limiting (increased to 5 minutes)
             schedule.every(5).minutes.do(
-                self.safe_update_google_sheet_with_prices
+                self.update_google_sheet_with_prices
             )
             
             # 4-hour chart reporting
             schedule.every(4).hours.do(
-                self.safe_send_4h_growth_chart
+                self.send_4h_growth_chart
             )
             
             # Data cleanup (once per day)
             schedule.every().day.at("02:00").do(
-                self.safe_cleanup_old_price_data
+                self.cleanup_old_price_data
             )
             
             # Health check every 30 minutes
