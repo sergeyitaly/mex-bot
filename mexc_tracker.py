@@ -4626,21 +4626,21 @@ class MEXCTracker:
                         "❌ <b>Failed to initialize Google Sheets.</b>\n\n"
                         "Please check:\n"
                         "1. GOOGLE_CREDENTIALS_JSON environment variable\n"
-                        "2. GOOGLE_SHEET_EMAIL environment variable\n"  # CHANGED: ID → EMAIL
+                        "2. GOOGLE_SHEET_EMAIL environment variable\n"
                         "3. Spreadsheet sharing permissions\n"
                         "4. Service account has editor access to the spreadsheet"
                     )
                     return False
             
-            # Step 2: Ensure sheets are initialized
-            update.message.reply_html("📋 <b>Step 2:</b> Ensuring all sheets are initialized...")
+            # Step 2: Ensure sheets are initialized (only 2 sheets now)
+            update.message.reply_html("📋 <b>Step 2:</b> Ensuring sheets are initialized...")
             if not self.ensure_sheets_initialized():
                 update.message.reply_html("❌ <b>Failed to initialize sheets.</b>\n\nPlease check if the Google Sheet exists and is accessible.")
                 return False
             
-            # Step 3: Run the comprehensive update
-            update.message.reply_html("📊 <b>Step 3:</b> Running comprehensive data update...")
-            self.update_google_sheet()
+            # Step 3: Run the SIMPLIFIED update (2 sheets only)
+            update.message.reply_html("📊 <b>Step 3:</b> Running simplified data update (2 sheets)...")
+            self.update_google_sheet_with_prices()  # CHANGED: This is the correct method
             
             # Get spreadsheet URL for the message
             sheet_url = self.spreadsheet.url if self.spreadsheet else 'Not available'
@@ -4650,11 +4650,8 @@ class MEXCTracker:
                 f"📊 <a href='{sheet_url}'>Open Your Sheet</a>\n\n"
                 f"<b>Sheets Updated:</b>\n"
                 f"• 📈 Dashboard - Overview and stats\n"
-                f"• 🎯 Unique Futures - MEXC-only symbols\n"
-                f"• 📋 All Futures - All exchange data\n"
-                f"• 🔍 MEXC Analysis - Detailed coverage\n"
-                f"• 💰 Price Analysis - Top performers\n"
-                f"• 📊 Exchange Stats - Performance metrics",
+                f"• 🎯 Unique Futures - All data with Trend column\n"
+                f"<i>Price Analysis sheet has been removed and Trend column moved to Unique Futures</i>",
                 reply_markup=ReplyKeyboardRemove()
             )
             return True
@@ -4665,14 +4662,15 @@ class MEXCTracker:
                 f"<b>Error:</b> {str(e)}\n\n"
                 f"<b>Debugging steps:</b>\n"
                 f"1. Check GOOGLE_CREDENTIALS_JSON is valid JSON\n"
-                f"2. Verify GOOGLE_SHEET_EMAIL is correct\n"  # CHANGED: ID → EMAIL
+                f"2. Verify GOOGLE_SHEET_EMAIL is correct\n"
                 f"3. Ensure service account has edit permissions\n"
                 f"4. Check if spreadsheet exists and is accessible"
             )
             update.message.reply_html(error_msg)
             logger.error(f"Force update command error: {e}")
             return False
-        
+
+
     def _make_request_with_retry(self, url: str, timeout: int = 15, max_retries: int = 3) -> Optional[requests.Response]:
         """Make request with retry logic and proxy rotation"""
         for attempt in range(max_retries):
