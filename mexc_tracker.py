@@ -5176,8 +5176,8 @@ class MEXCTracker:
                 self.safe_run_price_monitoring
             )
             
-            # Google Sheets update with rate limiting (increased to 10 minutes)
-            schedule.every(10).minutes.do(
+            # Google Sheets update with rate limiting (increased to 5 minutes)
+            schedule.every(5).minutes.do(
                 self.safe_update_google_sheet_with_prices
             )
             
@@ -5199,7 +5199,7 @@ class MEXCTracker:
             logger.info(f"✅ Optimized scheduler setup complete:")
             logger.info(f"   - Unique check: every {self.update_interval} minutes")
             logger.info(f"   - Price check: every {self.price_check_interval} minutes") 
-            logger.info(f"   - Google Sheets: every 10 minutes (rate limited)")
+            logger.info(f"   - Google Sheets: every 5 minutes (rate limited)")
             logger.info(f"   - 4h charts: every 4 hours")
             logger.info(f"   - Cleanup: daily at 02:00")
             logger.info(f"   - Health check: every 30 minutes")
