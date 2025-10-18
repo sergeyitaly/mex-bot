@@ -1096,70 +1096,349 @@ class MEXCTracker:
             update.message.reply_html(error_msg)
             logger.error(f"Excel creation error: {e}")
 
+    def setup_google_sheets_historical_storage(self):
+        """Setup historical data storage in Google Sheets"""
+        try:
+            if not self.spreadsheet:
+                return False
+            
+            # Create or get Historical Data sheet
+            try:
+                self.historical_worksheet = self.spreadsheet.worksheet('Historical Data')
+            except gspread.WorksheetNotFound:
+                self.historical_worksheet = self.spreadsheet.add_worksheet(
+                    title='Historical Data', 
+                    rows=10000, 
+                    cols=10
+                )
+                # Set up headers
+                headers = [
+                    'Timestamp', 'Symbol', 'Price', '5m Change %', '15m Change %', 
+                    '30m Change %', '1h Change %', '4h Change %', 'Source'
+                ]
+                self.historical_worksheet.update([headers], 'A1')
+                logger.info("✅ Created Historical Data sheet")
+            
+            # Create or get Price History sheet for raw price data
+            try:
+                self.price_history_worksheet = self.spreadsheet.worksheet('Price History')
+            except gspread.WorksheetNotFound:
+                self.price_history_worksheet = self.spreadsheet.add_worksheet(
+                    title='Price History',
+                    rows=50000,
+                    cols=5
+                )
+                headers = ['Timestamp', 'Symbol', 'Price', 'Source', 'Batch ID']
+                self.price_history_worksheet.update([headers], 'A1')
+                logger.info("✅ Created Price History sheet")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error setting up historical storage: {e}")
+            return False
+
+    def store_price_history(self, price_data):
+        """Store current price data to Google Sheets for historical analysis"""
+        try:
+            if not hasattr(self, 'price_history_worksheet'):
+                if not self.setup_google_sheets_historical_storage():
+                    return
+            
+            current_time = datetime.now()
+            batch_id = current_time.strftime('%Y%m%d_%H%M')
+            
+            # Prepare data for storage
+            rows_to_store = []
+            for symbol, data in price_data.items():
+                price = data.get('price')
+                if price is None:
+                    continue
+                    
+                rows_to_store.append([
+                    current_time.isoformat(),
+                    symbol,
+                    price,
+                    data.get('source', 'unknown'),
+                    batch_id
+                ])
+            
+            # Store in batches to avoid timeout
+            if rows_to_store:
+                batch_size = 100
+                for i in range(0, len(rows_to_store), batch_size):
+                    batch = rows_to_store[i:i + batch_size]
+                    self.price_history_worksheet.append_rows(batch)
+                
+                logger.info(f"💾 Stored {len(rows_to_store)} price records to Google Sheets")
+                
+        except Exception as e:
+            logger.error(f"Error storing price history: {e}")
+
+    def calculate_historical_changes_from_sheets(self, symbol, current_price):
+        """Calculate historical changes using data from Google Sheets"""
+        try:
+            if not hasattr(self, 'price_history_worksheet'):
+                return {}
+            
+            current_time = datetime.now()
+            changes = {}
+            
+            # Define timeframes to calculate
+            timeframes = [
+                ('5m', timedelta(minutes=5)),
+                ('15m', timedelta(minutes=15)),
+                ('30m', timedelta(minutes=30)),
+                ('60m', timedelta(hours=1)),
+                ('240m', timedelta(hours=4))
+            ]
+            
+            # Get recent price history for this symbol from Google Sheets
+            historical_prices = self.get_symbol_price_history(symbol)
+            
+            for timeframe_name, time_delta in timeframes:
+                target_time = current_time - time_delta
+                historical_price = self.find_closest_historical_price(historical_prices, target_time)
+                
+                if historical_price and historical_price > 0:
+                    price_change = ((current_price - historical_price) / historical_price) * 100
+                    changes[timeframe_name] = price_change
+                else:
+                    changes[timeframe_name] = None
+            
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Error calculating historical changes from sheets for {symbol}: {e}")
+            return {}
+
+    def get_symbol_price_history(self, symbol, hours_back=24):
+        """Get price history for a specific symbol from Google Sheets"""
+        try:
+            if not hasattr(self, 'price_history_worksheet'):
+                return []
+            
+            # Get all records for this symbol
+            all_records = self.price_history_worksheet.get_all_records()
+            
+            # Filter for this symbol and recent data
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            symbol_history = []
+            
+            for record in all_records:
+                if record.get('Symbol') == symbol:
+                    try:
+                        timestamp = datetime.fromisoformat(record.get('Timestamp', ''))
+                        if timestamp > cutoff_time:
+                            symbol_history.append({
+                                'timestamp': timestamp,
+                                'price': float(record.get('Price', 0)),
+                                'source': record.get('Source', '')
+                            })
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Sort by timestamp
+            symbol_history.sort(key=lambda x: x['timestamp'])
+            return symbol_history
+            
+        except Exception as e:
+            logger.error(f"Error getting price history for {symbol}: {e}")
+            return []
+
+    def find_closest_historical_price(self, historical_prices, target_time):
+        """Find the closest historical price to target time"""
+        if not historical_prices:
+            return None
+        
+        closest_record = None
+        min_time_diff = timedelta.max
+        
+        for record in historical_prices:
+            time_diff = abs(record['timestamp'] - target_time)
+            if time_diff < min_time_diff:
+                min_time_diff = time_diff
+                closest_record = record
+        
+        # Only return if within reasonable time window (2x the timeframe)
+        max_allowed_diff = timedelta(hours=2)
+        if min_time_diff < max_allowed_diff:
+            return closest_record['price']
+        
+        return None
+
+    def store_calculated_changes(self, analyzed_prices):
+        """Store calculated changes to Historical Data sheet"""
+        try:
+            if not hasattr(self, 'historical_worksheet'):
+                if not self.setup_google_sheets_historical_storage():
+                    return
+            
+            current_time = datetime.now()
+            rows_to_store = []
+            
+            for item in analyzed_prices:
+                symbol = item['symbol']
+                price = item.get('price')
+                changes = item.get('changes', {})
+                
+                if price is None:
+                    continue
+                
+                rows_to_store.append([
+                    current_time.isoformat(),
+                    symbol,
+                    price,
+                    changes.get('5m'),
+                    changes.get('15m'),
+                    changes.get('30m'),
+                    changes.get('60m'),
+                    changes.get('240m'),
+                    item.get('source', 'calculated')
+                ])
+            
+            if rows_to_store:
+                # Store in batches
+                batch_size = 100
+                for i in range(0, len(rows_to_store), batch_size):
+                    batch = rows_to_store[i:i + batch_size]
+                    self.historical_worksheet.append_rows(batch)
+                
+                logger.info(f"💾 Stored {len(rows_to_store)} calculated changes to Historical Data")
+                
+        except Exception as e:
+            logger.error(f"Error storing calculated changes: {e}")
+
+    def cleanup_old_price_data(self):
+        """Clean up old price data to prevent sheets from getting too large"""
+        try:
+            if not hasattr(self, 'price_history_worksheet'):
+                return
+            
+            # Keep only last 7 days of data
+            cutoff_time = datetime.now() - timedelta(days=7)
+            
+            # Get all records
+            all_records = self.price_history_worksheet.get_all_records()
+            records_to_keep = []
+            
+            for record in all_records:
+                try:
+                    timestamp = datetime.fromisoformat(record.get('Timestamp', ''))
+                    if timestamp > cutoff_time:
+                        records_to_keep.append(record)
+                except (ValueError, TypeError):
+                    continue
+            
+            # If we have records to delete, recreate the sheet
+            if len(records_to_keep) < len(all_records):
+                # Clear and repopulate with recent data
+                self.price_history_worksheet.clear()
+                headers = ['Timestamp', 'Symbol', 'Price', 'Source', 'Batch ID']
+                self.price_history_worksheet.update([headers], 'A1')
+                
+                # Convert records back to rows
+                rows_to_keep = []
+                for record in records_to_keep:
+                    rows_to_keep.append([
+                        record.get('Timestamp'),
+                        record.get('Symbol'),
+                        record.get('Price'),
+                        record.get('Source'),
+                        record.get('Batch ID')
+                    ])
+                
+                # Store in batches
+                if rows_to_keep:
+                    batch_size = 100
+                    for i in range(0, len(rows_to_keep), batch_size):
+                        batch = rows_to_keep[i:i + batch_size]
+                        self.price_history_worksheet.append_rows(batch)
+                
+                deleted_count = len(all_records) - len(records_to_keep)
+                logger.info(f"🧹 Cleaned up {deleted_count} old price records")
+                
+        except Exception as e:
+            logger.error(f"Error cleaning up old price data: {e}")
+
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with price data - FIXED to use same method as check"""
+        """Update Google Sheet with proper historical price changes"""
         if not self.gs_client or not self.spreadsheet:
             return
         
         try:
-            logger.info("🔄 Starting Google Sheet update (same as check command)...")
+            logger.info("🔄 Starting Google Sheet update with historical data...")
             
             # Get unique futures
             unique_futures, exchange_stats = self.find_unique_futures_robust()
             logger.info(f"🎯 Unique futures for sheet: {len(unique_futures)}")
             
-            # FIX: Use the EXACT SAME approach as check command
-            batch_data = self.get_consistent_price_data()
-            logger.info(f"📊 Google Sheets - Batch data: {len(batch_data)} symbols")
+            # Get current price data
+            batch_data = self.get_mexc_prices_batch_working()
+            logger.info(f"📊 Batch data collected: {len(batch_data)} symbols")
             
-            # Create price_data by matching unique symbols with batch data (SAME AS CHECK)
+            # Store price history first
+            self.store_price_history(batch_data)
+            
+            # Create price_data with proper historical changes
             price_data = {}
             matched_symbols = 0
             
             for symbol in unique_futures:
-                # Try exact match first
+                current_price_info = None
+                
+                # Find current price
                 if symbol in batch_data:
-                    price_data[symbol] = batch_data[symbol]
-                    matched_symbols += 1
+                    current_price_info = batch_data[symbol]
                 else:
-                    # Try alternative formats (SAME AS CHECK)
+                    # Try alternative formats
                     alt_formats = [
                         symbol.replace('_', ''),
                         symbol.replace('_', '-'), 
                         symbol.replace('_', '/'),
                     ]
-                    
-                    found = False
                     for alt_format in alt_formats:
                         if alt_format in batch_data:
-                            price_data[symbol] = batch_data[alt_format].copy()
-                            price_data[symbol]['symbol'] = symbol  # Fix symbol name
-                            matched_symbols += 1
-                            found = True
+                            current_price_info = batch_data[alt_format].copy()
+                            current_price_info['symbol'] = symbol
                             break
+                
+                if current_price_info and current_price_info.get('price') is not None:
+                    current_price = current_price_info['price']
                     
-                    if not found:
-                        # Symbol not found in batch, add with None price
-                        price_data[symbol] = {
-                            'symbol': symbol,
-                            'price': None,
-                            'changes': {},
-                            'timestamp': datetime.now(),
-                            'source': 'not_found'
-                        }
+                    # Calculate proper historical changes from Google Sheets data
+                    historical_changes = self.calculate_historical_changes_from_sheets(symbol, current_price)
+                    
+                    price_data[symbol] = {
+                        'symbol': symbol,
+                        'price': current_price,
+                        'changes': historical_changes,
+                        'timestamp': datetime.now(),
+                        'source': current_price_info.get('source', 'historical')
+                    }
+                    matched_symbols += 1
+                else:
+                    price_data[symbol] = {
+                        'symbol': symbol,
+                        'price': None,
+                        'changes': {},
+                        'timestamp': datetime.now(),
+                        'source': 'not_found'
+                    }
             
             analyzed_prices = self.analyze_price_movements(price_data)
             
             # Calculate coverage statistics
-            coverage_percent = (matched_symbols / len(unique_futures)) * 100 if unique_futures else 0
+            unique_with_prices = len([s for s in unique_futures if s in price_data and price_data[s].get('price') is not None])
+            coverage_percent = (unique_with_prices / len(unique_futures)) * 100 if unique_futures else 0
             
-            logger.info(f"💰 Google Sheets - Price coverage: {matched_symbols}/{len(unique_futures)} ({coverage_percent:.1f}%)")
+            logger.info(f"💰 Price coverage: {unique_with_prices}/{len(unique_futures)} ({coverage_percent:.1f}%)")
             
-            # Update sheets
+            # Update sheets with proper historical data
             self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             self.update_price_analysis_sheet(analyzed_prices)
             
-            # Update dashboard with enhanced stats
+            # Update dashboard
             self.update_dashboard_with_comprehensive_stats(
                 exchange_stats, 
                 len(unique_futures),
@@ -1167,10 +1446,15 @@ class MEXCTracker:
                 analyzed_prices
             )
             
-            logger.info("✅ Google Sheet updated successfully")
+            # Store calculated changes to Historical Data sheet
+            self.store_calculated_changes(analyzed_prices)
+            
+            logger.info("✅ Google Sheet updated with historical price changes")
             
         except Exception as e:
-            logger.error(f"Error updating Google Sheet with prices: {e}")
+            logger.error(f"Error updating Google Sheet with historical data: {e}")
+
+
 
 
     def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices=None, historical_data=None):
@@ -2285,7 +2569,10 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("validateprices", self.validate_prices_command))
         self.dispatcher.add_handler(CommandHandler("symbolsearch", self.symbol_search_command))
         self.dispatcher.add_handler(CommandHandler("debugdatasources", self.debug_data_sources))
-
+        self.dispatcher.add_handler(CommandHandler("growth", self.send_quick_growth_chart))
+        self.dispatcher.add_handler(CommandHandler("growthreport", self.send_detailed_growth_report))
+        self.dispatcher.add_handler(CommandHandler("4hchart", self.send_quick_growth_chart))
+        self.dispatcher.add_handler(CommandHandler("trends", self.send_trend_analysis_command))
 
     def symbol_search_command(self, update: Update, context: CallbackContext):
         """Search for symbols in MEXC API - CORRECTED"""
@@ -4293,7 +4580,554 @@ class MEXCTracker:
         # Price monitoring (more frequent)
         schedule.every(self.price_check_interval).minutes.do(self.run_price_monitoring)
         
-        logger.info(f"Scheduler setup - unique check every {self.update_interval}min, prices every {self.price_check_interval}min")
+        # Google Sheets update with historical data
+        schedule.every(5).minutes.do(self.update_google_sheet_with_prices)
+        
+        # 4-hour chart reporting
+        schedule.every(4).hours.do(self.send_4h_growth_chart)
+        
+        # Data cleanup (once per day)
+        schedule.every().day.at("02:00").do(self.cleanup_old_price_data)
+        
+        logger.info(f"✅ Scheduler setup complete - historical data tracking enabled")
+
+    def send_4h_growth_chart(self):
+        """Send 4-hour growth chart with historical trends from Google Sheets"""
+        try:
+            logger.info("📊 Generating 4-hour growth chart with historical trends...")
+            
+            # Get historical data from Google Sheets
+            historical_data = self.get_historical_data_from_sheets()
+            
+            if not historical_data:
+                logger.warning("No historical data available for growth chart")
+                # Fallback to current data
+                self.send_4h_growth_chart_fallback()
+                return
+            
+            # Analyze growth trends from historical data
+            growth_analysis = self.analyze_growth_trends(historical_data)
+            
+            if not growth_analysis:
+                logger.warning("No growth analysis data available")
+                self.send_4h_growth_chart_fallback()
+                return
+            
+            # Create the chart message with historical trends
+            chart_message = self.create_historical_growth_chart(growth_analysis)
+            
+            # Send to Telegram
+            self.send_broadcast_message(chart_message)
+            
+            logger.info("✅ 4-hour growth chart with historical trends sent successfully")
+            
+        except Exception as e:
+            logger.error(f"Error sending 4h growth chart with historical data: {e}")
+            # Fallback to basic chart
+            self.send_4h_growth_chart_fallback()
+
+    def send_4h_growth_chart_fallback(self):
+        """Fallback method using current data only"""
+        try:
+            price_data = self.get_consistent_price_data()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            if not analyzed_prices:
+                return
+            
+            symbols_with_4h_growth = []
+            for item in analyzed_prices:
+                changes = item.get('changes', {})
+                change_4h = changes.get('240m')
+                price = item.get('price')
+                
+                if change_4h is not None and price is not None:
+                    symbols_with_4h_growth.append({
+                        'symbol': item['symbol'],
+                        'price': price,
+                        'change_4h': change_4h,
+                        'changes': changes
+                    })
+            
+            symbols_with_4h_growth.sort(key=lambda x: x['change_4h'], reverse=True)
+            top_10_growth = symbols_with_4h_growth[:10]
+            
+            if top_10_growth:
+                chart_message = self.create_growth_chart_message(top_10_growth)
+                self.send_broadcast_message(chart_message)
+                
+        except Exception as e:
+            logger.error(f"Error in fallback growth chart: {e}")
+
+
+    def create_growth_chart_message(self, top_growth_symbols):
+        """Create formatted growth chart message"""
+        try:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M')
+            
+            message = f"📈 <b>4-HOUR GROWTH LEADERS</b>\n\n"
+            message += f"🕒 <i>As of {current_time}</i>\n\n"
+            
+            # Create ASCII-style bar chart
+            max_change = max(abs(item['change_4h']) for item in top_growth_symbols)
+            
+            for i, item in enumerate(top_growth_symbols, 1):
+                symbol = item['symbol']
+                price = item['price']
+                change_4h = item['change_4h']
+                
+                # Create progress bar
+                bar_length = 20
+                normalized_length = int((abs(change_4h) / max_change) * bar_length) if max_change > 0 else 0
+                bar = "█" * normalized_length
+                
+                # Format based on change direction
+                if change_4h > 0:
+                    emoji = "🚀" if change_4h > 20 else "🟢" if change_4h > 10 else "📈"
+                    bar_display = f"{emoji} {bar}"
+                else:
+                    emoji = "💥" if change_4h < -20 else "🔴" if change_4h < -10 else "📉"
+                    bar_display = f"{bar} {emoji}"
+                
+                # Format price based on value
+                if price >= 1000:
+                    price_display = f"${price:,.2f}"
+                elif price >= 1:
+                    price_display = f"${price:.2f}"
+                elif price >= 0.01:
+                    price_display = f"${price:.4f}"
+                else:
+                    price_display = f"${price:.6f}"
+                
+                message += f"{i}. <b>{symbol}</b>\n"
+                message += f"   {price_display} | {change_4h:+.1f}%\n"
+                message += f"   {bar_display}\n\n"
+            
+            # Add summary statistics
+            avg_growth = sum(item['change_4h'] for item in top_growth_symbols) / len(top_growth_symbols)
+            best_growth = top_growth_symbols[0]['change_4h']
+            worst_growth = top_growth_symbols[-1]['change_4h'] if len(top_growth_symbols) > 1 else best_growth
+            
+            message += f"📊 <b>Summary:</b>\n"
+            message += f"• Best: <b>{best_growth:+.1f}%</b> ({top_growth_symbols[0]['symbol']})\n"
+            message += f"• Average: <b>{avg_growth:+.1f}%</b>\n"
+            message += f"• Count: {len(top_growth_symbols)} symbols\n\n"
+            
+            message += "⚡ <i>Next update in 4 hours</i>"
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Error creating growth chart message: {e}")
+            return "📊 <b>4-Hour Growth Chart</b>\n\nError generating chart."
+
+    def send_detailed_growth_report(self, update: Update, context: CallbackContext):
+        """Manual command to get detailed growth report"""
+        try:
+            update.message.reply_html("📊 <b>Generating detailed growth report...</b>")
+            
+            # Get price data
+            price_data = self.get_consistent_price_data()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            if not analyzed_prices:
+                update.message.reply_html("❌ No price data available")
+                return
+            
+            # Create reports for different timeframes
+            timeframes = [
+                ('5m', '5-minute'),
+                ('60m', '1-hour'), 
+                ('240m', '4-hour'),
+                ('24h', '24-hour')
+            ]
+            
+            for timeframe_key, timeframe_name in timeframes:
+                # Filter and sort by timeframe growth
+                symbols_with_growth = []
+                for item in analyzed_prices:
+                    changes = item.get('changes', {})
+                    change = changes.get(timeframe_key)
+                    price = item.get('price')
+                    
+                    if change is not None and price is not None:
+                        symbols_with_growth.append({
+                            'symbol': item['symbol'],
+                            'price': price,
+                            'change': change,
+                            'changes': changes
+                        })
+                
+                # Sort by growth and take top 5
+                symbols_with_growth.sort(key=lambda x: x['change'], reverse=True)
+                top_growth = symbols_with_growth[:5]
+                
+                if not top_growth:
+                    continue
+                
+                message = f"🏆 <b>{timeframe_name.upper()} GROWTH LEADERS</b>\n\n"
+                
+                for i, item in enumerate(top_growth, 1):
+                    symbol = item['symbol']
+                    price = item['price']
+                    change = item['change']
+                    
+                    # Format price
+                    if price >= 1000:
+                        price_display = f"${price:,.2f}"
+                    elif price >= 1:
+                        price_display = f"${price:.2f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.4f}"
+                    else:
+                        price_display = f"${price:.6f}"
+                    
+                    # Format change with emoji
+                    if change > 20:
+                        change_emoji = "🚀"
+                    elif change > 10:
+                        change_emoji = "🟢" 
+                    elif change > 5:
+                        change_emoji = "📈"
+                    elif change < -20:
+                        change_emoji = "💥"
+                    elif change < -10:
+                        change_emoji = "🔴"
+                    elif change < -5:
+                        change_emoji = "📉"
+                    else:
+                        change_emoji = "⚪"
+                    
+                    message += f"{i}. <b>{symbol}</b>\n"
+                    message += f"   {price_display} | {change_emoji} {change:+.1f}%\n\n"
+                
+                # Send each timeframe report
+                update.message.reply_html(message)
+                time.sleep(1)  # Rate limiting
+            
+            update.message.reply_html("✅ <b>Growth reports completed!</b>")
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error generating growth report: {str(e)}")
+
+    def send_quick_growth_chart(self, update: Update, context: CallbackContext):
+        """Quick command to get current 4h growth chart"""
+        try:
+            update.message.reply_html("📊 <b>Generating quick growth chart...</b>")
+            
+            # Get price data
+            price_data = self.get_consistent_price_data()
+            analyzed_prices = self.analyze_price_movements(price_data)
+            
+            if not analyzed_prices:
+                update.message.reply_html("❌ No price data available")
+                return
+            
+            # Filter and sort by 4h growth
+            symbols_with_4h_growth = []
+            for item in analyzed_prices:
+                changes = item.get('changes', {})
+                change_4h = changes.get('240m')
+                price = item.get('price')
+                
+                if change_4h is not None and price is not None:
+                    symbols_with_4h_growth.append({
+                        'symbol': item['symbol'],
+                        'price': price,
+                        'change_4h': change_4h,
+                        'changes': changes
+                    })
+            
+            # Sort by 4h growth and take top 10
+            symbols_with_4h_growth.sort(key=lambda x: x['change_4h'], reverse=True)
+            top_10_growth = symbols_with_4h_growth[:10]
+            
+            if not top_10_growth:
+                update.message.reply_html("❌ No 4h growth data available")
+                return
+            
+            # Create and send chart
+            chart_message = self.create_growth_chart_message(top_10_growth)
+            update.message.reply_html(chart_message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error generating quick growth chart: {str(e)}")
+
+
+    def analyze_growth_trends(self, historical_data):
+        """Analyze growth trends from historical Google Sheets data"""
+        try:
+            growth_analysis = {}
+            
+            for symbol, data in historical_data.items():
+                current_price = data.get('current_price')
+                change_4h = data.get('change_4h')
+                change_1h = data.get('change_1h')
+                change_30m = data.get('change_30m')
+                change_15m = data.get('change_15m')
+                change_5m = data.get('change_5m')
+                score = data.get('score', 0)
+                
+                if current_price is None or change_4h is None:
+                    continue
+                
+                # Calculate trend consistency
+                changes = [change_5m, change_15m, change_30m, change_1h, change_4h]
+                valid_changes = [ch for ch in changes if ch is not None]
+                
+                if len(valid_changes) < 3:  # Need at least 3 timeframes for trend analysis
+                    continue
+                
+                # Calculate trend metrics
+                avg_growth = sum(valid_changes) / len(valid_changes)
+                max_growth = max(valid_changes)
+                min_growth = min(valid_changes)
+                volatility = max_growth - min_growth
+                
+                # Trend direction analysis
+                positive_changes = len([ch for ch in valid_changes if ch > 0])
+                negative_changes = len([ch for ch in valid_changes if ch < 0])
+                trend_consistency = positive_changes / len(valid_changes) * 100
+                
+                # Momentum analysis (recent vs older changes)
+                recent_changes = [ch for ch in [change_5m, change_15m, change_30m] if ch is not None]
+                older_changes = [ch for ch in [change_1h, change_4h] if ch is not None]
+                
+                recent_avg = sum(recent_changes) / len(recent_changes) if recent_changes else 0
+                older_avg = sum(older_changes) / len(older_changes) if older_changes else 0
+                momentum = recent_avg - older_avg  # Positive = accelerating growth
+                
+                growth_analysis[symbol] = {
+                    'symbol': symbol,
+                    'current_price': current_price,
+                    'change_4h': change_4h,
+                    'change_1h': change_1h,
+                    'change_30m': change_30m,
+                    'change_15m': change_15m,
+                    'change_5m': change_5m,
+                    'avg_growth': avg_growth,
+                    'max_growth': max_growth,
+                    'volatility': volatility,
+                    'trend_consistency': trend_consistency,
+                    'momentum': momentum,
+                    'score': score,
+                    'timeframes_available': len(valid_changes)
+                }
+            
+            return growth_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing growth trends: {e}")
+            return {}
+
+    def create_historical_growth_chart(self, growth_analysis):
+        """Create growth chart with historical trend analysis"""
+        try:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M')
+            
+            # Sort by 4h growth for the main chart
+            sorted_by_4h = sorted(
+                [item for item in growth_analysis.values() if item['change_4h'] is not None],
+                key=lambda x: x['change_4h'],
+                reverse=True
+            )[:10]
+            
+            if not sorted_by_4h:
+                return "📊 <b>4-Hour Growth Chart</b>\n\nNo growth data available."
+            
+            message = f"📈 <b>4-HOUR GROWTH LEADERS</b>\n\n"
+            message += f"🕒 <i>Historical Trends Analysis - {current_time}</i>\n\n"
+            
+            # Create chart with trend indicators
+            max_change = max(abs(item['change_4h']) for item in sorted_by_4h)
+            
+            for i, item in enumerate(sorted_by_4h, 1):
+                symbol = item['symbol']
+                price = item['current_price']
+                change_4h = item['change_4h']
+                momentum = item['momentum']
+                consistency = item['trend_consistency']
+                
+                # Create enhanced progress bar with trend indicator
+                bar_length = 15
+                normalized_length = int((abs(change_4h) / max_change) * bar_length) if max_change > 0 else 0
+                bar = "█" * normalized_length
+                
+                # Determine trend emoji based on multiple factors
+                trend_emoji = self.get_trend_emoji(change_4h, momentum, consistency)
+                
+                # Momentum indicator
+                if momentum > 5:
+                    momentum_indicator = "⚡"  # Accelerating
+                elif momentum > 2:
+                    momentum_indicator = "📈"  # Growing
+                elif momentum < -5:
+                    momentum_indicator = "🔻"  # Decelerating fast
+                elif momentum < -2:
+                    momentum_indicator = "📉"  # Decelerating
+                else:
+                    momentum_indicator = "➡️"  # Stable
+                
+                # Consistency indicator
+                if consistency >= 80:
+                    consistency_indicator = "🟢"  # Very consistent
+                elif consistency >= 60:
+                    consistency_indicator = "🟡"  # Somewhat consistent
+                else:
+                    consistency_indicator = "🔴"  # Inconsistent
+                
+                # Format price
+                price_display = self.format_price_for_display(price)
+                
+                message += f"{i}. <b>{symbol}</b>\n"
+                message += f"   {price_display} | {trend_emoji} {change_4h:+.1f}%\n"
+                message += f"   {bar} {momentum_indicator}{consistency_indicator}\n"
+                
+                # Add trend details for top 3
+                if i <= 3:
+                    message += f"   └─ 1h: {item['change_1h']:+.1f}% | 30m: {item['change_30m']:+.1f}% | 5m: {item['change_5m']:+.1f}%\n"
+                
+                message += "\n"
+            
+            # Add comprehensive summary
+            message += self.create_growth_summary(sorted_by_4h)
+            
+            return message
+            
+        except Exception as e:
+            logger.error(f"Error creating historical growth chart: {e}")
+            return "📊 <b>Growth Chart</b>\n\nError generating chart."
+
+    def get_trend_emoji(self, change_4h, momentum, consistency):
+        """Get appropriate emoji based on trend analysis"""
+        if change_4h > 20 and momentum > 5 and consistency >= 70:
+            return "🚀"  # Strong, accelerating, consistent uptrend
+        elif change_4h > 15 and momentum > 0:
+            return "🟢"  # Strong uptrend with positive momentum
+        elif change_4h > 10:
+            return "📈"  # Good uptrend
+        elif change_4h > 5:
+            return "↗️"  # Moderate uptrend
+        elif change_4h < -20 and momentum < -5:
+            return "💥"  # Strong, accelerating downtrend
+        elif change_4h < -15:
+            return "🔴"  # Strong downtrend
+        elif change_4h < -10:
+            return "📉"  # Good downtrend
+        elif change_4h < -5:
+            return "↘️"  # Moderate downtrend
+        else:
+            return "➡️"  # Sideways
+
+    def format_price_for_display(self, price):
+        """Format price for display based on value"""
+        if price is None:
+            return "N/A"
+        elif price >= 1000:
+            return f"${price:,.2f}"
+        elif price >= 1:
+            return f"${price:.2f}"
+        elif price >= 0.01:
+            return f"${price:.4f}"
+        else:
+            return f"${price:.6f}"
+
+    def create_growth_summary(self, top_growth):
+        """Create comprehensive growth summary"""
+        try:
+            if not top_growth:
+                return ""
+            
+            avg_4h_growth = sum(item['change_4h'] for item in top_growth) / len(top_growth)
+            best_growth = top_growth[0]['change_4h']
+            best_symbol = top_growth[0]['symbol']
+            
+            # Count symbols by trend strength
+            strong_uptrend = len([item for item in top_growth if item['change_4h'] > 15])
+            uptrend = len([item for item in top_growth if 5 < item['change_4h'] <= 15])
+            sideways = len([item for item in top_growth if -5 <= item['change_4h'] <= 5])
+            downtrend = len([item for item in top_growth if item['change_4h'] < -5])
+            
+            # Average momentum
+            avg_momentum = sum(item['momentum'] for item in top_growth) / len(top_growth)
+            
+            # Most consistent symbol
+            most_consistent = max(top_growth, key=lambda x: x['trend_consistency'])
+            
+            summary = "📊 <b>Market Summary:</b>\n"
+            summary += f"• Best Performer: <b>{best_growth:+.1f}%</b> ({best_symbol})\n"
+            summary += f"• Average 4h Growth: <b>{avg_4h_growth:+.1f}%</b>\n"
+            summary += f"• Market Momentum: <b>{avg_momentum:+.1f}</b>\n"
+            summary += f"• Most Consistent: {most_consistent['symbol']} ({most_consistent['trend_consistency']:.0f}%)\n"
+            summary += f"• Trend Distribution: 🚀{strong_uptrend} ↗️{uptrend} ➡️{sideways} ↘️{downtrend}\n"
+            summary += f"• Total Analyzed: {len(top_growth)} symbols\n\n"
+            summary += "⚡ <i>Based on historical data from Google Sheets</i>\n"
+            summary += "🔄 <i>Next update in 4 hours</i>"
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error creating growth summary: {e}")
+            return ""
+
+    def send_trend_analysis_command(self, update: Update, context: CallbackContext):
+        """Manual command for detailed trend analysis"""
+        try:
+            update.message.reply_html("📈 <b>Generating detailed trend analysis...</b>")
+            
+            # Get historical data
+            historical_data = self.get_historical_data_from_sheets()
+            
+            if not historical_data:
+                update.message.reply_html("❌ No historical data available in Google Sheets")
+                return
+            
+            # Analyze different aspects
+            analyses = [
+                self.analyze_momentum_leaders(historical_data),
+                self.analyze_consistency_leaders(historical_data),
+                self.analyze_volatility_leaders(historical_data),
+                self.analyze_reversal_candidates(historical_data)
+            ]
+            
+            for analysis in analyses:
+                if analysis:
+                    update.message.reply_html(analysis)
+                    time.sleep(1)  # Rate limiting
+            
+            update.message.reply_html("✅ <b>Trend analysis completed!</b>")
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error in trend analysis: {str(e)}")
+
+    def analyze_momentum_leaders(self, historical_data):
+        """Analyze symbols with strongest momentum"""
+        growth_analysis = self.analyze_growth_trends(historical_data)
+        if not growth_analysis:
+            return None
+        
+        momentum_leaders = sorted(
+            [item for item in growth_analysis.values() if item['momentum'] is not None],
+            key=lambda x: x['momentum'],
+            reverse=True
+        )[:5]
+        
+        if not momentum_leaders:
+            return None
+        
+        message = "⚡ <b>MOMENTUM LEADERS</b>\n\n"
+        message += "<i>Symbols with accelerating growth</i>\n\n"
+        
+        for i, item in enumerate(momentum_leaders, 1):
+            message += f"{i}. <b>{item['symbol']}</b>\n"
+            message += f"   Momentum: {item['momentum']:+.1f}\n"
+            message += f"   4h: {item['change_4h']:+.1f}% | 1h: {item['change_1h']:+.1f}%\n"
+            message += f"   5m: {item['change_5m']:+.1f}% | Consistency: {item['trend_consistency']:.0f}%\n\n"
+        
+        return message
+
+
+
 
     def run_price_monitoring(self):
         """Run price monitoring and alert on significant movements"""
@@ -4392,6 +5226,11 @@ class MEXCTracker:
             data = self.load_data()
             self.last_unique_futures = set(data.get('unique_futures', []))
             
+            # Setup Google Sheets historical storage
+            if self.gs_client and self.spreadsheet:
+                self.setup_google_sheets_historical_storage()
+                logger.info("✅ Historical data storage initialized")
+            
             # Setup scheduler
             self.setup_scheduler()
             
@@ -4402,7 +5241,7 @@ class MEXCTracker:
             # Start the bot
             self.updater.start_polling()
             
-            logger.info("Bot started successfully")
+            logger.info("Bot started successfully with historical data tracking")
             
             # Send startup message
             startup_msg = (
@@ -4410,6 +5249,7 @@ class MEXCTracker:
                 "✅ Monitoring 8 exchanges\n"
                 f"⏰ Unique check: {self.update_interval} minutes\n"
                 f"💰 Price check: {self.price_check_interval} minutes\n"
+                f"📊 Historical data: ENABLED\n"
                 "🎯 Unique futures detection\n"
                 "🚀 Price movement alerts\n"
                 "💬 Use /help for commands"
@@ -4417,7 +5257,7 @@ class MEXCTracker:
             
             self.send_broadcast_message(startup_msg)
             
-            logger.info("Bot is now running and ready for commands...")
+            logger.info("Bot is now running with historical data tracking...")
             
             # Keep running
             self.updater.idle()
