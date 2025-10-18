@@ -1704,8 +1704,85 @@ class MEXCTracker:
             return f"{change:.2f}%"  # Negative numbers already have -
 
 
+    def store_calculated_changes_redis(self, analyzed_prices):
+        """Store calculated changes to Redis instead of Google Sheets"""
+        try:
+            current_time = datetime.now()
+            
+            for item in analyzed_prices:
+                symbol = item['symbol']
+                price = item.get('price')
+                changes = item.get('changes', {})
+                
+                if price is None:
+                    continue
+                
+                # Store in Redis
+                changes_key = f"mexc:changes:{symbol}"
+                changes_record = {
+                    'timestamp': current_time.isoformat(),
+                    'price': price,
+                    'changes': changes,
+                    'source': 'calculated'
+                }
+                
+                if self.redis_client and self.is_using_redis:
+                    self.redis_client.lpush(changes_key, json.dumps(changes_record))
+                    self.redis_client.ltrim(changes_key, 0, 99)  # Keep last 100
+                    self.redis_client.expire(changes_key, 86400)  # 24 hours
+                else:
+                    # Fallback to memory
+                    if symbol not in self.memory_storage:
+                        self.memory_storage[symbol] = []
+                    self.memory_storage[symbol].append(changes_record)
+                    if len(self.memory_storage[symbol]) > 100:
+                        self.memory_storage[symbol] = self.memory_storage[symbol][-100:]
+                    
+        except Exception as e:
+            logger.error(f"Error storing calculated changes to Redis: {e}")
+
+    def get_recent_changes_redis(self, symbol, hours_back=24):
+        """Get recent calculated changes from Redis"""
+        try:
+            if self.redis_client and self.is_using_redis:
+                changes_key = f"mexc:changes:{symbol}"
+                records = self.redis_client.lrange(changes_key, 0, -1)
+                
+                changes_history = []
+                cutoff_time = datetime.now() - timedelta(hours=hours_back)
+                
+                for record_json in records:
+                    try:
+                        record = json.loads(record_json)
+                        timestamp = datetime.fromisoformat(record['timestamp'])
+                        
+                        if timestamp > cutoff_time:
+                            changes_history.append({
+                                'timestamp': timestamp,
+                                'price': record['price'],
+                                'changes': record['changes']
+                            })
+                    except Exception as e:
+                        logger.debug(f"Error parsing changes record: {e}")
+                        continue
+                
+                return changes_history
+            else:
+                # Memory fallback
+                if symbol in self.memory_storage:
+                    cutoff_time = datetime.now() - timedelta(hours=hours_back)
+                    return [
+                        record for record in self.memory_storage[symbol]
+                        if record['timestamp'] > cutoff_time
+                    ]
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting recent changes for {symbol}: {e}")
+            return []
+        
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with prices - FIXED with better logging"""
+        """Update Google Sheet with prices - USING REDIS for historical data"""
         try:
             current_time = time.time()
             if hasattr(self, '_last_sheets_call'):
@@ -1718,7 +1795,7 @@ class MEXCTracker:
                 logger.warning("❌ Google Sheets not available")
                 return
             
-            logger.info("🔄 Starting Google Sheet update...")
+            logger.info("🔄 Starting Google Sheet update with Redis storage...")
             
             # Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
@@ -1728,10 +1805,10 @@ class MEXCTracker:
             batch_data = self.get_mexc_prices_batch_working()
             logger.info(f"📊 Got {len(batch_data)} prices from batch API")
             
-            # Store price history
-            self.store_price_history(batch_data)
+            # Store price history in REDIS instead of Google Sheets
+            self.store_price_history_redis(batch_data)
             
-            # Create price_data with proper historical changes
+            # Create price_data with proper historical changes from REDIS
             price_data = {}
             matched_symbols = 0
             
@@ -1757,15 +1834,15 @@ class MEXCTracker:
                 if current_price_info and current_price_info.get('price') is not None:
                     current_price = current_price_info['price']
                     
-                    # Calculate proper historical changes
-                    historical_changes = self.calculate_historical_changes_from_sheets(symbol, current_price)
+                    # Calculate proper historical changes from REDIS instead of Google Sheets
+                    historical_changes = self.calculate_historical_changes_redis(symbol, current_price)
                     
                     price_data[symbol] = {
                         'symbol': symbol,
                         'price': current_price,
                         'changes': historical_changes,
                         'timestamp': datetime.now(),
-                        'source': current_price_info.get('source', 'historical')
+                        'source': 'redis_storage'  # Changed from 'historical'
                     }
                     matched_symbols += 1
                 else:
@@ -1782,33 +1859,38 @@ class MEXCTracker:
             # Get exchange statistics
             exchange_stats = self.get_all_exchanges_futures_stats()
             
-            # Update all sheets
+            # Update all sheets (this still uses Google Sheets for display)
             self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             self.update_price_analysis_sheet(analyzed_prices)
             self.update_exchange_stats_sheet(self.spreadsheet, exchange_stats, datetime.now().isoformat())
             
-            # Store calculated changes
-            self.store_calculated_changes(analyzed_prices)
+            # Store calculated changes in REDIS instead of Google Sheets
+            self.store_calculated_changes_redis(analyzed_prices)
             
-            logger.info(f"✅ Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices")
+            logger.info(f"✅ Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices (using Redis)")
             
             # Send confirmation to Telegram
             if matched_symbols > 0:
+                # Add Redis status to confirmation
+                redis_status = "✅" if self.is_using_redis else "⚠️"
+                storage_type = "Redis" if self.is_using_redis else "Memory"
+                
                 confirmation_msg = (
                     f"📊 <b>Google Sheets Updated</b>\n\n"
                     f"✅ Prices updated: {matched_symbols}/{len(unique_futures)}\n"
                     f"💰 Coverage: {(matched_symbols/len(unique_futures)*100):.1f}%\n"
+                    f"🗃️ Storage: {redis_status} {storage_type}\n"
                     f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n\n"
                     f"<i>Next update in 5 minutes</i>"
                 )
                 self.send_broadcast_message(confirmation_msg)
             
         except Exception as e:
-            logger.error(f"❌ Error updating Google Sheets: {e}")
+            logger.error(f"❌ Error updating Google Sheets with Redis: {e}")
             # Send error to Telegram
             error_msg = f"❌ <b>Google Sheets Update Failed</b>\n\nError: {str(e)}"
             self.send_broadcast_message(error_msg)
-
+            
     def get_cached_sheets_data(self):
         """Get cached Google Sheets data to reduce API calls"""
         current_time = time.time()
@@ -3386,6 +3468,7 @@ class MEXCTracker:
         self.dispatcher.add_handler(CommandHandler("4hchart", self.send_quick_growth_chart))
         self.dispatcher.add_handler(CommandHandler("trends", self.send_trend_analysis_command))
         self.dispatcher.add_handler(CommandHandler("datastatus", self.data_status_command))
+        self.dispatcher.add_handler(CommandHandler("redisstatus", self.redis_status_command))
 
     def symbol_search_command(self, update: Update, context: CallbackContext):
         """Search for symbols in MEXC API - CORRECTED"""
@@ -4541,6 +4624,7 @@ class MEXCTracker:
             "<b>Commands:</b>\n"
             "/start - Welcome message\n"
             "/status - Current status\n"
+            "/redisstatus - Redisstatus\n"
             "/check - Immediate check\n"
             "/pricedebug - Price debug\n"
             "/symboldebug - Symbol debug\n"
@@ -5206,6 +5290,7 @@ class MEXCTracker:
             "/excel - Download excel\n"
             "/datastatus - Data status\n"
             "/analysis - Full analysis report\n"
+            "/redisstatus - Redisstatus\n"
             "/growth - Growth chart\n"
             "/growthreport - Growthreport chart\n"
             "/4hchart - 4h chart\n"
@@ -6047,6 +6132,313 @@ class MEXCTracker:
             logger.error(f"Error sending price alert: {e}")
 
     # ==================== DATA MANAGEMENT ====================
+
+
+    def setup_redis_storage(self):
+        """Setup Redis connection using Redis Cloud connection URL"""
+        try:
+            # Get Redis URL from environment (this is what Redis Cloud provides)
+            redis_url = os.getenv('REDIS_URL')
+            
+            if not redis_url:
+                logger.warning("❌ REDIS_URL not found in environment variables")
+                logger.info("💡 Get your Redis Cloud connection URL from:")
+                logger.info("   Redis Cloud Console → Databases → Your Database → Connection")
+                self.redis_client = None
+                self.setup_memory_fallback()
+                return
+            
+            # Parse the Redis URL to extract components for logging (don't log password)
+            parsed_url = redis_url.split('@')
+            if len(parsed_url) == 2:
+                logger.info(f"🔗 Connecting to Redis: {parsed_url[1]}")
+            else:
+                logger.info(f"🔗 Connecting to Redis: {redis_url}")
+            
+            # Connect using the Redis URL
+            self.redis_client = redis.Redis.from_url(
+                redis_url,
+                decode_responses=True,           # Automatically decode responses to strings
+                socket_connect_timeout=10,       # 10 second connection timeout
+                socket_timeout=10,               # 10 second socket timeout  
+                retry_on_timeout=True,           # Retry on timeout
+                health_check_interval=30,        # Health check every 30 seconds
+                max_connections=10               # Limit connections to avoid overwhelming Redis
+            )
+            
+            # Test the connection
+            try:
+                ping_result = self.redis_client.ping()
+                if ping_result:
+                    logger.info("✅ Redis connection successful!")
+                    
+                    # Test basic operations
+                    test_key = "mexc:test:connection"
+                    self.redis_client.setex(test_key, 10, "test_value")
+                    test_result = self.redis_client.get(test_key)
+                    
+                    if test_result == "test_value":
+                        logger.info("✅ Redis read/write test passed")
+                        self.is_using_redis = True
+                    else:
+                        logger.warning("⚠️ Redis test failed, using memory fallback")
+                        self.redis_client = None
+                        self.setup_memory_fallback()
+                        
+                else:
+                    logger.error("❌ Redis ping failed")
+                    self.redis_client = None
+                    self.setup_memory_fallback()
+                    
+            except Exception as test_error:
+                logger.error(f"❌ Redis connection test failed: {test_error}")
+                self.redis_client = None
+                self.setup_memory_fallback()
+            
+        except Exception as e:
+            logger.error(f"❌ Redis setup error: {e}")
+            logger.info("🔄 Falling back to in-memory storage")
+            self.redis_client = None
+            self.setup_memory_fallback()
+
+
+    def setup_memory_fallback(self):
+        """Fallback to in-memory storage if Redis fails"""
+        self.memory_storage = {}
+        self.is_using_redis = False
+        logger.info("✅ In-memory fallback storage initialized")
+
+    def store_price_history_redis(self, price_data):
+        """Store price data in Redis with optimized batching"""
+        try:
+            if not self.redis_client or not self.is_using_redis:
+                self.store_price_history_memory(price_data)
+                return
+                
+            current_time = datetime.now()
+            timestamp_str = current_time.isoformat()
+            
+            stored_count = 0
+            # Use pipeline for batch operations (reduces round trips)
+            pipeline = self.redis_client.pipeline()
+            
+            for symbol, data in price_data.items():
+                price = data.get('price')
+                if price is None:
+                    continue
+                
+                redis_key = f"mexc:price:{symbol}"
+                price_record = {
+                    'timestamp': timestamp_str,
+                    'price': price,
+                    'source': data.get('source', 'unknown')
+                }
+                
+                # Add to pipeline
+                pipeline.lpush(redis_key, json.dumps(price_record))
+                pipeline.ltrim(redis_key, 0, 99)  # Keep only last 100 records
+                pipeline.expire(redis_key, 86400)  # 24 hour expiration
+                
+                stored_count += 1
+            
+            # Execute all commands in one round trip
+            pipeline.execute()
+            logger.info(f"💾 Stored {stored_count} price records in Redis")
+            
+        except redis.RedisError as e:
+            logger.error(f"❌ Redis storage error: {e}")
+            self.is_using_redis = False
+            self.store_price_history_memory(price_data)
+        except Exception as e:
+            logger.error(f"❌ Unexpected Redis error: {e}")
+            self.store_price_history_memory(price_data)
+
+    def redis_status_command(self, update: Update, context: CallbackContext):
+        """Check Redis connection status"""
+        try:
+            status = self.get_redis_status()
+            
+            message = "🔍 <b>Redis Storage Status</b>\n\n"
+            
+            if status['status'] == 'connected':
+                message += "✅ <b>Status:</b> Connected to Redis Cloud\n"
+                message += f"💾 <b>Memory Used:</b> {status['memory_used']}\n"
+                message += f"👥 <b>Connected Clients:</b> {status['connected_clients']}\n"
+                message += f"🗃️ <b>Storage:</b> Redis Cloud\n"
+            else:
+                message += "❌ <b>Status:</b> Not connected to Redis\n"
+                message += f"🗃️ <b>Storage:</b> In-Memory Fallback\n"
+                message += f"📊 <b>Records in Memory:</b> {status.get('memory_records', 0)}\n"
+                message += "\n💡 <i>Using in-memory storage as fallback</i>"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error checking Redis status: {str(e)}")
+
+    def get_redis_status(self):
+        """Check Redis connection status"""
+        try:
+            if self.redis_client and self.is_using_redis:
+                info = self.redis_client.info('memory')
+                used_memory = info.get('used_memory_human', 'unknown')
+                connected_clients = info.get('connected_clients', 'unknown')
+                
+                status = {
+                    'status': 'connected',
+                    'memory_used': used_memory,
+                    'connected_clients': connected_clients,
+                    'storage': 'redis'
+                }
+            else:
+                status = {
+                    'status': 'disconnected', 
+                    'storage': 'memory',
+                    'memory_records': len(self.memory_storage)
+                }
+            return status
+        except:
+            return {'status': 'error', 'storage': 'memory'}
+    
+    def get_price_history_redis(self, symbol, hours_back=24):
+        """Get price history for a symbol from Redis"""
+        try:
+            if not self.redis_client:
+                return self.get_price_history_memory(symbol, hours_back)
+                
+            redis_key = f"mexc:price:{symbol}"
+            records = self.redis_client.lrange(redis_key, 0, -1)
+            
+            price_history = []
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            
+            for record_json in records:
+                try:
+                    record = json.loads(record_json)
+                    timestamp = datetime.fromisoformat(record['timestamp'])
+                    
+                    if timestamp > cutoff_time:
+                        price_history.append({
+                            'timestamp': timestamp,
+                            'price': float(record['price']),
+                            'source': record.get('source', 'unknown')
+                        })
+                except Exception as e:
+                    logger.debug(f"Error parsing Redis record: {e}")
+                    continue
+            
+            # Sort by timestamp
+            price_history.sort(key=lambda x: x['timestamp'])
+            return price_history
+            
+        except Exception as e:
+            logger.error(f"❌ Redis read error for {symbol}: {e}")
+            return self.get_price_history_memory(symbol, hours_back)
+
+    def calculate_historical_changes_redis(self, symbol, current_price):
+        """Calculate historical changes using Redis data"""
+        try:
+            changes = {}
+            
+            # Get price history from Redis
+            price_history = self.get_price_history_redis(symbol)
+            
+            if not price_history:
+                return {}
+            
+            current_time = datetime.now()
+            
+            timeframes = [
+                ('5m', timedelta(minutes=5)),
+                ('15m', timedelta(minutes=15)),
+                ('30m', timedelta(minutes=30)),
+                ('60m', timedelta(hours=1)),
+                ('240m', timedelta(hours=4))
+            ]
+            
+            for timeframe_name, time_delta in timeframes:
+                target_time = current_time - time_delta
+                historical_price = self.find_closest_price_redis(price_history, target_time)
+                
+                if historical_price and historical_price > 0:
+                    price_change = ((current_price - historical_price) / historical_price) * 100
+                    changes[timeframe_name] = price_change
+                else:
+                    changes[timeframe_name] = None
+            
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Error calculating Redis changes for {symbol}: {e}")
+            return {}
+
+    def find_closest_price_redis(self, price_history, target_time):
+        """Find closest price to target time in Redis history"""
+        try:
+            if not price_history:
+                return None
+                
+            closest_record = None
+            min_time_diff = timedelta.max
+            
+            for record in price_history:
+                time_diff = abs(record['timestamp'] - target_time)
+                if time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    closest_record = record
+            
+            # Only return if within reasonable time window
+            if min_time_diff < timedelta(hours=2):
+                return closest_record['price']
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding closest Redis price: {e}")
+            return None
+
+    # Memory fallback methods
+    def store_price_history_memory(self, price_data):
+        """Fallback memory storage"""
+        try:
+            current_time = datetime.now()
+            
+            for symbol, data in price_data.items():
+                price = data.get('price')
+                if price is None:
+                    continue
+                    
+                if symbol not in self.memory_storage:
+                    self.memory_storage[symbol] = []
+                
+                self.memory_storage[symbol].append({
+                    'timestamp': current_time,
+                    'price': price,
+                    'source': data.get('source', 'unknown')
+                })
+                
+                # Keep only last 100 records
+                if len(self.memory_storage[symbol]) > 100:
+                    self.memory_storage[symbol] = self.memory_storage[symbol][-100:]
+                    
+        except Exception as e:
+            logger.error(f"Memory storage error: {e}")
+
+    def get_price_history_memory(self, symbol, hours_back=24):
+        """Fallback memory retrieval"""
+        try:
+            if symbol not in self.memory_storage:
+                return []
+                
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            return [
+                record for record in self.memory_storage[symbol]
+                if record['timestamp'] > cutoff_time
+            ]
+        except Exception as e:
+            logger.error(f"Memory read error: {e}")
+            return []
+
 
     def init_data_file(self):
         """Initialize data in memory"""
