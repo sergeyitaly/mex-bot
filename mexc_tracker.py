@@ -2162,6 +2162,9 @@ class MEXCTracker:
         valid_prices = len([p for p in analyzed_prices if p.get('price') is not None]) if analyzed_prices else 0
         price_coverage = (valid_prices / len(unique_futures)) * 100 if unique_futures else 0
         
+        # Use historical_data if available for enhanced statistics
+        historical_symbols_count = len(historical_data) if historical_data else 0
+        
         # Statistics data
         stats_data = [
             ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
@@ -2171,6 +2174,7 @@ class MEXCTracker:
             ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
             ["Total Unique Symbols", len(symbol_coverage)],
             ["Unique MEXC Futures", len(unique_futures)],
+            ["Historical Data Symbols", f"{historical_symbols_count}"],
             ["", ""],
             ["PRICE ANALYSIS", ""],
             ["Symbols with Price Data", f"{valid_prices}/{len(unique_futures)}"],
@@ -2196,7 +2200,6 @@ class MEXCTracker:
         # Adjust column widths
         ws.column_dimensions['A'].width = 25
         ws.column_dimensions['B'].width = 25
-
 
     def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices=None, historical_data=None):
         """Create Unique Futures sheet with historical data"""
@@ -2446,7 +2449,7 @@ class MEXCTracker:
             self.create_price_analysis_sheet(wb, analyzed_prices, historical_data)
             self.create_exchange_stats_sheet(wb, all_futures_data, historical_data)
             self.create_historical_trends_sheet(wb, historical_data)  # New sheet for historical trends
-            
+
             # Save to bytes
             output = io.BytesIO()
             wb.save(output)
