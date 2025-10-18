@@ -24,6 +24,8 @@ import re
 from typing import Optional, List, Dict, Set, Any, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import redis
+
 
 # Load environment variables
 load_dotenv()
@@ -5773,7 +5775,7 @@ class MEXCTracker:
             
             return summary
             
-            
+
         except Exception as e:
             logger.error(f"Error creating growth summary: {e}")
             return ""
@@ -6136,83 +6138,61 @@ class MEXCTracker:
 
 
     def setup_redis_storage(self):
-        """Setup Redis connection using Redis Cloud connection URL"""
+        """Setup Redis connection with proper error handling"""
         try:
-            # Get Redis URL from environment (this is what Redis Cloud provides)
+            # Get Redis configuration from environment
             redis_url = os.getenv('REDIS_URL')
+            
+            logger.info("🔧 Initializing Redis storage...")
             
             if not redis_url:
                 logger.warning("❌ REDIS_URL not found in environment variables")
-                logger.info("💡 Get your Redis Cloud connection URL from:")
-                logger.info("   Redis Cloud Console → Databases → Your Database → Connection")
-                self.redis_client = None
                 self.setup_memory_fallback()
                 return
             
-            # Parse the Redis URL to extract components for logging (don't log password)
-            parsed_url = redis_url.split('@')
-            if len(parsed_url) == 2:
-                logger.info(f"🔗 Connecting to Redis: {parsed_url[1]}")
-            else:
-                logger.info(f"🔗 Connecting to Redis: {redis_url}")
+            logger.info(f"🔗 Connecting to Redis...")
             
-            # Connect using the Redis URL
+            # Connect using Redis URL
             self.redis_client = redis.Redis.from_url(
                 redis_url,
-                decode_responses=True,           # Automatically decode responses to strings
-                socket_connect_timeout=10,       # 10 second connection timeout
-                socket_timeout=10,               # 10 second socket timeout  
-                retry_on_timeout=True,           # Retry on timeout
-                health_check_interval=30,        # Health check every 30 seconds
-                max_connections=10               # Limit connections to avoid overwhelming Redis
+                decode_responses=True,
+                socket_connect_timeout=10,
+                socket_timeout=10,
+                retry_on_timeout=True,
+                health_check_interval=30,
+                max_connections=5
             )
             
-            # Test the connection
+            # Test connection
             try:
-                ping_result = self.redis_client.ping()
-                if ping_result:
+                if self.redis_client.ping():
                     logger.info("✅ Redis connection successful!")
+                    self.is_using_redis = True
                     
-                    # Test basic operations
-                    test_key = "mexc:test:connection"
-                    self.redis_client.setex(test_key, 10, "test_value")
-                    test_result = self.redis_client.get(test_key)
-                    
-                    if test_result == "test_value":
-                        logger.info("✅ Redis read/write test passed")
-                        self.is_using_redis = True
-                    else:
-                        logger.warning("⚠️ Redis test failed, using memory fallback")
-                        self.redis_client = None
-                        self.setup_memory_fallback()
-                        
+                    # Initialize memory storage as backup
+                    self.memory_storage = {}
+                    return
                 else:
                     logger.error("❌ Redis ping failed")
-                    self.redis_client = None
-                    self.setup_memory_fallback()
                     
             except Exception as test_error:
                 logger.error(f"❌ Redis connection test failed: {test_error}")
-                self.redis_client = None
-                self.setup_memory_fallback()
+            
+            # If we get here, Redis failed
+            self.redis_client = None
+            self.setup_memory_fallback()
             
         except Exception as e:
             logger.error(f"❌ Redis setup error: {e}")
-            logger.info("🔄 Falling back to in-memory storage")
             self.redis_client = None
             self.setup_memory_fallback()
 
 
-    def setup_memory_fallback(self):
-        """Fallback to in-memory storage if Redis fails"""
-        self.memory_storage = {}
-        self.is_using_redis = False
-        logger.info("✅ In-memory fallback storage initialized")
-
     def store_price_history_redis(self, price_data):
-        """Store price data in Redis with optimized batching"""
+        """Store price data in Redis"""
         try:
             if not self.redis_client or not self.is_using_redis:
+                # Fallback to memory if Redis not available
                 self.store_price_history_memory(price_data)
                 return
                 
@@ -6220,7 +6200,6 @@ class MEXCTracker:
             timestamp_str = current_time.isoformat()
             
             stored_count = 0
-            # Use pipeline for batch operations (reduces round trips)
             pipeline = self.redis_client.pipeline()
             
             for symbol, data in price_data.items():
@@ -6246,95 +6225,10 @@ class MEXCTracker:
             pipeline.execute()
             logger.info(f"💾 Stored {stored_count} price records in Redis")
             
-        except redis.RedisError as e:
+        except Exception as e:
             logger.error(f"❌ Redis storage error: {e}")
-            self.is_using_redis = False
+            # Fallback to memory storage
             self.store_price_history_memory(price_data)
-        except Exception as e:
-            logger.error(f"❌ Unexpected Redis error: {e}")
-            self.store_price_history_memory(price_data)
-
-    def redis_status_command(self, update: Update, context: CallbackContext):
-        """Check Redis connection status"""
-        try:
-            status = self.get_redis_status()
-            
-            message = "🔍 <b>Redis Storage Status</b>\n\n"
-            
-            if status['status'] == 'connected':
-                message += "✅ <b>Status:</b> Connected to Redis Cloud\n"
-                message += f"💾 <b>Memory Used:</b> {status['memory_used']}\n"
-                message += f"👥 <b>Connected Clients:</b> {status['connected_clients']}\n"
-                message += f"🗃️ <b>Storage:</b> Redis Cloud\n"
-            else:
-                message += "❌ <b>Status:</b> Not connected to Redis\n"
-                message += f"🗃️ <b>Storage:</b> In-Memory Fallback\n"
-                message += f"📊 <b>Records in Memory:</b> {status.get('memory_records', 0)}\n"
-                message += "\n💡 <i>Using in-memory storage as fallback</i>"
-            
-            update.message.reply_html(message)
-            
-        except Exception as e:
-            update.message.reply_html(f"❌ Error checking Redis status: {str(e)}")
-
-    def get_redis_status(self):
-        """Check Redis connection status"""
-        try:
-            if self.redis_client and self.is_using_redis:
-                info = self.redis_client.info('memory')
-                used_memory = info.get('used_memory_human', 'unknown')
-                connected_clients = info.get('connected_clients', 'unknown')
-                
-                status = {
-                    'status': 'connected',
-                    'memory_used': used_memory,
-                    'connected_clients': connected_clients,
-                    'storage': 'redis'
-                }
-            else:
-                status = {
-                    'status': 'disconnected', 
-                    'storage': 'memory',
-                    'memory_records': len(self.memory_storage)
-                }
-            return status
-        except:
-            return {'status': 'error', 'storage': 'memory'}
-    
-    def get_price_history_redis(self, symbol, hours_back=24):
-        """Get price history for a symbol from Redis"""
-        try:
-            if not self.redis_client:
-                return self.get_price_history_memory(symbol, hours_back)
-                
-            redis_key = f"mexc:price:{symbol}"
-            records = self.redis_client.lrange(redis_key, 0, -1)
-            
-            price_history = []
-            cutoff_time = datetime.now() - timedelta(hours=hours_back)
-            
-            for record_json in records:
-                try:
-                    record = json.loads(record_json)
-                    timestamp = datetime.fromisoformat(record['timestamp'])
-                    
-                    if timestamp > cutoff_time:
-                        price_history.append({
-                            'timestamp': timestamp,
-                            'price': float(record['price']),
-                            'source': record.get('source', 'unknown')
-                        })
-                except Exception as e:
-                    logger.debug(f"Error parsing Redis record: {e}")
-                    continue
-            
-            # Sort by timestamp
-            price_history.sort(key=lambda x: x['timestamp'])
-            return price_history
-            
-        except Exception as e:
-            logger.error(f"❌ Redis read error for {symbol}: {e}")
-            return self.get_price_history_memory(symbol, hours_back)
 
     def calculate_historical_changes_redis(self, symbol, current_price):
         """Calculate historical changes using Redis data"""
@@ -6372,6 +6266,41 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error calculating Redis changes for {symbol}: {e}")
             return {}
+
+    def get_price_history_redis(self, symbol, hours_back=24):
+        """Get price history for a symbol from Redis"""
+        try:
+            if not self.redis_client or not self.is_using_redis:
+                return self.get_price_history_memory(symbol, hours_back)
+                
+            redis_key = f"mexc:price:{symbol}"
+            records = self.redis_client.lrange(redis_key, 0, -1)
+            
+            price_history = []
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            
+            for record_json in records:
+                try:
+                    record = json.loads(record_json)
+                    timestamp = datetime.fromisoformat(record['timestamp'])
+                    
+                    if timestamp > cutoff_time:
+                        price_history.append({
+                            'timestamp': timestamp,
+                            'price': float(record['price']),
+                            'source': record.get('source', 'unknown')
+                        })
+                except Exception as e:
+                    logger.debug(f"Error parsing Redis record: {e}")
+                    continue
+            
+            # Sort by timestamp
+            price_history.sort(key=lambda x: x['timestamp'])
+            return price_history
+            
+        except Exception as e:
+            logger.error(f"❌ Redis read error for {symbol}: {e}")
+            return self.get_price_history_memory(symbol, hours_back)
 
     def find_closest_price_redis(self, price_history, target_time):
         """Find closest price to target time in Redis history"""
@@ -6422,6 +6351,8 @@ class MEXCTracker:
                 if len(self.memory_storage[symbol]) > 100:
                     self.memory_storage[symbol] = self.memory_storage[symbol][-100:]
                     
+            logger.info(f"💾 Stored {len(price_data)} price records in memory")
+                    
         except Exception as e:
             logger.error(f"Memory storage error: {e}")
 
@@ -6432,13 +6363,72 @@ class MEXCTracker:
                 return []
                 
             cutoff_time = datetime.now() - timedelta(hours=hours_back)
-            return [
+            history = [
                 record for record in self.memory_storage[symbol]
                 if record['timestamp'] > cutoff_time
             ]
+            return history
         except Exception as e:
             logger.error(f"Memory read error: {e}")
             return []
+        
+
+        
+
+    def setup_memory_fallback(self):
+        """Fallback to in-memory storage if Redis fails"""
+        self.memory_storage = {}
+        self.is_using_redis = False
+        logger.info("✅ In-memory fallback storage initialized")
+
+    def redis_status_command(self, update: Update, context: CallbackContext):
+        """Check Redis connection status"""
+        try:
+            status = self.get_redis_status()
+            
+            message = "🔍 <b>Redis Storage Status</b>\n\n"
+            
+            if status['status'] == 'connected':
+                message += "✅ <b>Status:</b> Connected to Redis Cloud\n"
+                message += f"💾 <b>Memory Used:</b> {status['memory_used']}\n"
+                message += f"👥 <b>Connected Clients:</b> {status['connected_clients']}\n"
+                message += f"🗃️ <b>Storage:</b> Redis Cloud\n"
+            else:
+                message += "❌ <b>Status:</b> Not connected to Redis\n"
+                message += f"🗃️ <b>Storage:</b> In-Memory Fallback\n"
+                message += f"📊 <b>Records in Memory:</b> {status.get('memory_records', 0)}\n"
+                message += "\n💡 <i>Using in-memory storage as fallback</i>"
+            
+            update.message.reply_html(message)
+            
+        except Exception as e:
+            update.message.reply_html(f"❌ Error checking Redis status: {str(e)}")
+
+    def get_redis_status(self):
+        """Check Redis connection status"""
+        try:
+            if self.redis_client and self.is_using_redis:
+                info = self.redis_client.info('memory')
+                used_memory = info.get('used_memory_human', 'unknown')
+                connected_clients = info.get('connected_clients', 'unknown')
+                
+                status = {
+                    'status': 'connected',
+                    'memory_used': used_memory,
+                    'connected_clients': connected_clients,
+                    'storage': 'redis'
+                }
+            else:
+                status = {
+                    'status': 'disconnected', 
+                    'storage': 'memory',
+                    'memory_records': len(self.memory_storage)
+                }
+            return status
+        except:
+            return {'status': 'error', 'storage': 'memory'}
+    
+    # Memory fallback methods
 
 
     def init_data_file(self):
