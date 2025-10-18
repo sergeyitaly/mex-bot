@@ -2859,7 +2859,7 @@ class MEXCTracker:
             logger.error(f"Error updating Price Analysis sheet: {e}")
 
     def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
-        """Update MEXC Analysis sheet with emoji formatting"""
+        """Update MEXC Analysis sheet with proper data filtering"""
         try:
             worksheet = self.spreadsheet.worksheet('MEXC Analysis')
             worksheet.clear()
@@ -2869,13 +2869,33 @@ class MEXCTracker:
                 'Current Price', '5m Change %', '1h Change %', '4h Change %', 
                 'Status', 'Unique', 'Timestamp'
             ]
-            worksheet.update([headers], 'A1')
+            worksheet.update('A1', [headers])
             
-            # Get only MEXC futures
+            # Get only MEXC futures - this is the key fix
             mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
             
+            # If we have too many MEXC futures, prioritize unique ones
+            if len(mexc_futures) > 2500:
+                logger.warning(f"⚠️ Too many MEXC futures ({len(mexc_futures)}), filtering for unique ones")
+                # Prioritize unique symbols
+                unique_mexc_futures = []
+                non_unique_mexc_futures = []
+                
+                for future in mexc_futures:
+                    symbol = future['symbol']
+                    normalized = self.normalize_symbol_for_comparison(symbol)
+                    exchanges_list = symbol_coverage.get(normalized, set())
+                    if len(exchanges_list) == 1:  # Unique to MEXC
+                        unique_mexc_futures.append(future)
+                    else:
+                        non_unique_mexc_futures.append(future)
+                
+                # Take all unique + enough non-unique to fill the sheet
+                mexc_futures = unique_mexc_futures + non_unique_mexc_futures[:2500 - len(unique_mexc_futures)]
+                logger.info(f"✅ Filtered to {len(mexc_futures)} MEXC futures ({len(unique_mexc_futures)} unique)")
+            
             sheet_data = []
-            price_map = {item['symbol']: item for item in analyzed_prices}
+            price_map = {item['symbol']: item for item in analyzed_prices} if analyzed_prices else {}
             
             for future in mexc_futures:
                 symbol = future['symbol']
@@ -2922,9 +2942,16 @@ class MEXCTracker:
                 sheet_data.append(row)
             
             if sheet_data:
-                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
-                logger.info(f"✅ Updated MEXC Analysis with {len(sheet_data)} records (emoji format)")
+                # Write in batches to avoid API limits
+                batch_size = 100
+                for i in range(0, len(sheet_data), batch_size):
+                    batch = sheet_data[i:i + batch_size]
+                    worksheet.update(f'A{i+2}', batch)
                 
+                logger.info(f"✅ Updated MEXC Analysis with {len(sheet_data)} records")
+            else:
+                logger.warning("⚠️ No data for MEXC Analysis sheet")
+                    
         except Exception as e:
             logger.error(f"Error updating MEXC Analysis sheet: {e}")
 
@@ -3846,23 +3873,29 @@ class MEXCTracker:
             logger.error(f"❌ Google Sheet update error: {e}")
 
     def update_all_futures_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
-        """Update All Futures sheet with row limit handling"""
+        """Update All Futures sheet focusing on MEXC data"""
         try:
             worksheet = spreadsheet.worksheet('All Futures')
             
-            # Clear existing data (keep headers)
+            # Clear existing data
             worksheet.clear()
             
             # Re-add headers
-            headers = ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique', 'Current Price']
+            headers = ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique']
             worksheet.update('A1', [headers])
             
-            # TRUNCATE data to fit within Google Sheets limits (3000 rows max)
-            max_rows = 3000  # Leave 1 row for header
-            truncated_data = all_futures_data[:max_rows]
+            # FILTER: Focus on MEXC futures and a sample from other exchanges
+            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+            other_futures = [f for f in all_futures_data if f['exchange'] != 'MEXC']
+            
+            # Take all MEXC futures (up to limit) and a sample of others
+            max_mexc = min(len(mexc_futures), 2000)  # Reserve space for MEXC
+            max_others = 1000  # Sample of other exchanges
+            
+            selected_futures = mexc_futures[:max_mexc] + other_futures[:max_others]
             
             all_data = []
-            for future in truncated_data:
+            for future in selected_futures:
                 normalized = self.normalize_symbol_for_comparison(future['symbol'])
                 exchanges_list = symbol_coverage.get(normalized, set())
                 available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
@@ -3876,22 +3909,21 @@ class MEXCTracker:
                     available_on,
                     coverage,
                     timestamp,
-                    is_unique,
-                    'N/A'  # Price would be added separately
+                    is_unique
                 ])
             
-            # Write in smaller batches
+            # Write in batches
             if all_data:
                 batch_size = 100
                 for i in range(0, len(all_data), batch_size):
                     batch = all_data[i:i + batch_size]
                     worksheet.update(f'A{i+2}', batch)
                 
-                logger.info(f"✅ Updated All Futures with {len(all_data)} records (truncated from {len(all_futures_data)})")
+                logger.info(f"✅ Updated All Futures with {len(all_data)} records ({len(mexc_futures)} MEXC + {len(other_futures)} others)")
             
         except Exception as e:
             logger.error(f"Error updating All Futures sheet: {e}")
-
+            
     def update_dashboard_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
         """Update dashboard statistics - simplified version"""
         if not self.spreadsheet:
