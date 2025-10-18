@@ -535,9 +535,8 @@ class MEXCTracker:
 
 
     def get_consistent_price_data(self):
-        """Get consistent price data with caching to avoid rate limiting issues"""
+        """Get consistent price data with proper historical tracking"""
         try:
-            # Use a simple cache to avoid multiple API calls in quick succession
             current_time = datetime.now()
             cache_key = "price_data_cache"
             cache_duration = 30  # seconds
@@ -562,7 +561,20 @@ class MEXCTracker:
             for symbol in unique_futures:
                 # Try exact match first
                 if symbol in batch_data:
-                    price_data[symbol] = batch_data[symbol]
+                    batch_info = batch_data[symbol]
+                    current_price = batch_info['price']
+                    current_change = batch_info['changes'].get('5m', 0)
+                    
+                    # Calculate proper historical changes
+                    historical_changes = self.calculate_historical_changes(symbol, current_price)
+                    
+                    price_data[symbol] = {
+                        'symbol': symbol,
+                        'price': current_price,
+                        'changes': historical_changes,  # Use calculated historical changes
+                        'timestamp': current_time,
+                        'source': 'batch_exact'
+                    }
                     matched_symbols += 1
                 else:
                     # Try alternative formats
@@ -575,8 +587,20 @@ class MEXCTracker:
                     found = False
                     for alt_format in alt_formats:
                         if alt_format in batch_data:
-                            price_data[symbol] = batch_data[alt_format].copy()
-                            price_data[symbol]['symbol'] = symbol
+                            batch_info = batch_data[alt_format]
+                            current_price = batch_info['price']
+                            current_change = batch_info['changes'].get('5m', 0)
+                            
+                            # Calculate proper historical changes
+                            historical_changes = self.calculate_historical_changes(symbol, current_price)
+                            
+                            price_data[symbol] = {
+                                'symbol': symbol,
+                                'price': current_price,
+                                'changes': historical_changes,  # Use calculated historical changes
+                                'timestamp': current_time,
+                                'source': f'batch_alt_{alt_format}'
+                            }
                             matched_symbols += 1
                             found = True
                             break
@@ -601,23 +625,87 @@ class MEXCTracker:
             logger.error(f"Consistent price data error: {e}")
             return {}
 
+    def calculate_historical_changes(self, symbol, current_price):
+        """Calculate proper historical price changes for different timeframes"""
+        try:
+            changes = {}
+            
+            # Get price history for this symbol
+            if symbol not in self.price_history:
+                self.price_history[symbol] = {}
+            
+            current_time = datetime.now()
+            
+            # Store current price in history
+            self.price_history[symbol][current_time] = current_price
+            
+            # Clean old history (keep only last 24 hours)
+            cutoff_time = current_time - timedelta(hours=24)
+            self.price_history[symbol] = {
+                ts: price for ts, price in self.price_history[symbol].items() 
+                if ts > cutoff_time
+            }
+            
+            # Calculate changes for different timeframes
+            timeframes = [
+                ('5m', timedelta(minutes=5)),
+                ('15m', timedelta(minutes=15)),
+                ('30m', timedelta(minutes=30)),
+                ('60m', timedelta(hours=1)),
+                ('240m', timedelta(hours=4))
+            ]
+            
+            for timeframe_name, time_delta in timeframes:
+                target_time = current_time - time_delta
+                historical_price = self.find_historical_price(symbol, target_time)
+                
+                if historical_price and historical_price > 0:
+                    price_change = ((current_price - historical_price) / historical_price) * 100
+                    changes[timeframe_name] = price_change
+                else:
+                    # If no historical data, use current change or set to None
+                    changes[timeframe_name] = None
+            
+            return changes
+            
+        except Exception as e:
+            logger.error(f"Error calculating historical changes for {symbol}: {e}")
+            return {}
 
+    def find_historical_price(self, symbol, target_time):
+        """Find the closest historical price to the target time"""
+        try:
+            if symbol not in self.price_history or not self.price_history[symbol]:
+                return None
+            
+            closest_time = None
+            min_time_diff = timedelta.max
+            
+            for timestamp in self.price_history[symbol].keys():
+                time_diff = abs(timestamp - target_time)
+                if time_diff < min_time_diff:
+                    min_time_diff = time_diff
+                    closest_time = timestamp
+            
+            # Only return if within reasonable time window (2x the timeframe)
+            max_allowed_diff = (target_time - (target_time - timedelta(hours=2))).total_seconds()
+            if min_time_diff.total_seconds() <= max_allowed_diff:
+                return self.price_history[symbol][closest_time]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding historical price for {symbol}: {e}")
+            return None
+        
     def get_all_mexc_prices(self):
         """Get price data for MEXC futures - USE CONSISTENT APPROACH"""
         return self.get_consistent_price_data()
 
     def analyze_price_movements(self, price_data):
-        """Analyze price movements with debugging"""
+        """Analyze price movements with proper historical data"""
         try:
             logger.info(f"🔍 Analyzing price movements for {len(price_data)} symbols")
-            
-            # DEBUG: Check specific symbols
-            debug_symbols = ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']
-            for symbol in debug_symbols:
-                if symbol in price_data:
-                    logger.info(f"  ✅ {symbol} in price_data: ${price_data[symbol].get('price')}")
-                else:
-                    logger.info(f"  ❌ {symbol} NOT in price_data")
             
             symbols_with_changes = []
             
@@ -625,42 +713,39 @@ class MEXCTracker:
                 changes = data.get('changes', {})
                 price = data.get('price', 0)
                 
-                # If we have no historical changes, create minimal data
-                if not changes:
-                    historical_changes = self.calculate_changes_from_history(symbol, price)
-                    if historical_changes:
-                        changes = historical_changes
-                
                 # Calculate overall score based on available timeframes
                 score = 0
                 weight_total = 0
+                timeframe_weights = {
+                    '5m': 2.0,   # Highest weight for recent changes
+                    '15m': 1.5,
+                    '30m': 1.2,
+                    '60m': 1.0,
+                    '240m': 0.5  # Lowest weight for older changes
+                }
                 
-                if '5m' in changes:
-                    score += changes['5m'] * 2
-                    weight_total += 2
-                if '15m' in changes:
-                    score += changes['15m'] * 1.5
-                    weight_total += 1.5
-                if '30m' in changes:
-                    score += changes['30m'] * 1.2
-                    weight_total += 1.2
-                if '60m' in changes:
-                    score += changes['60m'] * 1
-                    weight_total += 1
-                if '240m' in changes:
-                    score += changes['240m'] * 0.5
-                    weight_total += 0.5
+                for timeframe, weight in timeframe_weights.items():
+                    if timeframe in changes and changes[timeframe] is not None:
+                        score += changes[timeframe] * weight
+                        weight_total += weight
                 
                 # Normalize score if we have weights
                 if weight_total > 0:
                     score = score / weight_total
+                
+                # Determine latest valid change for display
+                latest_change = None
+                for timeframe in ['5m', '15m', '30m', '60m', '240m']:
+                    if timeframe in changes and changes[timeframe] is not None:
+                        latest_change = changes[timeframe]
+                        break
                 
                 symbols_with_changes.append({
                     'symbol': symbol,
                     'price': price,
                     'changes': changes,
                     'score': score,
-                    'latest_change': changes.get('5m', changes.get('60m', 0))
+                    'latest_change': latest_change if latest_change is not None else 0
                 })
             
             # Sort by score (highest first)
@@ -673,6 +758,7 @@ class MEXCTracker:
             logger.error(f"Error analyzing price movements: {e}")
             return []
         
+                
     def calculate_changes_from_history(self, symbol, current_price):
         """Calculate price changes from historical data if available"""
         try:
@@ -851,10 +937,44 @@ class MEXCTracker:
             logger.error(f"Error updating Price Analysis sheet: {e}")
 
     def format_change_for_sheet(self, change):
-        """Format change for Google Sheets"""
+        """Format change for Google Sheets with proper None handling"""
         if change is None:
             return 'N/A'
-        return f"{change:+.2f}%"
+        
+        # Add emoji based on change value
+        if change > 10:
+            return f"🚀 {change:+.2f}%"
+        elif change > 5:
+            return f"🟢 {change:+.2f}%"
+        elif change > 2:
+            return f"📈 {change:+.2f}%"
+        elif change < -10:
+            return f"💥 {change:+.2f}%"
+        elif change < -5:
+            return f"🔴 {change:+.2f}%"
+        elif change < -2:
+            return f"📉 {change:+.2f}%"
+        else:
+            return f"{change:+.2f}%"
+
+    def calculate_trend_score(self, changes):
+        """Calculate overall trend score from multiple timeframes"""
+        timeframes = ['5m', '15m', '30m', '60m', '240m']
+        weights = [2.0, 1.5, 1.2, 1.0, 0.5]  # Higher weight for shorter timeframes
+        
+        total_score = 0
+        total_weight = 0
+        
+        for i, timeframe in enumerate(timeframes):
+            change = changes.get(timeframe)
+            if change is not None:
+                total_score += change * weights[i]
+                total_weight += weights[i]
+        
+        return total_score / total_weight if total_weight > 0 else 0
+
+
+
 
     def create_and_send_excel(self, update: Update, context: CallbackContext):
         """Create and send Excel file via Telegram - FIXED to use same method as check"""
@@ -1053,12 +1173,17 @@ class MEXCTracker:
             logger.error(f"Error updating Google Sheet with prices: {e}")
 
 
-    def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
-        """Create Unique Futures sheet"""
+    def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices=None, historical_data=None):
+        """Create Unique Futures sheet with historical data"""
         ws = wb.create_sheet("Unique Futures")
         
-        # Headers
-        headers = ['Symbol', 'Current Price', '5m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated']
+        # Headers matching Google Sheets
+        headers = [
+            'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+            '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+        ]
+        
+        # Add headers with formatting
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col)
             cell.value = header
@@ -1068,28 +1193,166 @@ class MEXCTracker:
         # Get unique futures
         unique_futures, _ = self.find_unique_futures_robust()
         
-        # Create price mapping
-        price_map = {item['symbol']: item for item in analyzed_prices} if analyzed_prices else {}
-        
-        # Add data
+        # Add data with historical values
         row = 2
         for symbol in sorted(unique_futures):
-            price_info = price_map.get(symbol, {})
-            changes = price_info.get('changes', {})
+            # Try to get historical data first, fall back to analyzed prices
+            historical_info = historical_data.get(symbol) if historical_data else None
+            price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None) if analyzed_prices else None
             
+            if historical_info:
+                # Use historical data from Google Sheets
+                current_price = historical_info.get('current_price')
+                change_5m = historical_info.get('change_5m')
+                change_15m = historical_info.get('change_15m')
+                change_30m = historical_info.get('change_30m')
+                change_1h = historical_info.get('change_1h')
+                change_4h = historical_info.get('change_4h')
+                score = historical_info.get('score', 0)
+                last_updated = historical_info.get('last_updated', '')
+                status = historical_info.get('status', 'UNIQUE')
+            elif price_info:
+                # Fall back to analyzed prices
+                current_price = price_info.get('price')
+                changes = price_info.get('changes', {})
+                change_5m = changes.get('5m')
+                change_15m = changes.get('15m')
+                change_30m = changes.get('30m')
+                change_1h = changes.get('60m')
+                change_4h = changes.get('240m')
+                score = price_info.get('score', 0)
+                last_updated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                status = 'UNIQUE'
+            else:
+                # No data available
+                current_price = None
+                change_5m = change_15m = change_30m = change_1h = change_4h = None
+                score = 0
+                last_updated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                status = 'UNIQUE'
+            
+            # Format price display
+            if current_price is not None:
+                if current_price >= 1:
+                    price_display = f"${current_price:.4f}"
+                elif current_price >= 0.01:
+                    price_display = f"${current_price:.6f}"
+                else:
+                    price_display = f"${current_price:.8f}"
+            else:
+                price_display = 'N/A'
+            
+            # Add row data
             ws.cell(row=row, column=1).value = symbol
-            ws.cell(row=row, column=2).value = price_info.get('price', 'N/A')
-            ws.cell(row=row, column=3).value = self.format_change_for_excel(changes.get('5m'))
-            ws.cell(row=row, column=4).value = self.format_change_for_excel(changes.get('60m'))
-            ws.cell(row=row, column=5).value = self.format_change_for_excel(changes.get('240m'))
-            ws.cell(row=row, column=6).value = price_info.get('score', 0)
-            ws.cell(row=row, column=7).value = 'UNIQUE'
-            ws.cell(row=row, column=8).value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ws.cell(row=row, column=2).value = price_display
+            ws.cell(row=row, column=3).value = self.format_change_for_excel(change_5m)
+            ws.cell(row=row, column=4).value = self.format_change_for_excel(change_15m)
+            ws.cell(row=row, column=5).value = self.format_change_for_excel(change_30m)
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(change_1h)
+            ws.cell(row=row, column=7).value = self.format_change_for_excel(change_4h)
+            ws.cell(row=row, column=8).value = f"{score:.2f}"
+            ws.cell(row=row, column=9).value = status
+            ws.cell(row=row, column=10).value = last_updated
+            
             row += 1
         
         # Adjust column widths
-        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
             ws.column_dimensions[col].width = 15
+
+    def create_historical_trends_sheet(self, wb, historical_data):
+        """Create Historical Trends sheet showing price movement patterns"""
+        if not historical_data:
+            return
+            
+        ws = wb.create_sheet("Historical Trends")
+        
+        # Headers for trend analysis
+        headers = [
+            'Symbol', 'Current Price', 'Trend Direction', 'Volatility Score',
+            '5m Trend', '15m Trend', '30m Trend', '1h Trend', '4h Trend',
+            'Best Timeframe', 'Worst Timeframe', 'Consistency Score'
+        ]
+        
+        # Add headers
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Analyze trends for each symbol
+        row = 2
+        for symbol, data in sorted(historical_data.items()):
+            changes = [
+                data.get('change_5m'),
+                data.get('change_15m'), 
+                data.get('change_30m'),
+                data.get('change_1h'),
+                data.get('change_4h')
+            ]
+            
+            # Filter out None values
+            valid_changes = [ch for ch in changes if ch is not None]
+            
+            if not valid_changes:
+                continue
+                
+            # Calculate trend metrics
+            avg_change = sum(valid_changes) / len(valid_changes)
+            volatility = max(valid_changes) - min(valid_changes) if len(valid_changes) > 1 else 0
+            
+            # Determine trend direction
+            if avg_change > 5:
+                trend_direction = "STRONG UP 🚀"
+            elif avg_change > 2:
+                trend_direction = "UP 🟢"
+            elif avg_change < -5:
+                trend_direction = "STRONG DOWN 🔻"
+            elif avg_change < -2:
+                trend_direction = "DOWN 🔴"
+            else:
+                trend_direction = "FLAT ⚪"
+            
+            # Find best and worst timeframes
+            timeframes = ['5m', '15m', '30m', '1h', '4h']
+            timeframe_changes = list(zip(timeframes, changes))
+            
+            # Filter out None values for best/worst calculation
+            valid_timeframes = [(tf, ch) for tf, ch in timeframe_changes if ch is not None]
+            
+            if valid_timeframes:
+                best_timeframe = max(valid_timeframes, key=lambda x: x[1])[0]
+                worst_timeframe = min(valid_timeframes, key=lambda x: x[1])[0]
+            else:
+                best_timeframe = "N/A"
+                worst_timeframe = "N/A"
+            
+            # Calculate consistency (how many timeframes show the same direction)
+            positive_changes = len([ch for ch in valid_changes if ch > 0])
+            negative_changes = len([ch for ch in valid_changes if ch < 0])
+            consistency = max(positive_changes, negative_changes) / len(valid_changes) * 100 if valid_changes else 0
+            
+            # Add row data
+            ws.cell(row=row, column=1).value = symbol
+            ws.cell(row=row, column=2).value = data.get('current_price', 'N/A')
+            ws.cell(row=row, column=3).value = trend_direction
+            ws.cell(row=row, column=4).value = f"{volatility:.2f}"
+            ws.cell(row=row, column=5).value = self.format_change_for_excel(data.get('change_5m'))
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(data.get('change_15m'))
+            ws.cell(row=row, column=7).value = self.format_change_for_excel(data.get('change_30m'))
+            ws.cell(row=row, column=8).value = self.format_change_for_excel(data.get('change_1h'))
+            ws.cell(row=row, column=9).value = self.format_change_for_excel(data.get('change_4h'))
+            ws.cell(row=row, column=10).value = best_timeframe
+            ws.cell(row=row, column=11).value = worst_timeframe
+            ws.cell(row=row, column=12).value = f"{consistency:.1f}%"
+            
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']:
+            ws.column_dimensions[col].width = 12
+
 
     def create_all_futures_sheet(self, wb, all_futures_data, symbol_coverage):
         """Create All Futures sheet"""
@@ -1176,53 +1439,96 @@ class MEXCTracker:
         for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
             ws.column_dimensions[col].width = 15
 
-    def create_price_analysis_sheet(self, wb, analyzed_prices):
-        """Create Price Analysis sheet"""
+    def create_price_analysis_sheet(self, wb, analyzed_prices=None, historical_data=None):
+        """Create Price Analysis sheet with historical data"""
         ws = wb.create_sheet("Price Analysis")
         
         # Headers
-        headers = ['Rank', 'Symbol', 'Current Price', '5m %', '1h %', '4h %', 'Score', 'Trend', 'Last Updated']
+        headers = [
+            'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+            '1h %', '4h %', 'Score', 'Trend', 'Volume', 'Last Updated'
+        ]
+        
+        # Add headers
         for col, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col)
             cell.value = header
             cell.font = Font(bold=True)
             cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
         
-        # Add data - top performers
-        row = 2
-        valid_prices = [p for p in analyzed_prices if p.get('price') is not None] if analyzed_prices else []
-        valid_prices.sort(key=lambda x: x.get('score', 0), reverse=True)
+        # Combine analyzed prices with historical data for ranking
+        all_data = []
         
-        for i, item in enumerate(valid_prices[:50], 1):
+        # Add analyzed prices first
+        if analyzed_prices:
+            for item in analyzed_prices:
+                all_data.append({
+                    'symbol': item['symbol'],
+                    'price': item.get('price'),
+                    'changes': item.get('changes', {}),
+                    'score': item.get('score', 0),
+                    'source': 'analyzed'
+                })
+        
+        # Add historical data (avoid duplicates)
+        if historical_data:
+            for symbol, data in historical_data.items():
+                if not any(d['symbol'] == symbol for d in all_data):
+                    all_data.append({
+                        'symbol': symbol,
+                        'price': data.get('current_price'),
+                        'changes': {
+                            '5m': data.get('change_5m'),
+                            '15m': data.get('change_15m'),
+                            '30m': data.get('change_30m'),
+                            '60m': data.get('change_1h'),
+                            '240m': data.get('change_4h')
+                        },
+                        'score': data.get('score', 0),
+                        'source': 'historical'
+                    })
+        
+        # Sort by score and take top 50
+        all_data.sort(key=lambda x: x.get('score', 0), reverse=True)
+        top_performers = all_data[:50]
+        
+        # Add data
+        row = 2
+        for i, item in enumerate(top_performers, 1):
             changes = item.get('changes', {})
             
-            # Determine trend
-            latest_change = item.get('latest_change', 0)
-            if latest_change > 5:
-                trend = "STRONG UP"
-            elif latest_change > 2:
-                trend = "UP"
-            elif latest_change < -5:
-                trend = "STRONG DOWN"
-            elif latest_change < -2:
-                trend = "DOWN"
+            # Determine trend based on multiple timeframes
+            trend_score = self.calculate_trend_score(changes)
+            if trend_score > 5:
+                trend = "🚀 STRONG UP"
+            elif trend_score > 2:
+                trend = "🟢 UP"
+            elif trend_score < -5:
+                trend = "🔻 STRONG DOWN"
+            elif trend_score < -2:
+                trend = "🔴 DOWN"
             else:
-                trend = "FLAT"
+                trend = "⚪ FLAT"
             
             ws.cell(row=row, column=1).value = i
             ws.cell(row=row, column=2).value = item['symbol']
             ws.cell(row=row, column=3).value = item.get('price', 'N/A')
             ws.cell(row=row, column=4).value = self.format_change_for_excel(changes.get('5m'))
-            ws.cell(row=row, column=5).value = self.format_change_for_excel(changes.get('60m'))
-            ws.cell(row=row, column=6).value = self.format_change_for_excel(changes.get('240m'))
-            ws.cell(row=row, column=7).value = item.get('score', 0)
-            ws.cell(row=row, column=8).value = trend
-            ws.cell(row=row, column=9).value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            ws.cell(row=row, column=5).value = self.format_change_for_excel(changes.get('15m'))
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(changes.get('30m'))
+            ws.cell(row=row, column=7).value = self.format_change_for_excel(changes.get('60m'))
+            ws.cell(row=row, column=8).value = self.format_change_for_excel(changes.get('240m'))
+            ws.cell(row=row, column=9).value = f"{item.get('score', 0):.2f}"
+            ws.cell(row=row, column=10).value = trend
+            ws.cell(row=row, column=11).value = 'N/A'  # Volume would require additional data
+            ws.cell(row=row, column=12).value = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             row += 1
         
         # Adjust column widths
-        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']:
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']:
             ws.column_dimensions[col].width = 12
+
+
 
     def create_exchange_stats_sheet(self, wb, all_futures_data):
         """Create Exchange Stats sheet"""
@@ -1259,12 +1565,25 @@ class MEXCTracker:
             ws.column_dimensions[col].width = 20
 
     def format_change_for_excel(self, change):
-        """Format change for Excel"""
+        """Format change for Excel with proper None handling"""
         if change is None:
             return 'N/A'
-        return f"{change:+.2f}%"
-
-
+        
+        # Add emoji based on change value for better visualization
+        if change > 10:
+            return f"🚀 {change:+.2f}%"
+        elif change > 5:
+            return f"🟢 {change:+.2f}%"
+        elif change > 2:
+            return f"📈 {change:+.2f}%"
+        elif change < -10:
+            return f"💥 {change:+.2f}%"
+        elif change < -5:
+            return f"🔴 {change:+.2f}%"
+        elif change < -2:
+            return f"📉 {change:+.2f}%"
+        else:
+            return f"{change:+.2f}%"
 
     def create_dashboard_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
         """Create Dashboard sheet"""
@@ -1315,20 +1634,24 @@ class MEXCTracker:
 
 
     def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage, analyzed_prices=None):
-        """Create comprehensive Excel file matching Google Sheets content"""
+        """Create comprehensive Excel file with historical data from Google Sheets"""
         try:
             wb = Workbook()
             
             # Remove default sheet
             wb.remove(wb.active)
             
-            # Create all sheets matching Google Sheets structure
-            self.create_dashboard_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices)
-            self.create_unique_futures_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices)
-            self.create_all_futures_sheet(wb, all_futures_data, symbol_coverage)
-            self.create_mexc_analysis_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices)
-            self.create_price_analysis_sheet(wb, analyzed_prices)
-            self.create_exchange_stats_sheet(wb, all_futures_data)
+            # Get historical data from Google Sheets
+            historical_data = self.get_historical_data_from_sheets()
+            
+            # Create all sheets matching Google Sheets structure with historical data
+            self.create_dashboard_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data)
+            self.create_unique_futures_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data)
+            self.create_all_futures_sheet(wb, all_futures_data, symbol_coverage, historical_data)
+            self.create_mexc_analysis_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data)
+            self.create_price_analysis_sheet(wb, analyzed_prices, historical_data)
+            self.create_exchange_stats_sheet(wb, all_futures_data, historical_data)
+            self.create_historical_trends_sheet(wb, historical_data)  # New sheet for historical trends
             
             # Save to bytes
             output = io.BytesIO()
@@ -1336,12 +1659,86 @@ class MEXCTracker:
             excel_content = output.getvalue()
             output.close()
             
-            logger.info("✅ Excel file created successfully")
+            logger.info("✅ Excel file created successfully with historical data")
             return excel_content
             
         except Exception as e:
             logger.error(f"Error creating Excel file: {e}")
             return None
+
+
+
+    def get_historical_data_from_sheets(self):
+        """Extract historical data from Google Sheets"""
+        try:
+            historical_data = {}
+            
+            if not self.gs_client or not self.spreadsheet:
+                logger.warning("Google Sheets not available for historical data")
+                return historical_data
+            
+            # Read data from Unique Futures sheet
+            try:
+                worksheet = self.spreadsheet.worksheet('Unique Futures')
+                sheet_data = worksheet.get_all_records()
+                
+                for row in sheet_data:
+                    symbol = row.get('Symbol', '')
+                    if symbol:
+                        historical_data[symbol] = {
+                            'current_price': self.parse_price_value(row.get('Current Price', '')),
+                            'change_5m': self.parse_change_value(row.get('5m Change %', '')),
+                            'change_15m': self.parse_change_value(row.get('15m Change %', '')),
+                            'change_30m': self.parse_change_value(row.get('30m Change %', '')),
+                            'change_1h': self.parse_change_value(row.get('1h Change %', '')),
+                            'change_4h': self.parse_change_value(row.get('4h Change %', '')),
+                            'score': self.parse_score_value(row.get('Score', '')),
+                            'last_updated': row.get('Last Updated', ''),
+                            'status': row.get('Status', '')
+                        }
+                
+                logger.info(f"📊 Loaded historical data for {len(historical_data)} symbols from Google Sheets")
+                
+            except Exception as e:
+                logger.error(f"Error reading historical data from Google Sheets: {e}")
+            
+            return historical_data
+            
+        except Exception as e:
+            logger.error(f"Error getting historical data from sheets: {e}")
+            return {}
+
+    def parse_price_value(self, price_str):
+        """Parse price value from string format"""
+        if not price_str or price_str == 'N/A':
+            return None
+        try:
+            # Remove $ symbol and commas, then convert to float
+            cleaned = str(price_str).replace('$', '').replace(',', '').strip()
+            return float(cleaned)
+        except:
+            return None
+
+    def parse_change_value(self, change_str):
+        """Parse change percentage from string format"""
+        if not change_str or change_str == 'N/A':
+            return None
+        try:
+            # Remove emojis and % symbol, then convert to float
+            cleaned = re.sub(r'[^\d.-]', '', str(change_str))
+            return float(cleaned)
+        except:
+            return None
+
+    def parse_score_value(self, score_str):
+        """Parse score value from string format"""
+        if not score_str or score_str == 'N/A':
+            return 0
+        try:
+            return float(score_str)
+        except:
+            return 0
+        
 
     # ==================== CORE UNIQUE FUTURES LOGIC ====================
 
@@ -2438,56 +2835,34 @@ class MEXCTracker:
 
 
     def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with price information - DEBUG VERSION"""
+        """Update Unique Futures sheet with proper historical price changes"""
         try:
             worksheet = self.spreadsheet.worksheet('Unique Futures')
             
             # Clear existing data
             worksheet.clear()
             
-            # Enhanced headers with price changes
+            # Enhanced headers with proper timeframes
             headers = [
                 'Symbol', 'Current Price', '5m Change %', '15m Change %', 
                 '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
             ]
-            worksheet.update([headers], 'A1')  # CORRECT: values first, range second
+            worksheet.update([headers], 'A1')
             
             # Prepare data
             sheet_data = []
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # DEBUG: Check what's in analyzed_prices
-            debug_symbols = ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']  # Test symbols
-            logger.info("🔍 DEBUG - Checking analyzed_prices content:")
-            for symbol in debug_symbols:
-                price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None)
-                if price_info:
-                    logger.info(f"  ✅ {symbol}: ${price_info.get('price')}")
-                else:
-                    logger.info(f"  ❌ {symbol}: Not in analyzed_prices")
-            
             # Create mapping for quick price lookup
             price_map = {item['symbol']: item for item in analyzed_prices}
-            logger.info(f"🔍 Price map size: {len(price_map)} symbols")
-            
-            # Check specific symbol in price_map
-            if 'QKC_USDT' in price_map:
-                qkc_info = price_map['QKC_USDT']
-                logger.info(f"🔍 QKC_USDT in price_map: ${qkc_info.get('price')}")
-            else:
-                logger.info("❌ QKC_USDT NOT in price_map")
             
             for symbol in sorted(unique_futures):
                 price_info = price_map.get(symbol)
                 changes = price_info.get('changes', {}) if price_info else {}
                 price = price_info.get('price') if price_info else None
                 
-                # DEBUG specific symbol
-                if symbol == 'QKC_USDT':
-                    logger.info(f"🔍 Processing QKC_USDT - price_info: {price_info is not None}, price: {price}")
-                
                 # Format price display
-                if price:
+                if price is not None:
                     if price >= 1:
                         price_display = f"${price:.4f}"
                     elif price >= 0.01:
@@ -2496,9 +2871,6 @@ class MEXCTracker:
                         price_display = f"${price:.8f}"
                 else:
                     price_display = 'N/A'
-                    # DEBUG: Log why specific symbols are N/A
-                    if symbol in ['QKC_USDT', 'WIN_USDT', 'LAZIO_USDT']:
-                        logger.info(f"🔍 {symbol} marked as N/A - price: {price}, price_info: {price_info is not None}")
                 
                 row = [
                     symbol,
@@ -2506,20 +2878,20 @@ class MEXCTracker:
                     self.format_change_for_sheet(changes.get('5m')),
                     self.format_change_for_sheet(changes.get('15m')),
                     self.format_change_for_sheet(changes.get('30m')),
-                    self.format_change_for_sheet(changes.get('60m')),
-                    self.format_change_for_sheet(changes.get('240m')),
+                    self.format_change_for_sheet(changes.get('60m')),  # 1h
+                    self.format_change_for_sheet(changes.get('240m')), # 4h
                     f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
                     'UNIQUE',
                     current_time
                 ]
                 sheet_data.append(row)
             
-            # Update sheet in batches - CORRECTED PARAMETER ORDER
+            # Update sheet in batches
             if sheet_data:
                 batch_size = 100
                 for i in range(0, len(sheet_data), batch_size):
                     batch = sheet_data[i:i + batch_size]
-                    worksheet.update(batch, f'A{i+2}')  # CORRECT: values first, range second
+                    worksheet.update(batch, f'A{i+2}')
                 
                 logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
             else:
@@ -2527,7 +2899,7 @@ class MEXCTracker:
                 
         except Exception as e:
             logger.error(f"Error updating Unique Futures sheet with prices: {e}")
-                
+                            
     def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
         """Update MEXC Analysis sheet with price data"""
         try:
