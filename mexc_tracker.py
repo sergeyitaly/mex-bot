@@ -1292,74 +1292,6 @@ class MEXCTracker:
         
 
 
-    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with proper color formatting"""
-        try:
-            worksheet = self.spreadsheet.worksheet('Unique Futures')
-            
-            # Clear existing data
-            worksheet.clear()
-            
-            # Enhanced headers
-            headers = [
-                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
-                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
-            ]
-            worksheet.update([headers], 'A1')
-            
-            # Prepare data
-            sheet_data = []
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Create mapping for quick price lookup
-            price_map = {item['symbol']: item for item in analyzed_prices}
-            
-            for symbol in sorted(unique_futures):
-                price_info = price_map.get(symbol)
-                changes = price_info.get('changes', {}) if price_info else {}
-                price = price_info.get('price') if price_info else None
-                
-                # Format price display
-                if price is not None:
-                    if price >= 1:
-                        price_display = f"${price:.4f}"
-                    elif price >= 0.01:
-                        price_display = f"${price:.6f}"
-                    else:
-                        price_display = f"${price:.8f}"
-                else:
-                    price_display = 'N/A'
-                
-                row = [
-                    symbol,
-                    price_display,
-                    self.format_change_for_sheets_with_colors(changes.get('5m')),
-                    self.format_change_for_sheets_with_colors(changes.get('15m')),
-                    self.format_change_for_sheets_with_colors(changes.get('30m')),
-                    self.format_change_for_sheets_with_colors(changes.get('60m')),
-                    self.format_change_for_sheets_with_colors(changes.get('240m')),
-                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
-                    'UNIQUE',
-                    current_time
-                ]
-                sheet_data.append(row)
-            
-            # Update sheet in batches
-            if sheet_data:
-                batch_size = 100
-                for i in range(0, len(sheet_data), batch_size):
-                    batch = sheet_data[i:i + batch_size]
-                    worksheet.update(batch, f'A{i+2}')
-                
-                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
-                
-                # Apply color formatting after data is inserted
-                self.apply_color_formatting_to_sheets(worksheet, len(sheet_data))
-            else:
-                logger.warning("No unique futures data to update")
-                
-        except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet: {e}")
 
     def format_change_for_sheets_with_colors(self, change):
         """Format change for Google Sheets with proper +/- signs"""
@@ -1746,147 +1678,7 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error updating Unique Futures sheet: {e}")
 
-    def update_price_analysis_sheet(self, analyzed_prices):
-        """Update Price Analysis sheet with colorful formatting"""
-        try:
-            worksheet = self.spreadsheet.worksheet('Price Analysis')
-            worksheet.clear()
-            
-            headers = [
-                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
-                '1h %', '4h %', 'Score', 'Trend', 'Last Updated'
-            ]
-            worksheet.update([headers], 'A1')
-            
-            sheet_data = []
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Take top 50 performers
-            top_performers = analyzed_prices[:50] if analyzed_prices else []
-            
-            for i, item in enumerate(top_performers, 1):
-                changes = item.get('changes', {})
-                
-                # Determine trend
-                score = item.get('score', 0)
-                if score > 5:
-                    trend = "🚀 STRONG UP"
-                elif score > 2:
-                    trend = "🟢 UP"
-                elif score < -5:
-                    trend = "🔻 STRONG DOWN"
-                elif score < -2:
-                    trend = "🔴 DOWN"
-                else:
-                    trend = "⚪ FLAT"
-                
-                # Format price
-                price = item.get('price')
-                if price is not None:
-                    if price >= 1:
-                        price_display = f"${price:.4f}"
-                    elif price >= 0.01:
-                        price_display = f"${price:.6f}"
-                    else:
-                        price_display = f"${price:.8f}"
-                else:
-                    price_display = 'N/A'
-                
-                row = [
-                    i,
-                    item['symbol'],
-                    price_display,
-                    self.format_change_with_sign(changes.get('5m')),
-                    self.format_change_with_sign(changes.get('15m')),
-                    self.format_change_with_sign(changes.get('30m')),
-                    self.format_change_with_sign(changes.get('60m')),
-                    self.format_change_with_sign(changes.get('240m')),
-                    f"{score:.2f}",
-                    trend,
-                    current_time
-                ]
-                sheet_data.append(row)
-            
-            if sheet_data:
-                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
-                
-                # Apply color formatting
-                self.apply_simple_color_formatting(worksheet, len(sheet_data))
-                
-                logger.info(f"✅ Updated Price Analysis with {len(sheet_data)} records")
-                
-        except Exception as e:
-            logger.error(f"Error updating Price Analysis sheet: {e}")
 
-    def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
-        """Update MEXC Analysis sheet with colorful formatting"""
-        try:
-            worksheet = self.spreadsheet.worksheet('MEXC Analysis')
-            worksheet.clear()
-            
-            headers = [
-                'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
-                'Current Price', '5m Change %', '1h Change %', '4h Change %', 
-                'Status', 'Unique', 'Timestamp'
-            ]
-            worksheet.update([headers], 'A1')
-            
-            # Get only MEXC futures
-            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
-            
-            sheet_data = []
-            price_map = {item['symbol']: item for item in analyzed_prices}
-            
-            for future in mexc_futures:
-                symbol = future['symbol']
-                normalized = self.normalize_symbol_for_comparison(symbol)
-                exchanges_list = symbol_coverage.get(normalized, set())
-                available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
-                exchange_count = len(exchanges_list)
-                status = "Unique" if exchange_count == 1 else "Multi-exchange"
-                unique_flag = "✅" if exchange_count == 1 else "🔸"
-                
-                # Get price info
-                price_info = price_map.get(symbol, {})
-                changes = price_info.get('changes', {})
-                price = price_info.get('price')
-                
-                # Format price
-                if price is not None:
-                    if price >= 1:
-                        price_display = f"${price:.4f}"
-                    elif price >= 0.01:
-                        price_display = f"${price:.6f}"
-                    else:
-                        price_display = f"${price:.8f}"
-                else:
-                    price_display = 'N/A'
-                
-                row = [
-                    symbol,
-                    normalized,
-                    available_on,
-                    exchange_count,
-                    price_display,
-                    self.format_change_with_sign(changes.get('5m')),
-                    self.format_change_with_sign(changes.get('60m')),
-                    self.format_change_with_sign(changes.get('240m')),
-                    status,
-                    unique_flag,
-                    timestamp
-                ]
-                sheet_data.append(row)
-            
-            if sheet_data:
-                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
-                
-                # Apply color formatting
-                self.apply_simple_color_formatting(worksheet, len(sheet_data))
-                
-                logger.info(f"✅ Updated MEXC Analysis with {len(sheet_data)} records")
-                
-        except Exception as e:
-            logger.error(f"Error updating MEXC Analysis sheet: {e}")
 
     def format_change_with_sign(self, change):
         """Format change with clear + sign for positive, - for negative"""
@@ -2637,8 +2429,271 @@ class MEXCTracker:
             logger.error(f"❌ Unique futures search error: {e}")
             return set(), {}
         
+    def format_change_with_emoji(self, change):
+        """Format change with emoji and sign for Google Sheets"""
+        if change is None:
+            return 'N/A'
+        
+        # Use the same emoji logic as Telegram messages
+        if change > 5:
+            return f"🚀 +{change:.2f}%"
+        elif change > 2:
+            return f"🟢 +{change:.2f}%"
+        elif change > 0.1:
+            return f"📈 +{change:.2f}%"
+        elif change < -5:
+            return f"💥 {change:.2f}%"
+        elif change < -2:
+            return f"🔴 {change:.2f}%"
+        elif change < -0.1:
+            return f"📉 {change:.2f}%"
+        else:
+            return f"⚪ {change:.2f}%"
+
+    def update_unique_futures_sheet_with_prices(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with emoji formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            headers = [
+                'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+                '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol)
+                changes = price_info.get('changes', {}) if price_info else {}
+                price = price_info.get('price') if price_info else None
+                
+                # Format price exactly like Telegram
+                if price is not None:
+                    if price >= 1000:
+                        price_display = f"${price:,.2f}"
+                    elif price >= 1:
+                        price_display = f"${price:.2f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.0001:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.2e}"  # Scientific notation for very small numbers
+                else:
+                    price_display = 'N/A'
+                
+                # Format changes with emojis like Telegram
+                row = [
+                    symbol,
+                    price_display,
+                    self.format_change_with_emoji(changes.get('5m')),
+                    self.format_change_with_emoji(changes.get('15m')),
+                    self.format_change_with_emoji(changes.get('30m')),
+                    self.format_change_with_emoji(changes.get('60m')),
+                    self.format_change_with_emoji(changes.get('240m')),
+                    f"{price_info.get('score', 0):.2f}" if price_info else 'N/A',
+                    'UNIQUE',
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:J{len(sheet_data) + 1}', sheet_data)
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records (emoji format)")
+                
+        except Exception as e:
+            logger.error(f"Error updating Unique Futures sheet: {e}")
+
+    def update_price_analysis_sheet(self, analyzed_prices):
+        """Update Price Analysis sheet with emoji formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Price Analysis')
+            worksheet.clear()
+            
+            headers = [
+                'Rank', 'Symbol', 'Current Price', '5m %', '15m %', '30m %', 
+                '1h %', '4h %', 'Score', 'Trend', 'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Take top 50 performers
+            top_performers = analyzed_prices[:50] if analyzed_prices else []
+            
+            for i, item in enumerate(top_performers, 1):
+                changes = item.get('changes', {})
+                price = item.get('price')
+                
+                # Format price like Telegram
+                if price is not None:
+                    if price >= 1000:
+                        price_display = f"${price:,.2f}"
+                    elif price >= 1:
+                        price_display = f"${price:.2f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.0001:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.2e}"
+                else:
+                    price_display = 'N/A'
+                
+                # Determine trend with emojis
+                score = item.get('score', 0)
+                if score > 5:
+                    trend = "🚀 STRONG UP"
+                elif score > 2:
+                    trend = "🟢 UP"
+                elif score < -5:
+                    trend = "🔻 STRONG DOWN"
+                elif score < -2:
+                    trend = "🔴 DOWN"
+                else:
+                    trend = "⚪ FLAT"
+                
+                row = [
+                    i,
+                    item['symbol'],
+                    price_display,
+                    self.format_change_with_emoji(changes.get('5m')),
+                    self.format_change_with_emoji(changes.get('15m')),
+                    self.format_change_with_emoji(changes.get('30m')),
+                    self.format_change_with_emoji(changes.get('60m')),
+                    self.format_change_with_emoji(changes.get('240m')),
+                    f"{score:.2f}",
+                    trend,
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
+                logger.info(f"✅ Updated Price Analysis with {len(sheet_data)} records (emoji format)")
+                
+        except Exception as e:
+            logger.error(f"Error updating Price Analysis sheet: {e}")
+
+    def update_mexc_analysis_sheet_with_prices(self, all_futures_data, symbol_coverage, analyzed_prices, timestamp):
+        """Update MEXC Analysis sheet with emoji formatting"""
+        try:
+            worksheet = self.spreadsheet.worksheet('MEXC Analysis')
+            worksheet.clear()
+            
+            headers = [
+                'MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 
+                'Current Price', '5m Change %', '1h Change %', '4h Change %', 
+                'Status', 'Unique', 'Timestamp'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            # Get only MEXC futures
+            mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+            
+            sheet_data = []
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for future in mexc_futures:
+                symbol = future['symbol']
+                normalized = self.normalize_symbol_for_comparison(symbol)
+                exchanges_list = symbol_coverage.get(normalized, set())
+                available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+                exchange_count = len(exchanges_list)
+                status = "Unique" if exchange_count == 1 else "Multi-exchange"
+                unique_flag = "✅" if exchange_count == 1 else "🔸"
+                
+                # Get price info
+                price_info = price_map.get(symbol, {})
+                changes = price_info.get('changes', {})
+                price = price_info.get('price')
+                
+                # Format price like Telegram
+                if price is not None:
+                    if price >= 1000:
+                        price_display = f"${price:,.2f}"
+                    elif price >= 1:
+                        price_display = f"${price:.2f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.0001:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.2e}"
+                else:
+                    price_display = 'N/A'
+                
+                row = [
+                    symbol,
+                    normalized,
+                    available_on,
+                    exchange_count,
+                    price_display,
+                    self.format_change_with_emoji(changes.get('5m')),
+                    self.format_change_with_emoji(changes.get('60m')),
+                    self.format_change_with_emoji(changes.get('240m')),
+                    status,
+                    unique_flag,
+                    timestamp
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
+                logger.info(f"✅ Updated MEXC Analysis with {len(sheet_data)} records (emoji format)")
+                
+        except Exception as e:
+            logger.error(f"Error updating MEXC Analysis sheet: {e}")
+
+
+    def format_price_for_display(self, price):
+        """Format price for display exactly like Google Sheets"""
+        if price is None:
+            return "N/A"
+        
+        if price >= 1000:
+            return f"${price:,.2f}"
+        elif price >= 1:
+            return f"${price:.2f}"
+        elif price >= 0.01:
+            return f"${price:.4f}"
+        elif price >= 0.0001:
+            return f"${price:.6f}"
+        else:
+            return f"${price:.2e}"  # Scientific notation for very small numbers
+
+    def format_change_for_telegram(self, change):
+        """Format change for Telegram messages"""
+        if change is None:
+            return "N/A"
+        
+        # Same emoji logic as Google Sheets
+        if change > 5:
+            return f"🚀 +{change:.2f}%"
+        elif change > 2:
+            return f"🟢 +{change:.2f}%"
+        elif change > 0.1:
+            return f"📈 +{change:.2f}%"
+        elif change < -5:
+            return f"💥 {change:.2f}%"
+        elif change < -2:
+            return f"🔴 {change:.2f}%"
+        elif change < -0.1:
+            return f"📉 {change:.2f}%"
+        else:
+            return f"⚪ {change:.2f}%"
+        
+
     def send_new_unique_notification(self, new_futures, all_unique):
-        """Send notification about new unique futures - PROPER MICRO-CAP FORMATTING"""
+        """Send notification about new unique futures - UPDATED FORMATTING"""
         try:
             display_futures = list(new_futures)[:10]
             
@@ -2655,33 +2710,11 @@ class MEXCTracker:
                     # VALID PRICE (including micro-cap)
                     changes = price_info.get('changes', {})
                     change_5m = changes.get('5m', 0)
-                    change_1h = changes.get('60m', 0)
                     price = price_info['price']
                     
                     message += f"✅ <b>{symbol}</b>\n"
-                    
-                    # IMPROVED PRICE FORMATTING FOR ALL RANGES
-                    if price >= 1000:
-                        message += f"   Price: ${price:,.2f}\n"
-                    elif price >= 1:
-                        message += f"   Price: ${price:.2f}\n"
-                    elif price >= 0.1:
-                        message += f"   Price: ${price:.4f}\n"
-                    elif price >= 0.001:
-                        message += f"   Price: ${price:.6f}\n"
-                    elif price >= 0.000001:
-                        message += f"   Price: ${price:.8f}\n"
-                    else:
-                        # For extremely small prices (like 3e-08)
-                        message += f"   Price: ${price:.2e}\n"
-                    
-                    message += f"   5m: {self.format_change(change_5m)}\n"
-                    
-                    # Only show 1h if it's different from 5m
-                    if change_1h != change_5m:
-                        message += f"   1h: {self.format_change(change_1h)}\n"
-                    
-                    message += "\n"
+                    message += f"   Price: {self.format_price_for_display(price)}\n"
+                    message += f"   5m: {self.format_change_for_telegram(change_5m)}\n\n"
                     valid_count += 1
                     
                 else:
@@ -2698,6 +2731,9 @@ class MEXCTracker:
             
         except Exception as e:
             logger.error(f"Error sending new unique notification: {e}")
+
+
+
 
 
     def send_lost_unique_notification(self, lost_futures, remaining_unique):
@@ -5313,18 +5349,6 @@ class MEXCTracker:
         else:
             return "➡️"  # Sideways
 
-    def format_price_for_display(self, price):
-        """Format price for display based on value"""
-        if price is None:
-            return "N/A"
-        elif price >= 1000:
-            return f"${price:,.2f}"
-        elif price >= 1:
-            return f"${price:.2f}"
-        elif price >= 0.01:
-            return f"${price:.4f}"
-        else:
-            return f"${price:.6f}"
 
     def create_growth_summary(self, top_growth):
         """Create comprehensive growth summary"""
