@@ -731,7 +731,7 @@ class MEXCTracker:
     # ==================== ENHANCED UNIQUE FUTURES MONITORING ====================
 
     def monitor_unique_futures_changes(self):
-        """Monitor changes in unique futures without threading"""
+        """Monitor changes in unique futures - FIXED to send notifications"""
         try:
             logger.info("🔍 Monitoring unique futures changes...")
             
@@ -750,9 +750,11 @@ class MEXCTracker:
             # Send notifications only if there are changes
             if new_futures:
                 self.send_new_unique_notification(new_futures, current_unique_set)
+                logger.info(f"🚀 Found {len(new_futures)} new unique futures")
             
             if lost_futures:
                 self.send_lost_unique_notification(lost_futures, current_unique_set)
+                logger.info(f"📉 Lost {len(lost_futures)} unique futures")
             
             # Update stored data
             data['unique_futures'] = list(current_unique_set)
@@ -769,6 +771,8 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Error monitoring unique futures: {e}")
             return set(), set()
+
+
             
     def format_change(self, change):
         """Format price change with color emoji"""
@@ -1694,29 +1698,42 @@ class MEXCTracker:
 
 
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with colorful formatting on all sheets"""
-        if not self.gs_client or not self.spreadsheet:
-            return
-        
+        """Update Google Sheet with prices - FIXED with better logging"""
         try:
-            logger.info("🔄 Starting Google Sheet update with colorful formatting...")
+            if not self.gs_client or not self.spreadsheet:
+                logger.warning("❌ Google Sheets not available")
+                return
             
-            # Get data
+            logger.info("🔄 Starting Google Sheet update...")
+            
+            # Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
+            logger.info(f"🎯 Found {len(unique_futures)} unique futures")
+            
+            # Get current price data
             batch_data = self.get_mexc_prices_batch_working()
+            logger.info(f"📊 Got {len(batch_data)} prices from batch API")
             
             # Store price history
             self.store_price_history(batch_data)
             
-            # Create price_data
+            # Create price_data with proper historical changes
             price_data = {}
+            matched_symbols = 0
+            
             for symbol in unique_futures:
                 current_price_info = None
                 
+                # Find current price
                 if symbol in batch_data:
                     current_price_info = batch_data[symbol]
                 else:
-                    alt_formats = [symbol.replace('_', ''), symbol.replace('_', '-'), symbol.replace('_', '/')]
+                    # Try alternative formats
+                    alt_formats = [
+                        symbol.replace('_', ''),
+                        symbol.replace('_', '-'), 
+                        symbol.replace('_', '/'),
+                    ]
                     for alt_format in alt_formats:
                         if alt_format in batch_data:
                             current_price_info = batch_data[alt_format].copy()
@@ -1725,6 +1742,8 @@ class MEXCTracker:
                 
                 if current_price_info and current_price_info.get('price') is not None:
                     current_price = current_price_info['price']
+                    
+                    # Calculate proper historical changes
                     historical_changes = self.calculate_historical_changes_from_sheets(symbol, current_price)
                     
                     price_data[symbol] = {
@@ -1734,6 +1753,7 @@ class MEXCTracker:
                         'timestamp': datetime.now(),
                         'source': current_price_info.get('source', 'historical')
                     }
+                    matched_symbols += 1
                 else:
                     price_data[symbol] = {
                         'symbol': symbol,
@@ -1744,26 +1764,37 @@ class MEXCTracker:
                     }
             
             analyzed_prices = self.analyze_price_movements(price_data)
+            
+            # Get exchange statistics
             exchange_stats = self.get_all_exchanges_futures_stats()
             
             # Update all sheets
             self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
             self.update_price_analysis_sheet(analyzed_prices)
-            self.update_mexc_analysis_sheet_with_prices(
-                self.get_all_futures_data(), 
-                self.get_symbol_coverage(),
-                analyzed_prices,
-                datetime.now().isoformat()
-            )
             self.update_exchange_stats_sheet(self.spreadsheet, exchange_stats, datetime.now().isoformat())
             
-            # Apply color formatting to all sheets
-            self.apply_color_formatting_to_all_sheets()
+            # Store calculated changes
+            self.store_calculated_changes(analyzed_prices)
             
-            logger.info("✅ Google Sheets updated with colorful formatting")
+            logger.info(f"✅ Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices")
+            
+            # Send confirmation to Telegram
+            if matched_symbols > 0:
+                confirmation_msg = (
+                    f"📊 <b>Google Sheets Updated</b>\n\n"
+                    f"✅ Prices updated: {matched_symbols}/{len(unique_futures)}\n"
+                    f"💰 Coverage: {(matched_symbols/len(unique_futures)*100):.1f}%\n"
+                    f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n\n"
+                    f"<i>Next update in 5 minutes</i>"
+                )
+                self.send_broadcast_message(confirmation_msg)
             
         except Exception as e:
-            logger.error(f"Error updating Google Sheets: {e}")
+            logger.error(f"❌ Error updating Google Sheets: {e}")
+            # Send error to Telegram
+            error_msg = f"❌ <b>Google Sheets Update Failed</b>\n\nError: {str(e)}"
+            self.send_broadcast_message(error_msg)
+
 
 
 
@@ -4968,23 +4999,56 @@ class MEXCTracker:
     # ==================== SCHEDULER ====================
 
     def setup_scheduler(self):
-        """Setup scheduled tasks"""
-        # Unique futures monitoring
-        schedule.every(self.update_interval).minutes.do(self.monitor_unique_futures_changes)
-        
-        # Price monitoring (more frequent)
-        schedule.every(self.price_check_interval).minutes.do(self.run_price_monitoring)
-        
-        # Google Sheets update with historical data
-        schedule.every(5).minutes.do(self.update_google_sheet_with_prices)
-        
-        # 4-hour chart reporting
-        schedule.every(4).hours.do(self.send_4h_growth_chart)
-        
-        # Data cleanup (once per day)
-        schedule.every().day.at("02:00").do(self.cleanup_old_price_data)
-        
-        logger.info(f"✅ Scheduler setup complete - historical data tracking enabled")
+        """Setup scheduled tasks - FIXED"""
+        try:
+            # Clear any existing schedules
+            schedule.clear()
+            
+            # Unique futures monitoring
+            schedule.every(self.update_interval).minutes.do(
+                self.monitor_unique_futures_changes
+            )
+            
+            # Price monitoring (more frequent)
+            schedule.every(self.price_check_interval).minutes.do(
+                self.run_price_monitoring
+            )
+            
+            # Google Sheets update every 5 minutes
+            schedule.every(5).minutes.do(
+                self.update_google_sheet_with_prices
+            )
+            
+            # 4-hour chart reporting
+            schedule.every(4).hours.do(
+                self.send_4h_growth_chart
+            )
+            
+            # Data cleanup (once per day)
+            schedule.every().day.at("02:00").do(
+                self.cleanup_old_price_data
+            )
+            
+            logger.info(f"✅ Scheduler setup complete:")
+            logger.info(f"   - Unique check: every {self.update_interval} minutes")
+            logger.info(f"   - Price check: every {self.price_check_interval} minutes") 
+            logger.info(f"   - Google Sheets: every 5 minutes")
+            logger.info(f"   - 4h charts: every 4 hours")
+            logger.info(f"   - Cleanup: daily at 02:00")
+            
+        except Exception as e:
+            logger.error(f"Error setting up scheduler: {e}")
+
+    def run_scheduler(self):
+        """Run the scheduler with better error handling"""
+        while True:
+            try:
+                schedule.run_pending()
+                time.sleep(1)
+            except Exception as e:
+                logger.error(f"Scheduler error: {e}")
+                time.sleep(60)  # Wait a minute before retrying
+
 
     def send_4h_growth_chart(self):
         """Send 4-hour growth chart with historical trends from Google Sheets"""
@@ -5688,11 +5752,11 @@ class MEXCTracker:
 
 
     def run_price_monitoring(self):
-        """Run price monitoring and alert on significant movements"""
+        """Run price monitoring and alert on significant movements - FIXED"""
         try:
             logger.info("💰 Running price monitoring...")
             
-            price_data = self.get_all_mexc_prices()
+            price_data = self.get_consistent_price_data()
             analyzed_prices = self.analyze_price_movements(price_data)
             
             # Check for significant movers
@@ -5702,35 +5766,42 @@ class MEXCTracker:
                 change_5m = changes.get('5m', 0)
                 change_1h = changes.get('60m', 0)
                 
-                # Alert criteria
-                if change_5m > 10 or change_1h > 25:  # 10% in 5min or 25% in 1h
+                # Alert criteria - lowered thresholds for testing
+                if abs(change_5m) > 2 or abs(change_1h) > 5:  # 2% in 5min or 5% in 1h
                     significant_movers.append(item)
             
             # Send alerts for significant movers
             if significant_movers:
                 self.send_price_alert(significant_movers)
-            
+                logger.info(f"🚨 Sent alerts for {len(significant_movers)} significant movers")
+            else:
+                logger.info("💰 No significant price movements detected")
+                
         except Exception as e:
             logger.error(f"Price monitoring error: {e}")
 
     def send_price_alert(self, significant_movers):
-        """Send alert for significant price movements"""
+        """Send alert for significant price movements - FIXED"""
         try:
             message = "🚨 <b>SIGNIFICANT PRICE MOVEMENTS!</b>\n\n"
             
             for item in significant_movers[:5]:  # Max 5 alerts
                 changes = item.get('changes', {})
                 message += f"📈 <b>{item['symbol']}</b>\n"
-                message += f"   Price: ${item['price']:.4f}\n"
+                message += f"   Price: {self.format_price_for_display(item.get('price'))}\n"
                 
-                if changes.get('5m', 0) > 10:
-                    message += f"   🚀 5m: {self.format_change(changes['5m'])}\n"
-                if changes.get('60m', 0) > 25:
-                    message += f"   📊 1h: {self.format_change(changes['60m'])}\n"
+                change_5m = changes.get('5m', 0)
+                change_1h = changes.get('60m', 0)
+                
+                if abs(change_5m) > 2:
+                    message += f"   🚀 5m: {self.format_change_for_telegram(change_5m)}\n"
+                if abs(change_1h) > 5:
+                    message += f"   📊 1h: {self.format_change_for_telegram(change_1h)}\n"
                 
                 message += "\n"
             
             self.send_broadcast_message(message)
+            logger.info("✅ Price alert sent to Telegram")
             
         except Exception as e:
             logger.error(f"Error sending price alert: {e}")
@@ -5824,11 +5895,7 @@ class MEXCTracker:
             logger.error(f"Bot run error: {e}")
             raise
 
-    def run_scheduler(self):
-        """Run the scheduler"""
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
+
 
 def main():
     tracker = MEXCTracker()
