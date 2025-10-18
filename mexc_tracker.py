@@ -1958,92 +1958,6 @@ class MEXCTracker:
         except Exception as e:
             logger.error(f"Optimized data flow failed: {e}")
 
-    def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices=None, historical_data=None):
-        """Create Unique Futures sheet with historical data"""
-        ws = wb.create_sheet("Unique Futures")
-        
-        # Headers matching Google Sheets
-        headers = [
-            'Symbol', 'Current Price', '5m Change %', '15m Change %', 
-            '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
-        ]
-        
-        # Add headers with formatting
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col)
-            cell.value = header
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
-        
-        # Get unique futures
-        unique_futures, _ = self.find_unique_futures_robust()
-        
-        # Add data with historical values
-        row = 2
-        for symbol in sorted(unique_futures):
-            # Try to get historical data first, fall back to analyzed prices
-            historical_info = historical_data.get(symbol) if historical_data else None
-            price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None) if analyzed_prices else None
-            
-            if historical_info:
-                # Use historical data from Google Sheets
-                current_price = historical_info.get('current_price')
-                change_5m = historical_info.get('change_5m')
-                change_15m = historical_info.get('change_15m')
-                change_30m = historical_info.get('change_30m')
-                change_1h = historical_info.get('change_1h')
-                change_4h = historical_info.get('change_4h')
-                score = historical_info.get('score', 0)
-                last_updated = historical_info.get('last_updated', '')
-                status = historical_info.get('status', 'UNIQUE')
-            elif price_info:
-                # Fall back to analyzed prices
-                current_price = price_info.get('price')
-                changes = price_info.get('changes', {})
-                change_5m = changes.get('5m')
-                change_15m = changes.get('15m')
-                change_30m = changes.get('30m')
-                change_1h = changes.get('60m')
-                change_4h = changes.get('240m')
-                score = price_info.get('score', 0)
-                last_updated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                status = 'UNIQUE'
-            else:
-                # No data available
-                current_price = None
-                change_5m = change_15m = change_30m = change_1h = change_4h = None
-                score = 0
-                last_updated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                status = 'UNIQUE'
-            
-            # Format price display
-            if current_price is not None:
-                if current_price >= 1:
-                    price_display = f"${current_price:.4f}"
-                elif current_price >= 0.01:
-                    price_display = f"${current_price:.6f}"
-                else:
-                    price_display = f"${current_price:.8f}"
-            else:
-                price_display = 'N/A'
-            
-            # Add row data
-            ws.cell(row=row, column=1).value = symbol
-            ws.cell(row=row, column=2).value = price_display
-            ws.cell(row=row, column=3).value = self.format_change_for_excel(change_5m)
-            ws.cell(row=row, column=4).value = self.format_change_for_excel(change_15m)
-            ws.cell(row=row, column=5).value = self.format_change_for_excel(change_30m)
-            ws.cell(row=row, column=6).value = self.format_change_for_excel(change_1h)
-            ws.cell(row=row, column=7).value = self.format_change_for_excel(change_4h)
-            ws.cell(row=row, column=8).value = f"{score:.2f}"
-            ws.cell(row=row, column=9).value = status
-            ws.cell(row=row, column=10).value = last_updated
-            
-            row += 1
-        
-        # Adjust column widths
-        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
-            ws.column_dimensions[col].width = 15
 
     def create_historical_trends_sheet(self, wb, historical_data):
         """Create Historical Trends sheet showing price movement patterns"""
@@ -2139,90 +2053,6 @@ class MEXCTracker:
             ws.column_dimensions[col].width = 12
 
 
-    def create_all_futures_sheet(self, wb, all_futures_data, symbol_coverage):
-        """Create All Futures sheet"""
-        ws = wb.create_sheet("All Futures")
-        
-        # Headers
-        headers = ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique']
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col)
-            cell.value = header
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
-        
-        # Add data
-        row = 2
-        for future in all_futures_data:
-            normalized = self.normalize_symbol_for_comparison(future['symbol'])
-            exchanges_list = symbol_coverage.get(normalized, set())
-            available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
-            coverage = f"{len(exchanges_list)} exchanges"
-            is_unique = "✅" if len(exchanges_list) == 1 else ""
-            
-            ws.cell(row=row, column=1).value = future['symbol']
-            ws.cell(row=row, column=2).value = future['exchange']
-            ws.cell(row=row, column=3).value = normalized
-            ws.cell(row=row, column=4).value = available_on
-            ws.cell(row=row, column=5).value = coverage
-            ws.cell(row=row, column=6).value = future['timestamp']
-            ws.cell(row=row, column=7).value = is_unique
-            row += 1
-        
-        # Adjust column widths
-        ws.column_dimensions['A'].width = 25
-        ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 25
-        ws.column_dimensions['D'].width = 40
-        ws.column_dimensions['E'].width = 15
-        ws.column_dimensions['F'].width = 20
-        ws.column_dimensions['G'].width = 10
-
-    def create_mexc_analysis_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
-        """Create MEXC Analysis sheet"""
-        ws = wb.create_sheet("MEXC Analysis")
-        
-        # Headers
-        headers = ['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 'Current Price', '5m Change %', '1h Change %', '4h Change %', 'Status', 'Unique']
-        for col, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col)
-            cell.value = header
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
-        
-        # Get MEXC futures and price mapping
-        mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
-        price_map = {item['symbol']: item for item in analyzed_prices} if analyzed_prices else {}
-        
-        # Add data
-        row = 2
-        for future in mexc_futures:
-            symbol = future['symbol']
-            normalized = self.normalize_symbol_for_comparison(symbol)
-            exchanges_list = symbol_coverage.get(normalized, set())
-            available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
-            exchange_count = len(exchanges_list)
-            status = "Unique" if exchange_count == 1 else "Multi-exchange"
-            unique_flag = "✅" if exchange_count == 1 else "🔸"
-            
-            price_info = price_map.get(symbol, {})
-            changes = price_info.get('changes', {})
-            
-            ws.cell(row=row, column=1).value = symbol
-            ws.cell(row=row, column=2).value = normalized
-            ws.cell(row=row, column=3).value = available_on
-            ws.cell(row=row, column=4).value = exchange_count
-            ws.cell(row=row, column=5).value = price_info.get('price', 'N/A')
-            ws.cell(row=row, column=6).value = self.format_change_for_excel(changes.get('5m'))
-            ws.cell(row=row, column=7).value = self.format_change_for_excel(changes.get('60m'))
-            ws.cell(row=row, column=8).value = self.format_change_for_excel(changes.get('240m'))
-            ws.cell(row=row, column=9).value = status
-            ws.cell(row=row, column=10).value = unique_flag
-            row += 1
-        
-        # Adjust column widths
-        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
-            ws.column_dimensions[col].width = 15
 
     def create_price_analysis_sheet(self, wb, analyzed_prices=None, historical_data=None):
         """Create Price Analysis sheet with historical data"""
@@ -2315,7 +2145,232 @@ class MEXCTracker:
 
 
 
-    def create_exchange_stats_sheet(self, wb, all_futures_data):
+    def create_dashboard_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data=None):
+        """Create Dashboard sheet"""
+        ws = wb.create_sheet("Dashboard")
+        
+        # Title
+        ws['A1'] = 'MEXC FUTURES AUTO-UPDATE DASHBOARD'
+        ws['A1'].font = Font(bold=True, size=14)
+        
+        # Get statistics
+        unique_futures, exchange_stats = self.find_unique_futures_robust()
+        working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+        total_exchanges = len(exchange_stats)
+        
+        # Calculate price coverage using analyzed_prices
+        valid_prices = len([p for p in analyzed_prices if p.get('price') is not None]) if analyzed_prices else 0
+        price_coverage = (valid_prices / len(unique_futures)) * 100 if unique_futures else 0
+        
+        # Statistics data
+        stats_data = [
+            ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            ["Update Interval", f"{self.update_interval} minutes"],
+            ["", ""],
+            ["EXCHANGE STATISTICS", ""],
+            ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
+            ["Total Unique Symbols", len(symbol_coverage)],
+            ["Unique MEXC Futures", len(unique_futures)],
+            ["", ""],
+            ["PRICE ANALYSIS", ""],
+            ["Symbols with Price Data", f"{valid_prices}/{len(unique_futures)}"],
+            ["Price Coverage", f"{price_coverage:.1f}%"],
+            ["MEXC Futures Count", len([f for f in all_futures_data if f['exchange'] == 'MEXC'])],
+            ["", ""],
+            ["PERFORMANCE", ""],
+            ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
+            ["Status", "RUNNING"],
+        ]
+        
+        # Add data to sheet
+        for i, (label, value) in enumerate(stats_data, 2):
+            ws[f'A{i}'] = label
+            ws[f'B{i}'] = value
+            
+            # Format headers
+            if label and any(keyword in label for keyword in ["STATISTICS", "ANALYSIS", "PERFORMANCE"]):
+                ws[f'A{i}'].font = Font(bold=True)
+                ws[f'A{i}'].fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+                ws[f'B{i}'].fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 25
+        ws.column_dimensions['B'].width = 25
+
+
+    def create_unique_futures_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices=None, historical_data=None):
+        """Create Unique Futures sheet with historical data"""
+        ws = wb.create_sheet("Unique Futures")
+        
+        # Headers matching Google Sheets
+        headers = [
+            'Symbol', 'Current Price', '5m Change %', '15m Change %', 
+            '30m Change %', '1h Change %', '4h Change %', 'Score', 'Status', 'Last Updated'
+        ]
+        
+        # Add headers with formatting
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Get unique futures
+        unique_futures, _ = self.find_unique_futures_robust()
+        
+        # Add data with historical values
+        row = 2
+        for symbol in sorted(unique_futures):
+            # Try to get historical data first, fall back to analyzed prices
+            historical_info = historical_data.get(symbol) if historical_data else None
+            price_info = next((p for p in analyzed_prices if p['symbol'] == symbol), None) if analyzed_prices else None
+            
+            if historical_info:
+                # Use historical data from Google Sheets
+                current_price = historical_info.get('current_price')
+                change_5m = historical_info.get('change_5m')
+                change_15m = historical_info.get('change_15m')
+                change_30m = historical_info.get('change_30m')
+                change_1h = historical_info.get('change_1h')
+                change_4h = historical_info.get('change_4h')
+                score = historical_info.get('score', 0)
+                last_updated = historical_info.get('last_updated', '')
+                status = historical_info.get('status', 'UNIQUE')
+            elif price_info:
+                # Fall back to analyzed prices
+                current_price = price_info.get('price')
+                changes = price_info.get('changes', {})
+                change_5m = changes.get('5m')
+                change_15m = changes.get('15m')
+                change_30m = changes.get('30m')
+                change_1h = changes.get('60m')
+                change_4h = changes.get('240m')
+                score = price_info.get('score', 0)
+                last_updated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                status = 'UNIQUE'
+            else:
+                # No data available
+                current_price = None
+                change_5m = change_15m = change_30m = change_1h = change_4h = None
+                score = 0
+                last_updated = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                status = 'UNIQUE'
+            
+            # Format price display
+            if current_price is not None:
+                if current_price >= 1:
+                    price_display = f"${current_price:.4f}"
+                elif current_price >= 0.01:
+                    price_display = f"${current_price:.6f}"
+                else:
+                    price_display = f"${current_price:.8f}"
+            else:
+                price_display = 'N/A'
+            
+            # Add row data
+            ws.cell(row=row, column=1).value = symbol
+            ws.cell(row=row, column=2).value = price_display
+            ws.cell(row=row, column=3).value = self.format_change_for_excel(change_5m)
+            ws.cell(row=row, column=4).value = self.format_change_for_excel(change_15m)
+            ws.cell(row=row, column=5).value = self.format_change_for_excel(change_30m)
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(change_1h)
+            ws.cell(row=row, column=7).value = self.format_change_for_excel(change_4h)
+            ws.cell(row=row, column=8).value = f"{score:.2f}"
+            ws.cell(row=row, column=9).value = status
+            ws.cell(row=row, column=10).value = last_updated
+            
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
+            ws.column_dimensions[col].width = 15
+
+    def create_all_futures_sheet(self, wb, all_futures_data, symbol_coverage, historical_data=None):
+        """Create All Futures sheet"""
+        ws = wb.create_sheet("All Futures")
+        
+        # Headers
+        headers = ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Add data
+        row = 2
+        for future in all_futures_data:
+            normalized = self.normalize_symbol_for_comparison(future['symbol'])
+            exchanges_list = symbol_coverage.get(normalized, set())
+            available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+            coverage = f"{len(exchanges_list)} exchanges"
+            is_unique = "✅" if len(exchanges_list) == 1 else ""
+            
+            ws.cell(row=row, column=1).value = future['symbol']
+            ws.cell(row=row, column=2).value = future['exchange']
+            ws.cell(row=row, column=3).value = normalized
+            ws.cell(row=row, column=4).value = available_on
+            ws.cell(row=row, column=5).value = coverage
+            ws.cell(row=row, column=6).value = future['timestamp']
+            ws.cell(row=row, column=7).value = is_unique
+            row += 1
+        
+        # Adjust column widths
+        ws.column_dimensions['A'].width = 25
+        ws.column_dimensions['B'].width = 15
+        ws.column_dimensions['C'].width = 25
+        ws.column_dimensions['D'].width = 40
+        ws.column_dimensions['E'].width = 15
+        ws.column_dimensions['F'].width = 20
+        ws.column_dimensions['G'].width = 10
+
+    def create_mexc_analysis_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data=None):
+        """Create MEXC Analysis sheet"""
+        ws = wb.create_sheet("MEXC Analysis")
+        
+        # Headers
+        headers = ['MEXC Symbol', 'Normalized', 'Available On', 'Exchanges Count', 'Current Price', '5m Change %', '1h Change %', '4h Change %', 'Status', 'Unique']
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = header
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+        
+        # Get MEXC futures and price mapping
+        mexc_futures = [f for f in all_futures_data if f['exchange'] == 'MEXC']
+        price_map = {item['symbol']: item for item in analyzed_prices} if analyzed_prices else {}
+        
+        # Add data
+        row = 2
+        for future in mexc_futures:
+            symbol = future['symbol']
+            normalized = self.normalize_symbol_for_comparison(symbol)
+            exchanges_list = symbol_coverage.get(normalized, set())
+            available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
+            exchange_count = len(exchanges_list)
+            status = "Unique" if exchange_count == 1 else "Multi-exchange"
+            unique_flag = "✅" if exchange_count == 1 else "🔸"
+            
+            price_info = price_map.get(symbol, {})
+            changes = price_info.get('changes', {})
+            
+            ws.cell(row=row, column=1).value = symbol
+            ws.cell(row=row, column=2).value = normalized
+            ws.cell(row=row, column=3).value = available_on
+            ws.cell(row=row, column=4).value = exchange_count
+            ws.cell(row=row, column=5).value = price_info.get('price', 'N/A')
+            ws.cell(row=row, column=6).value = self.format_change_for_excel(changes.get('5m'))
+            ws.cell(row=row, column=7).value = self.format_change_for_excel(changes.get('60m'))
+            ws.cell(row=row, column=8).value = self.format_change_for_excel(changes.get('240m'))
+            ws.cell(row=row, column=9).value = status
+            ws.cell(row=row, column=10).value = unique_flag
+            row += 1
+        
+        # Adjust column widths
+        for col in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']:
+            ws.column_dimensions[col].width = 15
+
+    def create_exchange_stats_sheet(self, wb, all_futures_data, historical_data=None):
         """Create Exchange Stats sheet"""
         ws = wb.create_sheet("Exchange Stats")
         
@@ -2349,6 +2404,7 @@ class MEXCTracker:
         for col in ['A', 'B', 'C', 'D']:
             ws.column_dimensions[col].width = 20
 
+
     def format_change_for_excel(self, change):
         """Format change for Excel with proper None handling"""
         if change is None:
@@ -2369,53 +2425,6 @@ class MEXCTracker:
             return f"📉 {change:+.2f}%"
         else:
             return f"{change:+.2f}%"
-
-    def create_dashboard_sheet(self, wb, all_futures_data, symbol_coverage, analyzed_prices):
-        """Create Dashboard sheet"""
-        ws = wb.create_sheet("Dashboard")
-        
-        # Title
-        ws['A1'] = 'MEXC FUTURES AUTO-UPDATE DASHBOARD'
-        ws['A1'].font = Font(bold=True, size=14)
-        
-        # Get statistics
-        unique_futures, exchange_stats = self.find_unique_futures_robust()
-        working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
-        total_exchanges = len(exchange_stats)
-        
-        # Statistics data
-        stats_data = [
-            ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-            ["Update Interval", f"{self.update_interval} minutes"],
-            ["", ""],
-            ["EXCHANGE STATISTICS", ""],
-            ["Working Exchanges", f"{working_exchanges}/{total_exchanges}"],
-            ["Total Unique Symbols", len(symbol_coverage)],
-            ["Unique MEXC Futures", len(unique_futures)],
-            ["", ""],
-            ["PRICE ANALYSIS", ""],
-            ["Symbols with Price Data", f"{len(analyzed_prices) if analyzed_prices else 0}"],
-            ["MEXC Futures Count", len([f for f in all_futures_data if f['exchange'] == 'MEXC'])],
-            ["", ""],
-            ["PERFORMANCE", ""],
-            ["Next Auto-Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
-            ["Status", "RUNNING"],
-        ]
-        
-        # Add data to sheet
-        for i, (label, value) in enumerate(stats_data, 2):
-            ws[f'A{i}'] = label
-            ws[f'B{i}'] = value
-            
-            # Format headers
-            if label and any(keyword in label for keyword in ["STATISTICS", "ANALYSIS", "PERFORMANCE"]):
-                ws[f'A{i}'].font = Font(bold=True)
-                ws[f'A{i}'].fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
-                ws[f'B{i}'].fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
-        
-        # Adjust column widths
-        ws.column_dimensions['A'].width = 25
-        ws.column_dimensions['B'].width = 25
 
 
     def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage, analyzed_prices=None):
@@ -2452,6 +2461,82 @@ class MEXCTracker:
             return None
 
 
+
+
+    def create_mexc_analysis_excel(self, all_futures_data, symbol_coverage, analyzed_prices=None):
+        """Create comprehensive Excel file with historical data from Google Sheets"""
+        try:
+            wb = Workbook()
+            
+            # Remove default sheet
+            wb.remove(wb.active)
+            
+            # Get historical data from Google Sheets
+            historical_data = self.get_historical_data_from_sheets()
+            
+            # Create all sheets matching Google Sheets structure with historical data
+            self.create_dashboard_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data)
+            self.create_unique_futures_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data)
+            self.create_all_futures_sheet(wb, all_futures_data, symbol_coverage, historical_data)
+            self.create_mexc_analysis_sheet(wb, all_futures_data, symbol_coverage, analyzed_prices, historical_data)
+            self.create_price_analysis_sheet(wb, analyzed_prices, historical_data)
+            self.create_exchange_stats_sheet(wb, all_futures_data, historical_data)
+            self.create_historical_trends_sheet(wb, historical_data)  # New sheet for historical trends
+            
+            # Save to bytes
+            output = io.BytesIO()
+            wb.save(output)
+            excel_content = output.getvalue()
+            output.close()
+            
+            logger.info("✅ Excel file created successfully with historical data")
+            return excel_content
+            
+        except Exception as e:
+            logger.error(f"Error creating Excel file: {e}")
+            return None
+
+
+
+    def get_historical_data_from_sheets(self):
+        """Extract historical data from Google Sheets"""
+        try:
+            historical_data = {}
+            
+            if not self.gs_client or not self.spreadsheet:
+                logger.warning("Google Sheets not available for historical data")
+                return historical_data
+            
+            # Read data from Unique Futures sheet
+            try:
+                worksheet = self.spreadsheet.worksheet('Unique Futures')
+                sheet_data = worksheet.get_all_records()
+                
+                for row in sheet_data:
+                    symbol = row.get('Symbol', '')
+                    if symbol:
+                        historical_data[symbol] = {
+                            'current_price': self.parse_price_value(row.get('Current Price', '')),
+                            'change_5m': self.parse_change_value(row.get('5m Change %', '')),
+                            'change_15m': self.parse_change_value(row.get('15m Change %', '')),
+                            'change_30m': self.parse_change_value(row.get('30m Change %', '')),
+                            'change_1h': self.parse_change_value(row.get('1h Change %', '')),
+                            'change_4h': self.parse_change_value(row.get('4h Change %', '')),
+                            'score': self.parse_score_value(row.get('Score', '')),
+                            'last_updated': row.get('Last Updated', ''),
+                            'status': row.get('Status', '')
+                        }
+                
+                logger.info(f"📊 Loaded historical data for {len(historical_data)} symbols from Google Sheets")
+                
+            except Exception as e:
+                logger.error(f"Error reading historical data from Google Sheets: {e}")
+            
+            return historical_data
+            
+        except Exception as e:
+            logger.error(f"Error getting historical data from sheets: {e}")
+            return {}
 
     def get_historical_data_from_sheets(self):
         """Extract historical data from Google Sheets"""
