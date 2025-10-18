@@ -1890,7 +1890,7 @@ class MEXCTracker:
             # Send error to Telegram
             error_msg = f"❌ <b>Google Sheets Update Failed</b>\n\nError: {str(e)}"
             self.send_broadcast_message(error_msg)
-            
+
     def get_cached_sheets_data(self):
         """Get cached Google Sheets data to reduce API calls"""
         current_time = time.time()
@@ -5772,6 +5772,7 @@ class MEXCTracker:
             summary += "🔄 <i>Next update in 4 hours</i>"
             
             return summary
+            
             
         except Exception as e:
             logger.error(f"Error creating growth summary: {e}")
