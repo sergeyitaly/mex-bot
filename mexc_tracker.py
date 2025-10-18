@@ -1706,6 +1706,7 @@ class MEXCTracker:
             return f"{change:.2f}%"  # Negative numbers already have -
 
 
+
     def store_calculated_changes_redis(self, analyzed_prices):
         """Store calculated changes to Redis instead of Google Sheets"""
         try:
@@ -1784,7 +1785,7 @@ class MEXCTracker:
             return []
         
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with prices - USING REDIS for historical data"""
+        """Update Google Sheet with prices - SIMPLIFIED to only 2 sheets"""
         try:
             current_time = time.time()
             if hasattr(self, '_last_sheets_call'):
@@ -1797,7 +1798,7 @@ class MEXCTracker:
                 logger.warning("❌ Google Sheets not available")
                 return
             
-            logger.info("🔄 Starting Google Sheet update with Redis storage...")
+            logger.info("🔄 Starting SIMPLIFIED Google Sheet update...")
             
             # Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
@@ -1807,10 +1808,10 @@ class MEXCTracker:
             batch_data = self.get_mexc_prices_batch_working()
             logger.info(f"📊 Got {len(batch_data)} prices from batch API")
             
-            # Store price history in REDIS instead of Google Sheets
+            # Store price history in Redis
             self.store_price_history_redis(batch_data)
             
-            # Create price_data with proper historical changes from REDIS
+            # Create price_data with historical changes from Redis
             price_data = {}
             matched_symbols = 0
             
@@ -1836,7 +1837,7 @@ class MEXCTracker:
                 if current_price_info and current_price_info.get('price') is not None:
                     current_price = current_price_info['price']
                     
-                    # Calculate proper historical changes from REDIS instead of Google Sheets
+                    # Calculate historical changes from Redis
                     historical_changes = self.calculate_historical_changes_redis(symbol, current_price)
                     
                     price_data[symbol] = {
@@ -1844,7 +1845,7 @@ class MEXCTracker:
                         'price': current_price,
                         'changes': historical_changes,
                         'timestamp': datetime.now(),
-                        'source': 'redis_storage'  # Changed from 'historical'
+                        'source': 'redis_storage'
                     }
                     matched_symbols += 1
                 else:
@@ -1858,22 +1859,20 @@ class MEXCTracker:
             
             analyzed_prices = self.analyze_price_movements(price_data)
             
-            # Get exchange statistics
+            # Get exchange statistics for dashboard
             exchange_stats = self.get_all_exchanges_futures_stats()
             
-            # Update all sheets (this still uses Google Sheets for display)
-            self.update_unique_futures_sheet_with_prices(unique_futures, analyzed_prices)
-            self.update_price_analysis_sheet(analyzed_prices)
-            self.update_exchange_stats_sheet(self.spreadsheet, exchange_stats, datetime.now().isoformat())
+            # UPDATE ONLY 2 SHEETS:
+            # 1. Dashboard with Exchange Stats
+            self.update_dashboard_with_stats(exchange_stats, len(unique_futures), analyzed_prices)
             
-            # Store calculated changes in REDIS instead of Google Sheets
-            self.store_calculated_changes_redis(analyzed_prices)
+            # 2. Unique Futures with all data
+            self.update_unique_futures_combined_sheet(unique_futures, analyzed_prices)
             
-            logger.info(f"✅ Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices (using Redis)")
+            logger.info(f"✅ SIMPLIFIED Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices")
             
             # Send confirmation to Telegram
             if matched_symbols > 0:
-                # Add Redis status to confirmation
                 redis_status = "✅" if self.is_using_redis else "⚠️"
                 storage_type = "Redis" if self.is_using_redis else "Memory"
                 
@@ -1882,17 +1881,16 @@ class MEXCTracker:
                     f"✅ Prices updated: {matched_symbols}/{len(unique_futures)}\n"
                     f"💰 Coverage: {(matched_symbols/len(unique_futures)*100):.1f}%\n"
                     f"🗃️ Storage: {redis_status} {storage_type}\n"
-                    f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}\n\n"
-                    f"<i>Next update in 5 minutes</i>"
+                    f"📋 Sheets: Dashboard + Unique Futures\n"
+                    f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}"
                 )
                 self.send_broadcast_message(confirmation_msg)
             
         except Exception as e:
-            logger.error(f"❌ Error updating Google Sheets with Redis: {e}")
-            # Send error to Telegram
+            logger.error(f"❌ Error updating simplified Google Sheets: {e}")
             error_msg = f"❌ <b>Google Sheets Update Failed</b>\n\nError: {str(e)}"
             self.send_broadcast_message(error_msg)
-
+            
     def get_cached_sheets_data(self):
         """Get cached Google Sheets data to reduce API calls"""
         current_time = time.time()
@@ -4221,86 +4219,187 @@ class MEXCTracker:
 
     # Also update the forceupdate command to use the new method
     def ensure_sheets_initialized(self):
-        """Ensure all required sheets exist with comprehensive error handling"""
+        """Ensure only 2 required sheets exist"""
         try:
-            # First, check if Google Sheets is properly configured
             if not self.gs_client or not self.spreadsheet:
-                logger.error("❌ Google Sheets not properly configured")
-                # Try to reinitialize
-                if not self.setup_google_sheets():
-                    logger.error("❌ Failed to reinitialize Google Sheets")
-                    return False
+                return False
             
-            # Test connection by getting spreadsheet info
-            try:
-                spreadsheet_title = self.spreadsheet.title
-                logger.info(f"📊 Working with spreadsheet: {spreadsheet_title}")
-            except Exception as e:
-                logger.error(f"❌ Cannot access spreadsheet: {e}")
-                return False
-
-            # Define required sheets
-            required_sheets = [
-                'Dashboard',
-                'Unique Futures', 
-                'All Futures',
-                'MEXC Analysis',
-                'Price Analysis',
-                'Exchange Stats'
-            ]
-
+            # Define only 2 required sheets
+            required_sheets = ['Dashboard', 'Unique Futures']
+            
             # Get existing sheets
-            try:
-                existing_worksheets = self.spreadsheet.worksheets()
-                existing_sheet_names = [sheet.title for sheet in existing_worksheets]
-                logger.info(f"📋 Found {len(existing_worksheets)} existing sheets: {existing_sheet_names}")
-            except Exception as e:
-                logger.error(f"❌ Failed to get existing sheets: {e}")
-                return False
-
+            existing_worksheets = self.spreadsheet.worksheets()
+            existing_sheet_names = [sheet.title for sheet in existing_worksheets]
+            
             # Create missing sheets
-            sheets_created = 0
             for sheet_name in required_sheets:
-                try:
-                    if sheet_name in existing_sheet_names:
-                        logger.info(f"✅ Sheet exists: {sheet_name}")
-                        continue
-                    
-                    # Create new sheet
-                    logger.info(f"🆕 Creating new sheet: {sheet_name}")
+                if sheet_name not in existing_sheet_names:
+                    logger.info(f"🆕 Creating sheet: {sheet_name}")
                     new_sheet = self.spreadsheet.add_worksheet(
                         title=sheet_name, 
                         rows="1000", 
                         cols="20"
                     )
-                    
-                    # Set basic headers based on sheet type
-                    headers = self.get_sheet_headers(sheet_name)
-                    if headers:
-                        new_sheet.update('A1', [headers])
-                        logger.info(f"✅ Added headers to {sheet_name}")
-                    
-                    sheets_created += 1
                     time.sleep(1)  # Rate limiting
-                    
-                except Exception as e:
-                    logger.error(f"❌ Failed to create sheet {sheet_name}: {e}")
-                    continue
-
-            # Setup Dashboard content
-            try:
-                dashboard = self.spreadsheet.worksheet('Dashboard')
-                self.setup_dashboard_sheet(dashboard)
-                logger.info("✅ Dashboard setup completed")
-            except Exception as e:
-                logger.error(f"❌ Failed to setup dashboard: {e}")
-
-            logger.info(f"✅ Sheet initialization complete. Created {sheets_created} new sheets.")
+            
+            
+            logger.info("✅ Simplified sheet initialization complete")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Critical error in sheet initialization: {e}")
+            logger.error(f"❌ Sheet initialization error: {e}")
             return False
+
+
+    def update_dashboard_with_stats(self, exchange_stats, unique_count, analyzed_prices):
+        """Update Dashboard with exchange statistics and summary"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Dashboard')
+            
+            # Count working exchanges
+            working_exchanges = sum(1 for count in exchange_stats.values() if count > 0)
+            total_exchanges = len(exchange_stats)
+            
+            # Calculate price statistics
+            valid_prices = len([p for p in analyzed_prices if p.get('price') is not None])
+            price_coverage = (valid_prices / unique_count) * 100 if unique_count > 0 else 0
+            
+            # Get top performers for dashboard
+            top_performers = analyzed_prices[:5] if analyzed_prices else []
+            
+            dashboard_data = [
+                ["🤖 MEXC UNIQUE FUTURES TRACKER", ""],
+                ["Last Updated", datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                ["Update Interval", f"{self.update_interval} minutes"],
+                ["", ""],
+                ["📊 EXCHANGE STATISTICS", ""],
+                ["Total Exchanges Tracked", f"{total_exchanges}"],
+                ["Working Exchanges", f"{working_exchanges}"],
+                ["MEXC Futures", f"{exchange_stats.get('MEXC', 0)}"],
+                ["Unique MEXC Futures", f"{unique_count} 🎯"],
+                ["", ""],
+                ["💰 PRICE COVERAGE", ""],
+                ["Symbols with Prices", f"{valid_prices}/{unique_count}"],
+                ["Price Coverage", f"{price_coverage:.1f}%"],
+                ["Using Storage", "Redis" if self.is_using_redis else "Memory"],
+                ["", ""],
+                ["🏆 TOP 5 PERFORMERS", ""],
+            ]
+            
+            # Add top performers
+            for i, item in enumerate(top_performers, 1):
+                if i <= 5:
+                    changes = item.get('changes', {})
+                    change_5m = changes.get('5m', 0)
+                    dashboard_data.append([
+                        f"{i}. {item['symbol']}",
+                        f"{change_5m:+.1f}% (${item.get('price', 0):.4f})"
+                    ])
+            
+            dashboard_data.extend([
+                ["", ""],
+                ["⚡ NEXT UPDATE", ""],
+                ["Next Data Update", (datetime.now() + timedelta(minutes=self.update_interval)).strftime('%H:%M:%S')],
+                ["Status", "🟢 RUNNING"]
+            ])
+            
+            # Update dashboard
+            worksheet.clear()
+            worksheet.update('A1', dashboard_data)
+            
+            logger.info("✅ Dashboard updated with statistics")
+            
+        except Exception as e:
+            logger.error(f"Error updating dashboard: {e}")
+
+    def update_unique_futures_combined_sheet(self, unique_futures, analyzed_prices):
+        """Update Unique Futures sheet with all combined data"""
+        try:
+            worksheet = self.spreadsheet.worksheet('Unique Futures')
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            # Headers for combined data
+            headers = [
+                'Symbol', 
+                'Current Price', 
+                '5m %', 
+                '15m %', 
+                '30m %', 
+                '1h %', 
+                '4h %', 
+                'Score', 
+                'Trend', 
+                'Volume', 
+                'Last Updated'
+            ]
+            worksheet.update([headers], 'A1')
+            
+            sheet_data = []
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            for symbol in sorted(unique_futures):
+                price_info = price_map.get(symbol)
+                changes = price_info.get('changes', {}) if price_info else {}
+                price = price_info.get('price') if price_info else None
+                score = price_info.get('score', 0) if price_info else 0
+                
+                # Format price
+                if price is not None:
+                    if price >= 1000:
+                        price_display = f"${price:,.2f}"
+                    elif price >= 1:
+                        price_display = f"${price:.2f}"
+                    elif price >= 0.01:
+                        price_display = f"${price:.4f}"
+                    elif price >= 0.0001:
+                        price_display = f"${price:.6f}"
+                    else:
+                        price_display = f"${price:.8f}"
+                else:
+                    price_display = 'N/A'
+                
+                # Determine trend based on score
+                if score > 5:
+                    trend = "🚀 STRONG UP"
+                elif score > 2:
+                    trend = "🟢 UP" 
+                elif score < -5:
+                    trend = "🔻 STRONG DOWN"
+                elif score < -2:
+                    trend = "🔴 DOWN"
+                else:
+                    trend = "⚪ FLAT"
+                
+                # Format changes with clear +/- signs
+                row = [
+                    symbol,
+                    price_display,
+                    self.format_change_with_sign(changes.get('5m')),
+                    self.format_change_with_sign(changes.get('15m')),
+                    self.format_change_with_sign(changes.get('30m')),
+                    self.format_change_with_sign(changes.get('60m')),
+                    self.format_change_with_sign(changes.get('240m')),
+                    f"{score:.2f}",
+                    trend,
+                    'N/A',  # Volume would require additional API
+                    current_time
+                ]
+                sheet_data.append(row)
+            
+            if sheet_data:
+                worksheet.update(f'A2:J{len(sheet_data) + 1}', sheet_data)
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+                
+                # Apply simple color formatting
+                self.apply_simple_color_formatting(worksheet, len(sheet_data))
+                
+        except Exception as e:
+            logger.error(f"Error updating Unique Futures sheet: {e}")
+
 
     def get_sheet_headers(self, sheet_name):
         """Get appropriate headers for each sheet type"""
