@@ -3846,24 +3846,26 @@ class MEXCTracker:
             logger.error(f"❌ Google Sheet update error: {e}")
 
     def update_all_futures_sheet(self, spreadsheet, all_futures_data, symbol_coverage, timestamp):
-        """Update All Futures sheet"""
+        """Update All Futures sheet with row limit handling"""
         try:
             worksheet = spreadsheet.worksheet('All Futures')
             
             # Clear existing data (keep headers)
-            if worksheet.row_count > 1:
-                worksheet.clear()
-                # Re-add headers
-                worksheet.update('A1', [[
-                    'Symbol', 'Exchange', 'Normalized', 'Available On', 
-                    'Coverage', 'Timestamp', 'Unique', 'Current Price'
-                ]])
+            worksheet.clear()
+            
+            # Re-add headers
+            headers = ['Symbol', 'Exchange', 'Normalized', 'Available On', 'Coverage', 'Timestamp', 'Unique', 'Current Price']
+            worksheet.update('A1', [headers])
+            
+            # TRUNCATE data to fit within Google Sheets limits (3000 rows max)
+            max_rows = 3000  # Leave 1 row for header
+            truncated_data = all_futures_data[:max_rows]
             
             all_data = []
-            for future in all_futures_data:
+            for future in truncated_data:
                 normalized = self.normalize_symbol_for_comparison(future['symbol'])
                 exchanges_list = symbol_coverage.get(normalized, set())
-                available_on = ", ".join(sorted(exchanges_list))
+                available_on = ", ".join(sorted(exchanges_list)) if exchanges_list else "MEXC Only"
                 coverage = f"{len(exchanges_list)} exchanges"
                 is_unique = "✅" if len(exchanges_list) == 1 else ""
                 
@@ -3878,18 +3880,17 @@ class MEXCTracker:
                     'N/A'  # Price would be added separately
                 ])
             
-            # Write in batches
+            # Write in smaller batches
             if all_data:
                 batch_size = 100
                 for i in range(0, len(all_data), batch_size):
                     batch = all_data[i:i + batch_size]
                     worksheet.update(f'A{i+2}', batch)
                 
-                logger.info(f"Updated All Futures with {len(all_data)} records")
+                logger.info(f"✅ Updated All Futures with {len(all_data)} records (truncated from {len(all_futures_data)})")
             
         except Exception as e:
             logger.error(f"Error updating All Futures sheet: {e}")
-
 
     def update_dashboard_stats(self, exchange_stats, unique_symbols_count, unique_futures_count, analyzed_prices):
         """Update dashboard statistics - simplified version"""
