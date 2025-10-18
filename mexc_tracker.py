@@ -58,6 +58,12 @@ class MEXCTracker:
         self.bybit_api_key = os.getenv('BYBIT_API_KEY', '')
         self.bybit_api_secret = os.getenv('BYBIT_API_SECRET', '')
         
+        self.redis_client = None
+        self.is_using_redis = False
+        self.memory_storage = {}
+        
+        # Initialize Redis storage
+        self.setup_redis_storage()
 
         # Initialize Google Sheets attributes to None
         self.gs_client = None
@@ -652,7 +658,7 @@ class MEXCTracker:
                 if weight_total > 0:
                     score = score / weight_total
                 
-                # Determine latest valid change for display
+                # Determine latest valid change for Trend column
                 latest_change = None
                 for timeframe in ['5m', '15m', '30m', '60m', '240m']:
                     if timeframe in changes and changes[timeframe] is not None:
@@ -664,10 +670,10 @@ class MEXCTracker:
                     'price': price,
                     'changes': changes,
                     'score': score,
-                    'latest_change': latest_change if latest_change is not None else 0
+                    'latest_change': latest_change if latest_change is not None else 0  # This is used for Trend
                 })
             
-            # Sort by score (highest first)
+            # Sort by score (highest first) - this determines the Rank column
             symbols_with_changes.sort(key=lambda x: x['score'], reverse=True)
             
             logger.info(f"✅ Analyzed {len(symbols_with_changes)} symbols")
@@ -1785,7 +1791,7 @@ class MEXCTracker:
             return []
         
     def update_google_sheet_with_prices(self):
-        """Update Google Sheet with prices - SIMPLIFIED to only 2 sheets"""
+        """Update Google Sheet with prices - REMOVED Price Analysis sheet"""
         try:
             current_time = time.time()
             if hasattr(self, '_last_sheets_call'):
@@ -1798,7 +1804,7 @@ class MEXCTracker:
                 logger.warning("❌ Google Sheets not available")
                 return
             
-            logger.info("🔄 Starting SIMPLIFIED Google Sheet update...")
+            logger.info("🔄 Starting Google Sheet update (No Price Analysis sheet)...")
             
             # Get unique futures
             unique_futures, _ = self.find_unique_futures_robust()
@@ -1862,14 +1868,14 @@ class MEXCTracker:
             # Get exchange statistics for dashboard
             exchange_stats = self.get_all_exchanges_futures_stats()
             
-            # UPDATE ONLY 2 SHEETS:
+            # UPDATE ONLY 2 SHEETS (NO PRICE ANALYSIS):
             # 1. Dashboard with Exchange Stats
             self.update_dashboard_with_stats(exchange_stats, len(unique_futures), analyzed_prices)
             
-            # 2. Unique Futures with all data
+            # 2. Unique Futures with ALL data including Trend column
             self.update_unique_futures_combined_sheet(unique_futures, analyzed_prices)
             
-            logger.info(f"✅ SIMPLIFIED Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices")
+            logger.info(f"✅ Google Sheets updated: {matched_symbols}/{len(unique_futures)} prices (No Price Analysis sheet)")
             
             # Send confirmation to Telegram
             if matched_symbols > 0:
@@ -1881,16 +1887,16 @@ class MEXCTracker:
                     f"✅ Prices updated: {matched_symbols}/{len(unique_futures)}\n"
                     f"💰 Coverage: {(matched_symbols/len(unique_futures)*100):.1f}%\n"
                     f"🗃️ Storage: {redis_status} {storage_type}\n"
-                    f"📋 Sheets: Dashboard + Unique Futures\n"
+                    f"📋 Sheets: Dashboard + Unique Futures (with Trend)\n"
                     f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}"
                 )
                 self.send_broadcast_message(confirmation_msg)
             
         except Exception as e:
-            logger.error(f"❌ Error updating simplified Google Sheets: {e}")
+            logger.error(f"❌ Error updating Google Sheets: {e}")
             error_msg = f"❌ <b>Google Sheets Update Failed</b>\n\nError: {str(e)}"
             self.send_broadcast_message(error_msg)
-            
+
     def get_cached_sheets_data(self):
         """Get cached Google Sheets data to reduce API calls"""
         current_time = time.time()
@@ -4219,17 +4225,26 @@ class MEXCTracker:
 
     # Also update the forceupdate command to use the new method
     def ensure_sheets_initialized(self):
-        """Ensure only 2 required sheets exist"""
+        """Ensure only 2 required sheets exist (NO PRICE ANALYSIS)"""
         try:
             if not self.gs_client or not self.spreadsheet:
                 return False
             
-            # Define only 2 required sheets
+            # Define only 2 required sheets (NO PRICE ANALYSIS)
             required_sheets = ['Dashboard', 'Unique Futures']
             
             # Get existing sheets
             existing_worksheets = self.spreadsheet.worksheets()
             existing_sheet_names = [sheet.title for sheet in existing_worksheets]
+            
+            # Remove Price Analysis sheet if it exists
+            if 'Price Analysis' in existing_sheet_names:
+                try:
+                    price_analysis_sheet = self.spreadsheet.worksheet('Price Analysis')
+                    self.spreadsheet.del_worksheet(price_analysis_sheet)
+                    logger.info("🗑️ Removed Price Analysis sheet")
+                except Exception as e:
+                    logger.warning(f"Could not remove Price Analysis sheet: {e}")
             
             # Create missing sheets
             for sheet_name in required_sheets:
@@ -4242,14 +4257,12 @@ class MEXCTracker:
                     )
                     time.sleep(1)  # Rate limiting
             
-            
-            logger.info("✅ Simplified sheet initialization complete")
+            logger.info("✅ Sheet initialization complete (No Price Analysis)")
             return True
             
         except Exception as e:
             logger.error(f"❌ Sheet initialization error: {e}")
             return False
-
 
     def update_dashboard_with_stats(self, exchange_stats, unique_count, analyzed_prices):
         """Update Dashboard with exchange statistics and summary"""
@@ -4313,15 +4326,16 @@ class MEXCTracker:
             logger.error(f"Error updating dashboard: {e}")
 
     def update_unique_futures_combined_sheet(self, unique_futures, analyzed_prices):
-        """Update Unique Futures sheet with all combined data"""
+        """Update Unique Futures sheet with Trend column from Price Analysis"""
         try:
             worksheet = self.spreadsheet.worksheet('Unique Futures')
             
             # Clear existing data
             worksheet.clear()
             
-            # Headers for combined data
+            # Headers with Trend column (moved from Price Analysis)
             headers = [
+                'Rank',           # Added rank like Price Analysis
                 'Symbol', 
                 'Current Price', 
                 '5m %', 
@@ -4330,8 +4344,7 @@ class MEXCTracker:
                 '1h %', 
                 '4h %', 
                 'Score', 
-                'Trend', 
-                'Volume', 
+                'Trend',          # This is the Trend column from Price Analysis
                 'Last Updated'
             ]
             worksheet.update([headers], 'A1')
@@ -4339,13 +4352,23 @@ class MEXCTracker:
             sheet_data = []
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
+            # Create a map for quick lookup
             price_map = {item['symbol']: item for item in analyzed_prices}
+            
+            # Sort analyzed_prices by score to get ranking (like Price Analysis)
+            sorted_prices = sorted(analyzed_prices, key=lambda x: x.get('score', 0), reverse=True)
+            ranking_map = {}
+            for rank, item in enumerate(sorted_prices, 1):
+                ranking_map[item['symbol']] = rank
             
             for symbol in sorted(unique_futures):
                 price_info = price_map.get(symbol)
                 changes = price_info.get('changes', {}) if price_info else {}
                 price = price_info.get('price') if price_info else None
                 score = price_info.get('score', 0) if price_info else 0
+                
+                # Get rank (like Price Analysis sheet)
+                rank = ranking_map.get(symbol, 'N/A')
                 
                 # Format price
                 if price is not None:
@@ -4362,20 +4385,22 @@ class MEXCTracker:
                 else:
                     price_display = 'N/A'
                 
-                # Determine trend based on score
-                if score > 5:
+                # Determine trend (EXACTLY like Price Analysis sheet)
+                latest_change = price_info.get('latest_change', 0) if price_info else 0
+                if latest_change > 5:
                     trend = "🚀 STRONG UP"
-                elif score > 2:
-                    trend = "🟢 UP" 
-                elif score < -5:
+                elif latest_change > 2:
+                    trend = "🟢 UP"
+                elif latest_change < -5:
                     trend = "🔻 STRONG DOWN"
-                elif score < -2:
+                elif latest_change < -2:
                     trend = "🔴 DOWN"
                 else:
                     trend = "⚪ FLAT"
                 
                 # Format changes with clear +/- signs
                 row = [
+                    rank,
                     symbol,
                     price_display,
                     self.format_change_with_sign(changes.get('5m')),
@@ -4384,22 +4409,21 @@ class MEXCTracker:
                     self.format_change_with_sign(changes.get('60m')),
                     self.format_change_with_sign(changes.get('240m')),
                     f"{score:.2f}",
-                    trend,
-                    'N/A',  # Volume would require additional API
+                    trend,  # This is the Trend column from Price Analysis
                     current_time
                 ]
                 sheet_data.append(row)
             
             if sheet_data:
-                worksheet.update(f'A2:J{len(sheet_data) + 1}', sheet_data)
-                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records")
+                worksheet.update(f'A2:K{len(sheet_data) + 1}', sheet_data)
+                logger.info(f"✅ Updated Unique Futures with {len(sheet_data)} records (including Trend column)")
                 
-                # Apply simple color formatting
+                # Apply color formatting
                 self.apply_simple_color_formatting(worksheet, len(sheet_data))
                 
         except Exception as e:
-            logger.error(f"Error updating Unique Futures sheet: {e}")
-
+            logger.error(f"Error updating Unique Futures sheet with Trend: {e}")
+            
 
     def get_sheet_headers(self, sheet_name):
         """Get appropriate headers for each sheet type"""
@@ -6236,55 +6260,6 @@ class MEXCTracker:
     # ==================== DATA MANAGEMENT ====================
 
 
-    def setup_redis_storage(self):
-        """Setup Redis connection with proper error handling"""
-        try:
-            # Get Redis configuration from environment
-            redis_url = os.getenv('REDIS_URL')
-            
-            logger.info("🔧 Initializing Redis storage...")
-            
-            if not redis_url:
-                logger.warning("❌ REDIS_URL not found in environment variables")
-                self.setup_memory_fallback()
-                return
-            
-            logger.info(f"🔗 Connecting to Redis...")
-            
-            # Connect using Redis URL
-            self.redis_client = redis.Redis.from_url(
-                redis_url,
-                decode_responses=True,
-                socket_connect_timeout=10,
-                socket_timeout=10,
-                retry_on_timeout=True,
-                health_check_interval=30,
-                max_connections=5
-            )
-            
-            # Test connection
-            try:
-                if self.redis_client.ping():
-                    logger.info("✅ Redis connection successful!")
-                    self.is_using_redis = True
-                    
-                    # Initialize memory storage as backup
-                    self.memory_storage = {}
-                    return
-                else:
-                    logger.error("❌ Redis ping failed")
-                    
-            except Exception as test_error:
-                logger.error(f"❌ Redis connection test failed: {test_error}")
-            
-            # If we get here, Redis failed
-            self.redis_client = None
-            self.setup_memory_fallback()
-            
-        except Exception as e:
-            logger.error(f"❌ Redis setup error: {e}")
-            self.redis_client = None
-            self.setup_memory_fallback()
 
 
     def store_price_history_redis(self, price_data):
@@ -6472,10 +6447,60 @@ class MEXCTracker:
             return []
         
 
-        
+    def setup_redis_storage(self):
+        """Setup Redis connection with proper attribute initialization"""
+        try:
+            # Initialize attributes first
+            self.redis_client = None
+            self.is_using_redis = False
+            self.memory_storage = {}
+            
+            # Get Redis configuration from environment
+            redis_url = os.getenv('REDIS_URL')
+            
+            logger.info("🔧 Initializing Redis storage...")
+            
+            if not redis_url:
+                logger.warning("❌ REDIS_URL not found in environment variables")
+                self.setup_memory_fallback()
+                return
+            
+            logger.info(f"🔗 Connecting to Redis...")
+            
+            # Connect using Redis URL
+            self.redis_client = redis.Redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=10,
+                socket_timeout=10,
+                retry_on_timeout=True,
+                health_check_interval=30,
+                max_connections=5
+            )
+            
+            # Test connection
+            try:
+                if self.redis_client.ping():
+                    logger.info("✅ Redis connection successful!")
+                    self.is_using_redis = True
+                    return
+                else:
+                    logger.error("❌ Redis ping failed")
+                    
+            except Exception as test_error:
+                logger.error(f"❌ Redis connection test failed: {test_error}")
+            
+            # If we get here, Redis failed
+            self.redis_client = None
+            self.setup_memory_fallback()
+            
+        except Exception as e:
+            logger.error(f"❌ Redis setup error: {e}")
+            self.redis_client = None
+            self.setup_memory_fallback()
 
     def setup_memory_fallback(self):
-        """Fallback to in-memory storage if Redis fails"""
+        """Setup in-memory fallback storage"""
         self.memory_storage = {}
         self.is_using_redis = False
         logger.info("✅ In-memory fallback storage initialized")
